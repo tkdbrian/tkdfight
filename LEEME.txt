@@ -1,0 +1,84 @@
+📱 SISTEMA ROUND ROBIN TAEKWONDO - VERSIÓN PORTABLE v1.0.0
+=============================================================
+
+💾 MODO OFFLINE - SIN INTERNET REQUERIDO
+
+Este es un sistema de torneos Round Robin completamente autónomo para competencias de Taekwondo.
+Funciona 100% sin conexión a internet, ideal para competencias donde la estabilidad es crítica.
+
+🚀 INICIO RÁPIDO:
+----------------
+1. Hacer doble clic en: "index.html"
+2. El sistema se abrirá en tu navegador por defecto
+3. ¡Ya puedes empezar a usar el torneo!
+
+📋 CARACTERÍSTICAS:
+------------------
+✅ Soporte para 3-8 competidores
+✅ Sistema de llaves automático
+✅ Cronómetro integrado con penalizaciones
+✅ Panel de 4 jueces profesional
+✅ Backup automático cada 30 segundos
+✅ Optimización de peleas para reducir fatiga
+✅ Exportación de resultados
+✅ 100% offline (sin internet)
+
+🔧 COMPATIBILIDAD:
+------------------
+✅ Chrome (recomendado)
+✅ Firefox
+✅ Edge
+✅ Safari (Mac)
+⚠️ Internet Explorer NO soportado
+
+🏆 FORMATOS DE TORNEO:
+---------------------
+• 3-5 Competidores: Round Robin puro (todos contra todos)
+• 6 Competidores: 2 llaves de 3 + Final
+• 7 Competidores: 1 llave de 4 + 1 llave de 3 + Final  
+• 8 Competidores: 2 llaves de 4 + Final
+
+💾 BACKUP AUTOMÁTICO:
+--------------------
+El sistema guarda automáticamente cada 30 segundos:
+- Configuración del torneo
+- Resultados de peleas
+- Estado de las llaves
+- Tabla de posiciones
+
+Los datos se guardan en el navegador y persisten entre sesiones.
+
+⚠️ IMPORTANTE - ESTABILIDAD:
+---------------------------
+Para máxima estabilidad durante competencias:
+
+1. 📱 Usar una computadora dedicada
+2. 🔋 Verificar que esté conectada a corriente
+3. 🚫 Cerrar otros programas innecesarios
+4. 💾 Hacer backup manual antes de eventos importantes
+5. 🔧 Usar navegadores actualizados (Chrome/Firefox)
+
+🆘 SOLUCIÓN DE PROBLEMAS:
+------------------------
+Si hay problemas:
+1. Refrescar la página (F5)
+2. Verificar que JavaScript esté habilitado
+3. Intentar en modo incógnito
+4. Cambiar de navegador
+5. Contactar soporte técnico
+
+📞 SOPORTE:
+-----------
+Sistema desarrollado por: Brian E. Lipnjak
+Versión: PORTABLE v1.0.0
+Fecha: Enero 2025
+
+🔒 DATOS SEGUROS:
+----------------
+Todos los datos se almacenan localmente en tu dispositivo.
+No se envía información a internet.
+Total privacidad y control de datos.
+
+=====================================
+¡LISTO PARA COMPETIR! 🥋⚡
+=====================================

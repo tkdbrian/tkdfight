@@ -1,0 +1,109 @@
+🥋 INSTRUCCIONES PARA TORNEOS OFICIALES
+======================================
+
+🎯 PREPARACIÓN PRE-TORNEO:
+-------------------------
+1. 📱 Verificar computadora con batería/corriente
+2. 🌐 Probar el sistema offline (desconectar internet)
+3. 👥 Confirmar lista de competidores
+4. ⚖️ Designar jefe de mesa y jueces
+5. ⏱️ Configurar tiempo de peleas según reglamento
+
+📋 CONFIGURACIÓN INICIAL:
+------------------------
+1. Abrir index.html
+2. Seleccionar número de competidores (3-8)
+3. Completar información de categoría:
+   - Género (Masculino/Femenino/Mixto)
+   - Rango de edad
+   - Categoría de cinturones
+   - Categoría de peso
+   - Jefe de mesa
+   - Tiempo de pelea (generalmente 2 minutos)
+
+4. Ingresar nombres de competidores
+5. Hacer clic en "Iniciar Torneo"
+
+⚔️ DURANTE LAS PELEAS:
+---------------------
+1. 🎯 Usar el cronómetro flotante:
+   - Configurar tiempo según categoría
+   - Activar avisos (30s y 10s restantes)
+   - Controlar penalizaciones en tiempo real
+
+2. 👨‍⚖️ Sistema de Jueces:
+   - 4 jueces votan por ganador o empate
+   - El sistema calcula automáticamente el resultado
+   - Resultado se determina por mayoría
+
+3. 📊 Puntuación:
+   - Victoria: 2 puntos + puntos de jueces
+   - Empate: 1 punto + puntos de jueces
+   - Derrota: 0 puntos + puntos de jueces
+
+🏆 FINALES Y LLAVES:
+-------------------
+Para 6-8 competidores:
+1. ✅ Completar todas las peleas de llaves
+2. 🎯 El sistema detecta automáticamente los ganadores
+3. 🥇 La final se programa automáticamente
+4. 📋 Actualizar tabla de posiciones en tiempo real
+
+💾 RESPALDO DE DATOS:
+--------------------
+- ✅ Backup automático cada 30 segundos
+- 💾 Datos persistentes en el navegador
+- 📁 Exportar resultados al final del torneo
+- 🔄 Sistema de recuperación ante fallos
+
+🚨 PROTOCOLO DE EMERGENCIA:
+--------------------------
+Si el sistema falla durante competencia:
+
+1. 🔄 NO cerrar el navegador - refrescar página (F5)
+2. 📋 Los datos deberían recuperarse automáticamente
+3. 📝 Si no, usar backup manual de papel como respaldo
+4. 🔄 Intentar en navegador diferente
+5. 📞 Contactar soporte técnico inmediatamente
+
+📊 EXPORTACIÓN DE RESULTADOS:
+----------------------------
+Al finalizar el torneo:
+1. 🏆 Sistema muestra resultados finales
+2. 💾 Usar botón "Exportar Resultados"
+3. 📄 Guardar archivo para registro oficial
+4. 📋 Imprimir tabla final de posiciones
+
+⚡ TIPS PARA JUECES:
+-------------------
+1. 🎯 Votar siempre de manera clara y definitiva
+2. ⏱️ Respetar tiempos del cronómetro
+3. 📝 Anotar penalizaciones inmediatamente
+4. 🔄 Verificar resultado antes de confirmar
+5. 📢 Comunicar decisión claramente
+
+🔧 CONFIGURACIONES RECOMENDADAS:
+-------------------------------
+⏱️ Tiempos por Categoría:
+- Infantiles: 1-1:30 minutos
+- Juveniles: 1:30-2 minutos  
+- Adultos: 2-3 minutos
+- Seniors: 2 minutos
+
+🚨 Avisos de Tiempo:
+- Siempre activados para competencias oficiales
+- Avisos a 30 segundos y 10 segundos
+
+✅ VERIFICACIÓN FINAL:
+---------------------
+Antes de comenzar competencia oficial:
+□ Sistema probado sin internet
+□ Competidores registrados correctamente
+□ Cronómetro funcionando
+□ Jueces familiarizados con el sistema
+□ Backup de datos verificado
+□ Computadora con corriente estable
+
+=====================================
+🏅 ¡TORNEO PROFESIONAL LISTO! 🏅
+=====================================

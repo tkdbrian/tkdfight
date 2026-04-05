@@ -1,0 +1,29 @@
+{
+  "mode": "patterns",
+  "version": "baseline-itf-1.0",
+  "notes": "Escala de 0 a 10 con paso 0.5; se pueden descartar máximo y mínimo.",
+  "judgesCount": 5,
+  "scoringScale": {
+    "min": 0.0,
+    "max": 10.0,
+    "step": 0.5
+  },
+  "criteria": [
+    {
+      "key": "technical_accuracy",
+      "label": "Precisión técnica",
+      "weight": 0.6
+    },
+    {
+      "key": "power_rhythm_sinewave",
+      "label": "Poder + ritmo/sine wave",
+      "weight": 0.4
+    }
+  ],
+  "drop_high_low": true,
+  "decision": "highestTotal",
+  "tie": [
+    "recount_without_drop",
+    "jury_decision"
+  ]
+}

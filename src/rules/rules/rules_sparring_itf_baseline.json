@@ -1,0 +1,47 @@
+{
+  "mode": "sparring",
+  "version": "baseline-itf-1.0",
+  "notes": "Valores iniciales basados en reglas ITF ampliamente usadas; ajustar con tus archivos si difieren.",
+  "judgesCount": 3,
+  "rounds": {
+    "count": 2,
+    "duration_seconds": 120,
+    "rest_seconds": 30,
+    "golden_point": true,
+    "overtime_seconds": 60
+  },
+  "points": {
+    "pts_1": 1,
+    "pts_2": 2,
+    "pts_3": 3,
+    "hand_body": 1,
+    "foot_body": 1,
+    "foot_head": 2,
+    "jump_hand_head": 2,
+    "jump_foot_body": 2,
+    "jump_foot_head": 3
+  },
+  "deductions": {
+    "warning_minor": -1,
+    "warning_serious": -2,
+    "minus_point": -1,
+    "disqualify": "DQ"
+  },
+  "fouls_examples": [
+    "exceso de contacto",
+    "empuje / agarre",
+    "caer sin contacto",
+    "salir del área",
+    "técnicas peligrosas"
+  ],
+  "tiebreak_order": [
+    "fewest_deductions_against",
+    "golden_point",
+    "first_clean_point",
+    "jury_decision"
+  ],
+  "validation": {
+    "min_interval_ms_same_judge": 300,
+    "require_majority_for_point": false
+  }
+}

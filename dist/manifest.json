@@ -1,0 +1,9 @@
+{
+  "name": "TKD Scoring",
+  "short_name": "TKD Score",
+  "start_url": "/judge",
+  "display": "standalone",
+  "background_color": "#111827",
+  "theme_color": "#111827",
+  "icons": []
+}
