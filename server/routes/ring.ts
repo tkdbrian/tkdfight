@@ -3,7 +3,7 @@ import type { Server } from 'socket.io'
 import { getRingConfig, setRingConfig } from '../ring-config.js'
 import { getLocalIp } from '../helpers.js'
 import { state } from '../state.js'
-import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, insertFightIfNew, getSourceRing } from '../db/index.js'
+import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, insertFightIfNew } from '../db/index.js'
 import db from '../db/index.js'
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)

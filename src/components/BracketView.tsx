@@ -172,6 +172,7 @@ export function BracketView({
 
   return (
     <div className="overflow-auto w-full">
+      {/* biome-ignore lint/a11y/noSvgWithoutTitle: game board SVG — decorative, not semantic content */}
       <svg
         ref={svgRef}
         width={svgWidth}

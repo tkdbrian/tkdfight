@@ -220,7 +220,9 @@ export function generateGroupsTournament(
 
     const gFights: FightEntry[] = schedule.map(([la, lb]) => ({
       id: crypto.randomUUID(),
+      // biome-ignore lint/style/noNonNullAssertion: letterMap is built from same LETTERS slice — keys always exist
       red: letterMap.get(la)!,
+      // biome-ignore lint/style/noNonNullAssertion: letterMap is built from same LETTERS slice — keys always exist
       blue: letterMap.get(lb)!,
       completed: false,
       groupId,
@@ -270,7 +272,7 @@ function buildSeeds(size: number, competitors: CompetitorEntry[]): (string | nul
 
 function buildMatchIds(size: number, totalRounds: number): string[][] {
   return Array.from({ length: totalRounds }, (_, round) =>
-    Array.from({ length: size / Math.pow(2, round + 1) }, () => crypto.randomUUID())
+    Array.from({ length: size / 2 ** (round + 1) }, () => crypto.randomUUID())
   );
 }
 
@@ -327,9 +329,11 @@ function advanceByes(
 
     if (hasRed && !hasBlue) {
       // Red advances automatically
+      // biome-ignore lint/style/noNonNullAssertion: hasRed asserts competitor !== null above
       result = advanceWinner(result, match.id, match.red.competitor!.id, competitors);
     } else if (!hasRed && hasBlue) {
       // Blue advances automatically
+      // biome-ignore lint/style/noNonNullAssertion: hasBlue asserts competitor !== null above
       result = advanceWinner(result, match.id, match.blue.competitor!.id, competitors);
     }
   }
@@ -378,7 +382,9 @@ export function getActiveBracketFights(
     .filter((m) => m.round === minRound)
     .map((m) => ({
       id: crypto.randomUUID(),
+      // biome-ignore lint/style/noNonNullAssertion: activeMatches filtered to only matches with both competitors
       red: m.red.competitor!,
+      // biome-ignore lint/style/noNonNullAssertion: activeMatches filtered to only matches with both competitors
       blue: m.blue.competitor!,
       completed: false,
       bracketRound: m.round,

@@ -343,7 +343,6 @@ function BracketSection({
   onSelectMatch,
   onSwap,
   totalRounds,
-  fights,
 }: Readonly<{
   label: string;
   matches: BracketMatch[];

@@ -53,7 +53,9 @@ function computePreview(
       .map((m, i) => ({
         id: m.id,
         n: i + 1,
+        // biome-ignore lint/style/noNonNullAssertion: filter above guarantees competitor is not null
         red: m.red.competitor!.name,
+        // biome-ignore lint/style/noNonNullAssertion: filter above guarantees competitor is not null
         blue: m.blue.competitor!.name,
         round: m.round,
       }));

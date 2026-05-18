@@ -373,7 +373,7 @@ function GroupCard({
         )}
 
         {/* Peleas reasignadas completadas en otro tatami */}
-        {groupFights && groupFights.some((f) => f.completed && f.importedFrom && f.winReason?.startsWith("Jugada en")) && (
+        {groupFights?.some((f) => f.completed && f.importedFrom && f.winReason?.startsWith("Jugada en")) && (
           <div className="space-y-1 pt-1">
             <p className="text-[10px] uppercase tracking-widest text-muted-foreground/60 font-semibold">Jugadas en otro tatami</p>
             {groupFights.filter((f) => f.completed && f.importedFrom && f.winReason?.startsWith("Jugada en")).map((f) => (
@@ -472,6 +472,7 @@ export function StandingsPage() {
   const champion = singleGroupChampion ?? finalChampion;
 
   // Confetti when champion is determined
+  // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — only re-runs when champion identity changes, not on every re-render
   React.useEffect(() => {
     if (!champion) return;
     const end = Date.now() + 2500;
