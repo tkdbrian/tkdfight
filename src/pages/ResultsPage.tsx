@@ -142,7 +142,7 @@ export function ResultsPage() {
         </div>
       )}
 
-      {/* Standings */}}
+      {/* Standings */}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Clasificación</CardTitle>
