@@ -1767,34 +1767,109 @@ export function FightPage() {
       )}
 
       {/* ── ARENA ────────────────────────────────────────────────── */}
-      <div className="flex-1 min-h-0 grid grid-cols-[1fr_auto_1fr] overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-hidden">
 
-        {/* ROJO */}
-        <div className="flex flex-col items-center justify-center gap-5 px-8 py-6 bg-red-950/50 border-r border-red-900/40">
-          <p className="text-3xl font-black text-red-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
-            {redName}
-          </p>
-          <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-red-950/30 text-red-400 ring-card-red tabular-nums">
-            {scoreDisplay.red}
+        {/* DESKTOP (md+): 3 columnas lado a lado */}
+        <div className="hidden md:grid h-full grid-cols-[1fr_auto_1fr]">
+
+          {/* ROJO */}
+          <div className="flex flex-col items-center justify-center gap-5 px-8 py-6 bg-red-950/50 border-r border-red-900/40">
+            <p className="text-3xl font-black text-red-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
+              {redName}
+            </p>
+            <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-red-950/30 text-red-400 ring-card-red tabular-nums">
+              {scoreDisplay.red}
+            </div>
+            {penaltyCounts.warnings.red > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xl font-black text-yellow-400">⚠ {penaltyCounts.warnings.red}</span>
+                {warnDeductions(penaltyCounts.warnings.red) > 0 && (
+                  <span className="text-sm font-bold text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
+                    −{warnDeductions(penaltyCounts.warnings.red)} pts
+                  </span>
+                )}
+              </div>
+            )}
           </div>
-          {penaltyCounts.warnings.red > 0 && (
+
+          {/* CENTRO: timer + controles */}
+          <div className="flex flex-col items-center justify-center gap-4 px-8 py-6 min-w-85">
+            {/* Phase + pause badges */}
             <div className="flex items-center gap-2">
-              <span className="text-xl font-black text-yellow-400">⚠ {penaltyCounts.warnings.red}</span>
-              {warnDeductions(penaltyCounts.warnings.red) > 0 && (
-                <span className="text-sm font-bold text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
-                  −{warnDeductions(penaltyCounts.warnings.red)} pts
-                </span>
+              <Badge className={cn(
+                "text-sm px-4 py-1.5",
+                phase === "round" && "bg-green-600",
+                phase === "rest" && "bg-yellow-600",
+                phase === "overtime" && "bg-orange-600",
+                phase === "golden_point" && "bg-purple-600",
+                phase === "finished" && "bg-blue-700",
+                phase === "penalties" && "bg-red-800",
+                phase === "idle" && "bg-secondary"
+              )}>
+                {PHASE_LABELS[phase]}{roundSuffix(phase, currentRound)}
+              </Badge>
+              {showPauseBadge(matchPaused, phase) && (
+                <Badge variant="outline" className="text-yellow-400 border-yellow-600">PAUSA</Badge>
               )}
             </div>
-          )}
+            <div className={cn(
+              "font-mono font-black leading-none text-9xl",
+              timerClass(timeLeft, isRunning, matchPaused),
+              isTul && "hidden",
+            )}>
+              {formatTime(timeLeft)}
+            </div>
+            {loaded ? (
+              <MatchControls
+                loaded={loaded}
+                isFinished={isFinished}
+                phase={phase}
+                matchPaused={matchPaused}
+                fight={currentFight}
+                isLast={currentFightIndex === fights.length - 1}
+                state={state}
+                isTul={isTul}
+                onEmit={emit}
+                onFinishAndNext={handleOpenResultDialog}
+              />
+            ) : (
+              <div className="flex flex-col items-center gap-3">
+                <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
+                  <Play />
+                  Cargar combate
+                </Button>
+              </div>
+            )}
+          </div>
+
+          {/* AZUL */}
+          <div className="flex flex-col items-center justify-center gap-5 px-8 py-6 bg-blue-950/50 border-l border-blue-900/40">
+            <p className="text-3xl font-black text-blue-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
+              {blueName}
+            </p>
+            <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-blue-950/30 text-blue-400 ring-card-blue tabular-nums">
+              {scoreDisplay.blue}
+            </div>
+            {penaltyCounts.warnings.blue > 0 && (
+              <div className="flex items-center gap-2">
+                <span className="text-xl font-black text-yellow-400">⚠ {penaltyCounts.warnings.blue}</span>
+                {warnDeductions(penaltyCounts.warnings.blue) > 0 && (
+                  <span className="text-sm font-bold text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
+                    −{warnDeductions(penaltyCounts.warnings.blue)} pts
+                  </span>
+                )}
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* CENTRO: timer + controles */}
-        <div className="flex flex-col items-center justify-center gap-4 px-8 py-6 min-w-85">
-          {/* Phase + pause badges */}
-          <div className="flex items-center gap-2">
+        {/* MOBILE (<md): layout vertical — timer arriba, scores lado a lado, controles abajo */}
+        <div className="flex flex-col h-full md:hidden">
+
+          {/* Fase + Cronómetro */}
+          <div className="shrink-0 flex items-center justify-center gap-3 px-4 py-2 border-b border-border">
             <Badge className={cn(
-              "text-sm px-4 py-1.5",
+              "text-xs px-3 py-1",
               phase === "round" && "bg-green-600",
               phase === "rest" && "bg-yellow-600",
               phase === "overtime" && "bg-orange-600",
@@ -1806,57 +1881,77 @@ export function FightPage() {
               {PHASE_LABELS[phase]}{roundSuffix(phase, currentRound)}
             </Badge>
             {showPauseBadge(matchPaused, phase) && (
-              <Badge variant="outline" className="text-yellow-400 border-yellow-600">PAUSA</Badge>
+              <Badge variant="outline" className="text-yellow-400 border-yellow-600 text-xs">PAUSA</Badge>
             )}
+            <div className={cn(
+              "font-mono font-black leading-none text-4xl tabular-nums",
+              timeLeft <= 10 && isRunning && !matchPaused ? "text-red-400" : "",
+              isTul && "hidden",
+            )}>
+              {formatTime(timeLeft)}
+            </div>
           </div>
-          <div className={cn(
-            "font-mono font-black leading-none text-9xl",
-            timerClass(timeLeft, isRunning, matchPaused),
-            isTul && "hidden",
-          )}>
-            {formatTime(timeLeft)}
+
+          {/* Scores 2 columnas */}
+          <div className="shrink-0 grid grid-cols-2 border-b border-border">
+            {/* ROJO */}
+            <div className="flex flex-col items-center justify-center gap-2 py-5 px-3 bg-red-950/50 border-r border-red-900/40">
+              <p className="text-sm font-black text-red-400 uppercase tracking-wide text-center leading-tight w-full truncate">
+                {redName}
+              </p>
+              <div className="text-7xl font-black leading-none text-red-400 tabular-nums">
+                {scoreDisplay.red}
+              </div>
+              {penaltyCounts.warnings.red > 0 && (
+                <div className="flex items-center gap-1">
+                  <span className="text-base font-black text-yellow-400">⚠ {penaltyCounts.warnings.red}</span>
+                  {warnDeductions(penaltyCounts.warnings.red) > 0 && (
+                    <span className="text-xs font-bold text-orange-400">−{warnDeductions(penaltyCounts.warnings.red)}pts</span>
+                  )}
+                </div>
+              )}
+            </div>
+            {/* AZUL */}
+            <div className="flex flex-col items-center justify-center gap-2 py-5 px-3 bg-blue-950/50">
+              <p className="text-sm font-black text-blue-400 uppercase tracking-wide text-center leading-tight w-full truncate">
+                {blueName}
+              </p>
+              <div className="text-7xl font-black leading-none text-blue-400 tabular-nums">
+                {scoreDisplay.blue}
+              </div>
+              {penaltyCounts.warnings.blue > 0 && (
+                <div className="flex items-center gap-1">
+                  <span className="text-base font-black text-yellow-400">⚠ {penaltyCounts.warnings.blue}</span>
+                  {warnDeductions(penaltyCounts.warnings.blue) > 0 && (
+                    <span className="text-xs font-bold text-orange-400">−{warnDeductions(penaltyCounts.warnings.blue)}pts</span>
+                  )}
+                </div>
+              )}
+            </div>
           </div>
-          {loaded ? (
-            <MatchControls
-              loaded={loaded}
-              isFinished={isFinished}
-              phase={phase}
-              matchPaused={matchPaused}
-              fight={currentFight}
-              isLast={currentFightIndex === fights.length - 1}
-              state={state}
-              isTul={isTul}
-              onEmit={emit}
-              onFinishAndNext={handleOpenResultDialog}
-            />
-          ) : (
-            <div className="flex flex-col items-center gap-3">
+
+          {/* Controles */}
+          <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4 py-4 overflow-y-auto">
+            {loaded ? (
+              <MatchControls
+                loaded={loaded}
+                isFinished={isFinished}
+                phase={phase}
+                matchPaused={matchPaused}
+                fight={currentFight}
+                isLast={currentFightIndex === fights.length - 1}
+                state={state}
+                isTul={isTul}
+                onEmit={emit}
+                onFinishAndNext={handleOpenResultDialog}
+              />
+            ) : (
               <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
                 <Play />
                 Cargar combate
               </Button>
-            </div>
-          )}
-        </div>
-
-        {/* AZUL */}
-        <div className="flex flex-col items-center justify-center gap-5 px-8 py-6 bg-blue-950/50 border-l border-blue-900/40">
-          <p className="text-3xl font-black text-blue-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
-            {blueName}
-          </p>
-          <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-blue-950/30 text-blue-400 ring-card-blue tabular-nums">
-            {scoreDisplay.blue}
+            )}
           </div>
-          {penaltyCounts.warnings.blue > 0 && (
-            <div className="flex items-center gap-2">
-              <span className="text-xl font-black text-yellow-400">⚠ {penaltyCounts.warnings.blue}</span>
-              {warnDeductions(penaltyCounts.warnings.blue) > 0 && (
-                <span className="text-sm font-bold text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
-                  −{warnDeductions(penaltyCounts.warnings.blue)} pts
-                </span>
-              )}
-            </div>
-          )}
         </div>
       </div>
 
