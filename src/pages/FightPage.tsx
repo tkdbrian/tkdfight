@@ -784,7 +784,7 @@ type PenaltyPanelProps = {
   onClose: () => void;
 };
 
-function CompetitorPenaltyBlock({ name, color, warnings, fouls, canAdd, onWarning, onMinusPoint }: Readonly<{
+function CompetitorPenaltyBlock({ name, color, warnings, fouls, canAdd, onWarning, onMinusPoint, onRemoveWarning, onRemoveMinusPoint }: Readonly<{
   name: string;
   color: "red" | "blue";
   warnings: number;
@@ -792,6 +792,8 @@ function CompetitorPenaltyBlock({ name, color, warnings, fouls, canAdd, onWarnin
   canAdd: boolean;
   onWarning: () => void;
   onMinusPoint: () => void;
+  onRemoveWarning?: () => void;
+  onRemoveMinusPoint?: () => void;
 }>) {
   const warnPts = warnDeductions(warnings);
   const total = totalPenaltyPoints(warnings, fouls);
@@ -818,11 +820,27 @@ function CompetitorPenaltyBlock({ name, color, warnings, fouls, canAdd, onWarnin
           onClick={onWarning}>
           + Advertencia
         </Button>
+        {onRemoveWarning && (
+          <Button size="sm" variant="outline" disabled={!canAdd || warnings === 0}
+            className="text-yellow-600 border-yellow-800/50 hover:bg-yellow-900/20 px-2.5"
+            onClick={onRemoveWarning}>
+            ↩ Adv
+          </Button>
+        )}
+      </div>
+      <div className="flex gap-2">
         <Button size="sm" variant="outline" disabled={!canAdd}
           className={cn("flex-1", btnBorder)}
           onClick={onMinusPoint}>
           − Punto
         </Button>
+        {onRemoveMinusPoint && (
+          <Button size="sm" variant="outline" disabled={!canAdd || fouls === 0}
+            className="text-muted-foreground border-border hover:bg-secondary px-2.5"
+            onClick={onRemoveMinusPoint}>
+            ↩ Pto
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -853,6 +871,8 @@ function PenaltyFloatPanel({ phase, redName, blueName, penaltyCounts, onEmit, on
         canAdd={canAdd}
         onWarning={() => addEvent("red", "warning_minor")}
         onMinusPoint={() => addEvent("red", "minus_point")}
+        onRemoveWarning={() => addEvent("red", "remove_warning")}
+        onRemoveMinusPoint={() => addEvent("red", "remove_minus_point")}
       />
 
       <Separator />
@@ -863,6 +883,8 @@ function PenaltyFloatPanel({ phase, redName, blueName, penaltyCounts, onEmit, on
         canAdd={canAdd}
         onWarning={() => addEvent("blue", "warning_minor")}
         onMinusPoint={() => addEvent("blue", "minus_point")}
+        onRemoveWarning={() => addEvent("blue", "remove_warning")}
+        onRemoveMinusPoint={() => addEvent("blue", "remove_minus_point")}
       />
     </div>
   );
@@ -893,6 +915,8 @@ function PenaltiesTabContent({ phase, redName, blueName, penaltyCounts, onEmit }
         canAdd={canAdd}
         onWarning={() => addEvent("red", "warning_minor")}
         onMinusPoint={() => addEvent("red", "minus_point")}
+        onRemoveWarning={() => addEvent("red", "remove_warning")}
+        onRemoveMinusPoint={() => addEvent("red", "remove_minus_point")}
       />
       <Separator />
       <CompetitorPenaltyBlock
@@ -901,6 +925,8 @@ function PenaltiesTabContent({ phase, redName, blueName, penaltyCounts, onEmit }
         canAdd={canAdd}
         onWarning={() => addEvent("blue", "warning_minor")}
         onMinusPoint={() => addEvent("blue", "minus_point")}
+        onRemoveWarning={() => addEvent("blue", "remove_warning")}
+        onRemoveMinusPoint={() => addEvent("blue", "remove_minus_point")}
       />
     </div>
   );
@@ -1809,9 +1835,43 @@ export function FightPage() {
                 )}
               </div>
             )}
+            {loaded && !isTul && (
+              <div className="w-full space-y-2 mt-1">
+                <div className="flex gap-2">
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished"}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "warning_minor" })}
+                    className="flex-1 text-sm font-bold py-2 rounded-xl border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    + Advertencia
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.red === 0}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_warning" })}
+                    className="px-4 text-sm font-bold py-2 rounded-xl border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title="Deshacer advertencia">
+                    ↩ Adv
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished"}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "minus_point" })}
+                    className="flex-1 text-sm font-bold py-2 rounded-xl border border-red-600 text-red-300 bg-red-950/40 hover:bg-red-900/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    − Punto directo
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.red === 0}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_minus_point" })}
+                    className="px-4 text-sm font-bold py-2 rounded-xl border border-border text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title="Deshacer punto directo">
+                    ↩ Pto
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          {/* CENTRO: timer + controles */}
+          {/* CENTRO: timer + controles */}}
           <div className="flex flex-col items-center justify-center gap-4 px-8 py-6 min-w-85">
             {/* Phase + pause badges */}
             <div className="flex items-center gap-2">
@@ -1879,6 +1939,40 @@ export function FightPage() {
                 )}
               </div>
             )}
+            {loaded && !isTul && (
+              <div className="w-full space-y-2 mt-1">
+                <div className="flex gap-2">
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished"}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "warning_minor" })}
+                    className="flex-1 text-sm font-bold py-2 rounded-xl border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    + Advertencia
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.blue === 0}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_warning" })}
+                    className="px-4 text-sm font-bold py-2 rounded-xl border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title="Deshacer advertencia">
+                    ↩ Adv
+                  </button>
+                </div>
+                <div className="flex gap-2">
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished"}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "minus_point" })}
+                    className="flex-1 text-sm font-bold py-2 rounded-xl border border-blue-600 text-blue-300 bg-blue-950/40 hover:bg-blue-900/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    − Punto directo
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.blue === 0}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_minus_point" })}
+                    className="px-4 text-sm font-bold py-2 rounded-xl border border-border text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                    title="Deshacer punto directo">
+                    ↩ Pto
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -1929,6 +2023,34 @@ export function FightPage() {
                   )}
                 </div>
               )}
+              {loaded && !isTul && (
+                <div className="grid grid-cols-2 gap-1 w-full">
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished"}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "warning_minor" })}
+                    className="text-[11px] font-bold py-1.5 rounded border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    +Adv
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.red === 0}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_warning" })}
+                    className="text-[11px] font-bold py-1.5 rounded border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    ↩Adv
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished"}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "minus_point" })}
+                    className="text-[11px] font-bold py-1.5 rounded border border-red-600 text-red-300 bg-red-950/40 hover:bg-red-900/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    −Pto
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.red === 0}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_minus_point" })}
+                    className="text-[11px] font-bold py-1.5 rounded border border-border text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    ↩Pto
+                  </button>
+                </div>
+              )}
             </div>
             {/* AZUL */}
             <div className="flex flex-col items-center justify-center gap-2 py-5 px-3 bg-blue-950/50">
@@ -1944,6 +2066,34 @@ export function FightPage() {
                   {warnDeductions(penaltyCounts.warnings.blue) > 0 && (
                     <span className="text-xs font-bold text-orange-400">−{warnDeductions(penaltyCounts.warnings.blue)}pts</span>
                   )}
+                </div>
+              )}
+              {loaded && !isTul && (
+                <div className="grid grid-cols-2 gap-1 w-full">
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished"}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "warning_minor" })}
+                    className="text-[11px] font-bold py-1.5 rounded border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    +Adv
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.blue === 0}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_warning" })}
+                    className="text-[11px] font-bold py-1.5 rounded border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    ↩Adv
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished"}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "minus_point" })}
+                    className="text-[11px] font-bold py-1.5 rounded border border-blue-600 text-blue-300 bg-blue-950/40 hover:bg-blue-900/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    −Pto
+                  </button>
+                  <button type="button"
+                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.blue === 0}
+                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_minus_point" })}
+                    className="text-[11px] font-bold py-1.5 rounded border border-border text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
+                    ↩Pto
+                  </button>
                 </div>
               )}
             </div>
