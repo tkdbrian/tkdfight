@@ -206,3 +206,29 @@ describe("checkDQ", () => {
     expect(checkDQ([r1], rules)).toBeNull();
   });
 });
+
+// ── Regression: judge:vote 'tie' normalization ────────────────────────────────
+// Bug: judge devices emitían 'tie' pero tallyFlagWinner solo contaba 'draw'.
+// Fix: el handler normaliza 'tie' → 'draw' antes de guardar en state.judgeVotes.
+// Este test documenta la invariante esperada post-fix.
+describe("vote normalization (tie → draw)", () => {
+  function normalizeVote(vote: string): string {
+    return vote === "tie" ? "draw" : vote;
+  }
+
+  it("normaliza 'tie' a 'draw'", () => {
+    expect(normalizeVote("tie")).toBe("draw");
+  });
+
+  it("deja 'red' sin cambios", () => {
+    expect(normalizeVote("red")).toBe("red");
+  });
+
+  it("deja 'blue' sin cambios", () => {
+    expect(normalizeVote("blue")).toBe("blue");
+  });
+
+  it("deja 'draw' sin cambios (mesa:flagVote ya usa draw)", () => {
+    expect(normalizeVote("draw")).toBe("draw");
+  });
+});

@@ -211,7 +211,9 @@ export function registerSocketHandlers(io: Server) {
       if (!data) return
       const myJudgeId = state.judges.get(socket.id)
       if (!myJudgeId || myJudgeId !== data.judgeId) return
-      state.judgeVotes.set(data.judgeId, data.vote)
+      // Normaliza 'tie' → 'draw' para consistencia con mesa:flagVote y tallyFlagWinner
+      const normalizedVote = data.vote === 'tie' ? 'draw' : data.vote
+      state.judgeVotes.set(data.judgeId, normalizedVote)
       broadcast(io)
     })
 
