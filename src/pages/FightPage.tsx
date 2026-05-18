@@ -1368,6 +1368,7 @@ export function FightPage() {
   // peleas importadas mientras la FightPage no estaba abierta (socket event perdido).
   // addImportedFights deduplica por ID, así que es seguro llamarlo aunque el store
   // ya tenga peleas de un torneo local.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount to sync imported fights from server DB
   React.useEffect(() => {
     fetch("/api/ring/queue")
       .then((r) => r.json())
@@ -1384,11 +1385,12 @@ export function FightPage() {
         );
       })
       .catch(() => { /* non-critical */ });
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // intentional empty deps — run once on mount
 
   // Auto-sync: garantiza que el servidor DB tiene todas las peleas pendientes.
   // INSERT OR IGNORE → seguro llamarlo varias veces, no resetea estado.
   // Depende de fights.length para re-disparar después de Zustand persist hydration.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: fights.length re-triggers after Zustand hydration; other deps are stable
   React.useEffect(() => {
     if (fights.length === 0) return;
     const pending = fights.filter((f) => !f.completed);
