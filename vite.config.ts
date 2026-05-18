@@ -28,6 +28,9 @@ export default defineConfig({
       workbox: {
         globPatterns: ["**/*.{js,css,html,ico,png,svg}"],
         maximumFileSizeToCacheInBytes: 5_000_000,
+        // Excluir rutas server-rendered del service worker (no son rutas SPA)
+        navigateFallback: "index.html",
+        navigateFallbackDenylist: [/^\/judge/, /^\/tv/, /^\/qr\//],
         runtimeCaching: [
           {
             urlPattern: /^\/api\//,
