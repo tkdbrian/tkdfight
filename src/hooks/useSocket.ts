@@ -12,6 +12,7 @@ const DEFAULT_STATE: ServerState = {
   judgeTotals: {},
   penaltyCounts: { warnings: { red: 0, blue: 0 }, fouls: { red: 0, blue: 0 } },
   fallos: [],
+  roundFlags: [],
   serverUrl: "",
 };
 
@@ -19,17 +20,23 @@ export function useSocket() {
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
   const [state, setState] = useState<ServerState>(DEFAULT_STATE);
+  const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
-    const socket = io({ path: "/socket.io", transports: ["websocket", "polling"] });
-    socketRef.current = socket;
+    const sock = io({ path: "/socket.io", transports: ["websocket", "polling"] });
+    socketRef.current = sock;
+    setSocket(sock);
 
-    socket.on("connect", () => setConnected(true));
-    socket.on("disconnect", () => setConnected(false));
-    socket.on("state:update", (data: ServerState) => setState(data));
+    sock.on("connect", () => setConnected(true));
+    sock.on("disconnect", () => setConnected(false));
+    sock.on("state:update", (data: ServerState) => setState(data));
+    sock.on("ring:config-updated", (data: { alias: string; name: string }) =>
+      setState((prev) => ({ ...prev, ringAlias: data.alias, ringName: data.name }))
+    );
 
     return () => {
-      socket.disconnect();
+      sock.disconnect();
+      setSocket(null);
     };
   }, []);
 
@@ -37,5 +44,5 @@ export function useSocket() {
     socketRef.current?.emit(event, data);
   }
 
-  return { connected, state, emit, socket: socketRef.current };
+  return { connected, state, emit, socket };
 }

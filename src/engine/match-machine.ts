@@ -8,6 +8,7 @@ import type {
 } from './types'
 import {
   aggregateTotals,
+  aggregateTotalsWithPenalties,
   calculateEventValue,
   checkDQ,
   compareScores,
@@ -88,8 +89,8 @@ export function addMatchEvent(
 
   const { value, isDQ } = calculateEventValue(raw.type, rules)
 
-  // During penalties only deductions and DQ are allowed
-  if (state.phase === 'penalties' && value > 0 && !isDQ) {
+  // During penalties only deductions, DQ, and reversal events are allowed
+  if (state.phase === 'penalties' && value > 0 && !isDQ && !raw.type.startsWith('remove_')) {
     return state
   }
   const event: MatchEvent = {
@@ -160,7 +161,10 @@ export function endPhase(state: MatchState, rules: RuleSetSparring): MatchState 
       // More rounds to go → rest
       return { ...state, phase: 'rest', timeLeft: rules.rounds.rest_seconds }
     }
-    // Last round ended — go to penalties phase before evaluation
+    // Last round ended — flags mode (default) goes to rest so judges can vote; points mode uses penalties
+    if ((rules.judgingMode ?? 'flags') === 'flags') {
+      return { ...state, phase: 'rest', timeLeft: 0 }
+    }
     return { ...state, phase: 'penalties' as MatchPhase, timeLeft: 0 }
   }
 
@@ -175,7 +179,7 @@ export function endPhase(state: MatchState, rules: RuleSetSparring): MatchState 
 // ── Evaluation helpers ─────────────────────────────────────────────────────
 
 function evaluateMatch(state: MatchState, rules: RuleSetSparring): MatchState {
-  const totals = aggregateTotals(state.rounds)
+  const totals = aggregateTotalsWithPenalties(state.rounds)
   const winner = compareScores(totals)
 
   if (winner !== 'draw') {
@@ -190,8 +194,20 @@ function evaluateMatch(state: MatchState, rules: RuleSetSparring): MatchState {
     return { ...state, phase: 'finished', result: tieResult }
   }
 
-  // Tiebreak cascade asks for golden_point
-  if (tiebreakOrder.includes('golden_point') && rules.rounds.golden_point) {
+  // Golden point / overtime — driven by the boolean flag, not by tiebreak_order
+  if (rules.rounds.golden_point) {
+    // If overtime is configured, go there first; golden point fires after evaluateOvertime
+    if ((rules.rounds.overtime_seconds ?? 0) > 0) {
+      const nextRound = state.currentRound + 1
+      return {
+        ...state,
+        phase: 'overtime',
+        currentRound: nextRound,
+        timeLeft: rules.rounds.overtime_seconds ?? 60,
+        rounds: [...state.rounds, emptyRound(nextRound)],
+      }
+    }
+    // No overtime — go straight to golden point
     const nextRound = state.currentRound + 1
     return {
       ...state,
@@ -202,24 +218,12 @@ function evaluateMatch(state: MatchState, rules: RuleSetSparring): MatchState {
     }
   }
 
-  // Needs overtime first
-  if (tiebreakOrder.includes('golden_point') || (rules.rounds.overtime_seconds ?? 0) > 0) {
-    const nextRound = state.currentRound + 1
-    return {
-      ...state,
-      phase: 'overtime',
-      currentRound: nextRound,
-      timeLeft: rules.rounds.overtime_seconds ?? 60,
-      rounds: [...state.rounds, emptyRound(nextRound)],
-    }
-  }
-
   // Fall through to jury
   return { ...state, phase: 'finished', pendingJuryDecision: true, result: null }
 }
 
 function evaluateOvertime(state: MatchState, rules: RuleSetSparring): MatchState {
-  const totals = aggregateTotals(state.rounds)
+  const totals = aggregateTotalsWithPenalties(state.rounds)
   const winner = compareScores(totals)
 
   if (winner !== 'draw') {

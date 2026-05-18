@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: tkdfight
+    runtime: node
+    buildCommand: npm install && npm run build:prod
+    startCommand: npm run start:prod
+    plan: free
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATA_DIR
+        value: /opt/render/project/src/data

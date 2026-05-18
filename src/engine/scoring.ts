@@ -52,6 +52,34 @@ export function aggregateTotals(rounds: RoundState[]): { red: number; blue: numb
   )
 }
 
+// Counts warning_minor events per competitor across all rounds (cumulative match-wide)
+export function countWarnings(rounds: RoundState[]): { red: number; blue: number } {
+  let red = 0, blue = 0
+  for (const r of rounds) {
+    for (const ev of r.events) {
+      if (ev.judgeId !== 'arbiter') continue
+      if (ev.type === 'warning_minor') {
+        if (ev.competitor === 'red') red++
+        else blue++
+      } else if (ev.type === 'remove_warning') {
+        if (ev.competitor === 'red') red = Math.max(0, red - 1)
+        else blue = Math.max(0, blue - 1)
+      }
+    }
+  }
+  return { red, blue }
+}
+
+// Aggregates totals + applies every-3-warnings = 1 point deduction (match-wide cumulative)
+export function aggregateTotalsWithPenalties(rounds: RoundState[]): { red: number; blue: number } {
+  const base = aggregateTotals(rounds)
+  const warns = countWarnings(rounds)
+  return {
+    red: base.red - Math.floor(warns.red / 3),
+    blue: base.blue - Math.floor(warns.blue / 3),
+  }
+}
+
 export function aggregateDeductions(rounds: RoundState[]): { red: number; blue: number } {
   return rounds.reduce(
     (acc, r) => ({ red: acc.red + r.deductions.red, blue: acc.blue + r.deductions.blue }),

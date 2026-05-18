@@ -14,6 +14,7 @@ export interface RuleSetSparring {
   points: Record<string, number>
   deductions: Record<string, number | 'DQ'>
   fouls_for_dq?: number        // default 3
+  judgingMode?: 'flags' | 'points'  // default 'flags'
   tiebreak_order?: string[]
   validation?: {
     min_interval_ms_same_judge?: number

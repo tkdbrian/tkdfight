@@ -1,5 +1,8 @@
-import { useState } from "react";
-import { useTournamentStore, type CompetitorEntry } from "@/store/tournament";
+﻿import { useRef, useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { toast } from "sonner";
+import { useSocket } from "@/hooks/useSocket";
+import { useTournamentStore, type CompetitorEntry, type TournamentMode } from "@/store/tournament";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -9,48 +12,257 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { UserPlus, Pencil, Trash2, Swords, AlertCircle } from "lucide-react";
-import { generateRoundRobin } from "@/lib/bracket";
+import { Pencil, Trash2, Swords, AlertCircle, Plus } from "lucide-react";
+import { generateGroupsTournament, generateEliminationBracket, getGroupDistribution } from "@/lib/bracket";
 import { cn } from "@/lib/utils";
 
 type FormData = { name: string; team: string; weight: string };
 const EMPTY_FORM: FormData = { name: "", team: "", weight: "" };
 
+type PreviewFight = { id: string; n: number; red: string; blue: string; round: number; group?: string };
+
+function getRoundLabel(remaining: number, r: number): string {
+  if (remaining === 0) return "Final";
+  if (remaining === 1) return "Semifinal";
+  if (remaining === 2) return "Cuartos";
+  return `Ronda ${r + 1}`;
+}
+
+function buildRoundLabels(fights: PreviewFight[]): Record<number, string> {
+  if (fights.length === 0) return {};
+  const maxRound = Math.max(...fights.map((f) => f.round));
+  const labels: Record<number, string> = {};
+  for (let r = 0; r <= maxRound; r++) {
+    labels[r] = getRoundLabel(maxRound - r, r);
+  }
+  return labels;
+}
+
+function computePreview(
+  competitors: CompetitorEntry[],
+  mode: string,
+): PreviewFight[] {
+  if (competitors.length < 2) return [];
+  if (mode === "elimination") {
+    return generateEliminationBracket(competitors).matches
+      .filter((m) => m.red.competitor && m.blue.competitor)
+      .map((m, i) => ({
+        id: m.id,
+        n: i + 1,
+        red: m.red.competitor!.name,
+        blue: m.blue.competitor!.name,
+        round: m.round,
+      }));
+  }
+  if (competitors.length < 3 || competitors.length > 12) return [];
+  const { fights } = generateGroupsTournament(competitors);
+  return fights.map((f, i) => ({
+    id: f.id, n: i + 1, red: f.red.name, blue: f.blue.name, round: 0,
+    group: f.groupId ?? "G1",
+  }));
+}
+
+function FightRow({ fight, showNumber }: Readonly<{ fight: PreviewFight; showNumber: boolean }>) {
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm">
+      {showNumber && (
+        <span className="text-muted-foreground text-xs w-5 text-right shrink-0">{fight.n}.</span>
+      )}
+      <span className="font-medium text-red-400 flex-1 truncate text-right">{fight.red}</span>
+      <span className="text-muted-foreground text-xs shrink-0">vs</span>
+      <span className="font-medium text-blue-400 flex-1 truncate">{fight.blue}</span>
+    </div>
+  );
+}
+
+function FixturePreview({ fights, mode, roundLabels }: Readonly<{
+  fights: PreviewFight[];
+  mode: string;
+  roundLabels: Record<number, string>;
+}>) {
+  if (fights.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
+        <Swords className="size-6 opacity-20" />
+        <p className="text-xs">Aparece al agregar competidores</p>
+      </div>
+    );
+  }
+  if (mode === "elimination") {
+    const rounds = Array.from(new Set(fights.map((f) => f.round)));
+    return (
+      <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+        {rounds.map((round) => (
+          <div key={round}>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+              {roundLabels[round] ?? `Ronda ${round + 1}`}
+            </p>
+            <div className="space-y-1">
+              {fights.filter((f) => f.round === round).map((f) => (
+                <FightRow key={f.id} fight={f} showNumber={false} />
+              ))}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+  // Round-robin: group by llave
+  const groups = Array.from(new Set(fights.map((f) => f.group ?? "G1")));
+  return (
+    <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+      {groups.map((gid) => {
+        const gFights = fights.filter((f) => (f.group ?? "G1") === gid);
+        return (
+          <div key={gid}>
+            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+              Llave {gid}
+            </p>
+            <div className="space-y-1">
+              {gFights.map((f) => <FightRow key={f.id} fight={f} showNumber />)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+const PESO_OPTIONS = ["Liviano A", "Liviano B", "Mediano A", "Mediano B", "Pesado A", "Pesado B"];
+const GRADO_OPTIONS = ["Blanco-P.Amarilla", "Amarillo-P.Azul", "Azul-P.Negra", "Danes"];
+const GENERO_OPTIONS = ["M", "F"];
+
+type CatState = { weight: string; belt: string; gender: string; ageFrom: string; ageTo: string };
+const EMPTY_CAT: CatState = { weight: "", belt: "", gender: "", ageFrom: "", ageTo: "" };
+
+function buildCategoryName(c: CatState): string {
+  const parts: string[] = [];
+  if (c.weight) parts.push(c.weight);
+  if (c.belt) parts.push(c.belt);
+  if (c.gender) parts.push(c.gender);
+  if (c.ageFrom || c.ageTo) parts.push(`${c.ageFrom || "?"}-${c.ageTo || "?"} a\u00f1os`);
+  return parts.join(" \u00b7 ");
+}
+
+function ChipGroup({ label, options, value, onChange }: Readonly<{
+  label: string;
+  options: string[];
+  value: string;
+  onChange: (v: string) => void;
+}>) {
+  return (
+    <div className="space-y-1">
+      <span className="text-sm font-medium text-muted-foreground">{label}</span>
+      <div className="flex flex-wrap gap-2">
+        {options.map((opt) => (
+          <button
+            key={opt}
+            type="button"
+            onClick={() => onChange(value === opt ? "" : opt)}
+            className={cn(
+              "px-4 py-2 rounded-full border text-sm font-medium transition-colors",
+              value === opt
+                ? "border-primary bg-primary text-primary-foreground"
+                : "border-border text-muted-foreground hover:bg-secondary",
+            )}
+          >
+            {opt}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function SetupPage() {
   const {
     competitors,
     config,
-    fights,
-    phase,
     addCompetitor,
     removeCompetitor,
     updateCompetitor,
     setConfig,
     setFights,
     setPhase,
-  } = useTournamentStore();
+    setBracket,
+    addImportedFights,
+    completeFight,
+  } = useTournamentStore();  const { setGroups } = useTournamentStore();
+  const navigate = useNavigate();
+  const { socket } = useSocket();
+  const [cat, setCat] = useState<CatState>(EMPTY_CAT);
+
+  // Cuando Mesa Central reasigna peleas a este tatami, navegar automáticamente a /fight.
+  useEffect(() => {
+    if (!socket) return;
+    function onFightsImported(payload: { fights: Array<{ id: string; red: { id: string; name: string }; blue: { id: string; name: string }; completed: boolean; groupId?: string }>; sourceRingLabel?: string | null }) {
+      addImportedFights(
+        payload.fights.map((f) => ({
+          id: f.id,
+          red: { id: f.red.id, name: f.red.name },
+          blue: { id: f.blue.id, name: f.blue.name },
+          completed: false,
+          groupId: f.groupId,
+          importedFrom: payload.sourceRingLabel ?? "Mesa Central",
+        }))
+      );
+      toast.warning(
+        `📥 ${payload.fights.length} pelea${payload.fights.length !== 1 ? "s" : ""} reasignadas desde ${payload.sourceRingLabel ?? "Mesa Central"}`,
+        { description: "Redirigiendo a página de combate...", duration: 5000 }
+      );
+      navigate("/fight");
+    }
+    socket.on("fights:imported", onFightsImported);
+    return () => { socket.off("fights:imported", onFightsImported); };
+  }, [socket, addImportedFights, navigate]);
+
+  // Cuando el tatami destino termina una pelea reasignada, recibir el resultado.
+  useEffect(() => {
+    if (!socket) return;
+    function onRemoteCompleted(payload: {
+      fightId: string;
+      winner: string;
+      flagsRed: number;
+      flagsBlue: number;
+      completedIn: string;
+    }) {
+      completeFight(
+        payload.fightId,
+        payload.winner as "red" | "blue" | "draw",
+        `Jugada en ${payload.completedIn}`,
+        payload.flagsRed,
+        payload.flagsBlue,
+      );
+    }
+    socket.on("fight:remote-completed", onRemoteCompleted);
+    return () => { socket.off("fight:remote-completed", onRemoteCompleted); };
+  }, [socket, completeFight]);
+
+  function updateCat(patch: Partial<CatState>) {
+    const next = { ...cat, ...patch };
+    setCat(next);
+    setConfig({ categoryName: buildCategoryName(next) });
+  }
+
+  const [quickName, setQuickName] = useState("");
+  const [quickTeam, setQuickTeam] = useState("");
+  const nameRef = useRef<HTMLInputElement>(null);
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormData>(EMPTY_FORM);
   const [formError, setFormError] = useState("");
 
-  function openAdd() {
-    setForm(EMPTY_FORM);
-    setEditingId(null);
-    setFormError("");
-    setDialogOpen(true);
+  function handleQuickAdd() {
+    const name = quickName.trim();
+    if (!name) return;
+    addCompetitor({ name, team: quickTeam.trim() || undefined });
+    setQuickName("");
+    setQuickTeam("");
+    nameRef.current?.focus();
   }
 
   function openEdit(c: CompetitorEntry) {
@@ -67,186 +279,286 @@ export function SetupPage() {
     }
     const weightNum = form.weight ? Number(form.weight) : undefined;
     if (form.weight && (Number.isNaN(weightNum) || (weightNum ?? 0) <= 0)) {
-      setFormError("El peso debe ser un número positivo.");
+      setFormError("El peso debe ser un numero positivo.");
       return;
     }
-    const data = {
+    if (editingId) {
+      updateCompetitor(editingId, {
         name: form.name.trim(),
         team: form.team.trim() || undefined,
         weight: weightNum,
-      };
-    if (editingId) {
-      updateCompetitor(editingId, data);
-    } else {
-      addCompetitor(data);
+      });
     }
     setDialogOpen(false);
   }
 
-  function handleStart() {
-    const generated = generateRoundRobin(competitors);
-    setFights(generated);
+  async function handleStart() {
+    if (config.mode === "elimination") {
+      const { matches, seeds } = generateEliminationBracket(competitors);
+      setBracket(matches, seeds);
+      setFights([]);
+    } else {
+      const { groups, fights } = generateGroupsTournament(competitors);
+      setGroups(groups);
+      setFights(fights);
+      // Populate server queue so Mesa Central can see and reassign fights
+      try {
+        await fetch("/api/ring/import-fights", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            competitors: competitors.map((c) => ({
+              id: c.id,
+              name: c.name,
+              team: c.team,
+              weight: c.weight,
+            })),
+            fights: fights.map((f) => ({
+              id: f.id,
+              red_id: f.red.id,
+              blue_id: f.blue.id,
+              group_id: f.groupId,
+            })),
+            categoryName: config.categoryName,
+            newCategory: true,
+          }),
+        });
+      } catch {
+        // Non-critical — Mesa Central queue won't show but fighting still works
+      }
+    }
     setPhase("fighting");
   }
 
-  const canStart = competitors.length >= 2 && config.categoryName.trim() !== "";
+  const previewFights = computePreview(competitors, config.mode);
+  const roundLabels = buildRoundLabels(previewFights);
+  const groupDist = config.mode === "round-robin" ? getGroupDistribution(competitors.length) : undefined;
+  const canStart = config.mode === "elimination"
+    ? competitors.length >= 2 && config.categoryName.trim() !== ""
+    : competitors.length >= 3 && competitors.length <= 12 && config.categoryName.trim() !== "";
 
   return (
-    <div className="flex-1 overflow-auto p-6 space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+    <div className="flex-1 overflow-auto p-4 space-y-4">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-bold">Configuración del Torneo</h1>
-          <p className="text-muted-foreground text-sm mt-0.5">
-            Agrega competidores y configura la categoría antes de comenzar.
-          </p>
+          <h1 className="text-xl font-bold">Competidores</h1>
+          <p className="text-muted-foreground text-sm">Completa la lista y lanza la categoría.</p>
+          {config.categoryName && (
+            <p className="text-sm font-semibold text-primary mt-1">{config.categoryName}</p>
+          )}
         </div>
-        <Button onClick={handleStart} disabled={!canStart} size="lg">
-          <Swords className="size-4" />
-          Iniciar Torneo
-        </Button>
+        <div className="flex flex-col items-end gap-1">
+          <Button onClick={() => void handleStart()} disabled={!canStart} size="xl">
+            <Swords className="size-5" />
+            Iniciar Categoría
+          </Button>
+          {!canStart && (
+            <p className="text-xs text-muted-foreground">
+              {!config.categoryName
+                ? "Selecciona la categoría"
+                : config.mode === "round-robin" && competitors.length < 3
+                ? "Mínimo 3 competidores"
+                : "Mínimo 2 competidores"}
+            </p>
+          )}
+        </div>
       </div>
 
-      {/* Category */}
       <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Categoría</CardTitle>
+        <CardHeader className="pb-3 pt-5 px-5">
+          <CardTitle className="text-sm">Definir categoría</CardTitle>
         </CardHeader>
-        <CardContent>
-          <div className="max-w-sm space-y-1.5">
-            <Label htmlFor="category">Nombre de la categoría</Label>
+        <CardContent className="px-5 pb-5 space-y-4">
+          <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
+          <ChipGroup label="Grado" options={GRADO_OPTIONS} value={cat.belt} onChange={(v) => updateCat({ belt: v })} />
+          <div className="flex flex-wrap gap-4 items-end">
+            <ChipGroup label="Género" options={GENERO_OPTIONS} value={cat.gender} onChange={(v) => updateCat({ gender: v })} />
+            <div className="space-y-1">
+              <span className="text-sm font-medium text-muted-foreground">Edad</span>
+              <div className="flex items-center gap-1.5">
+                <Input
+                  type="number"
+                  placeholder="Desde"
+                  value={cat.ageFrom}
+                  onChange={(e) => updateCat({ ageFrom: e.target.value })}
+                  className="w-24 h-9 text-sm"
+                />
+                <span className="text-xs text-muted-foreground">-</span>
+                <Input
+                  type="number"
+                  placeholder="Hasta"
+                  value={cat.ageTo}
+                  onChange={(e) => updateCat({ ageTo: e.target.value })}
+                  className="w-24 h-9 text-sm"
+                />
+              </div>
+            </div>
+            <div className="space-y-1">
+              <span className="text-sm font-medium text-muted-foreground">Modo</span>
+              <div className="flex gap-2">
+                {(["round-robin", "elimination"] as TournamentMode[]).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setConfig({ mode: m })}
+                    className={cn(
+                      "px-4 py-2 rounded-full border text-sm font-medium transition-colors",
+                      config.mode === m
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border text-muted-foreground hover:bg-secondary",
+                    )}
+                  >
+                    {m === "round-robin" ? "Round Robin" : "Eliminación"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <span className="text-sm font-medium text-muted-foreground">Jefe de mesa</span>
             <Input
-              id="category"
-              placeholder="Ej: Cadetes -45 kg masculino"
-              value={config.categoryName}
-              onChange={(e) => setConfig({ categoryName: e.target.value })}
+              placeholder="Nombre del jefe de mesa"
+              value={config.tableChief}
+              onChange={(e) => setConfig({ tableChief: e.target.value })}
+              className="max-w-xs h-9 text-sm"
             />
           </div>
         </CardContent>
       </Card>
 
-      {/* Competitors */}
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between space-y-0">
-          <CardTitle className="text-base">
-            Competidores
-            <Badge variant="secondary" className="ml-2">
-              {competitors.length}
-            </Badge>
-          </CardTitle>
-          <Button variant="outline" size="sm" onClick={openAdd}>
-            <UserPlus className="size-4" />
-            Agregar
-          </Button>
-        </CardHeader>
-        <CardContent>
-          {competitors.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
-              <AlertCircle className="size-8 opacity-40" />
-              <p className="text-sm">No hay competidores. Agrega al menos 2 para comenzar.</p>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="w-8">#</TableHead>
-                  <TableHead>Nombre</TableHead>
-                  <TableHead>Equipo</TableHead>
-                  <TableHead>Peso (kg)</TableHead>
-                  <TableHead className="text-right">Acciones</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {competitors.map((c, i) => (
-                  <TableRow key={c.id}>
-                    <TableCell className="text-muted-foreground">{i + 1}</TableCell>
-                    <TableCell className="font-medium">{c.name}</TableCell>
-                    <TableCell className="text-muted-foreground">{c.team ?? "—"}</TableCell>
-                    <TableCell className="text-muted-foreground">
-                      {c.weight ?? "—"}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-7"
-                          onClick={() => openEdit(c)}
-                        >
-                          <Pencil className="size-3.5" />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className={cn("size-7 text-destructive hover:text-destructive")}
-                          onClick={() => removeCompetitor(c.id)}
-                        >
-                          <Trash2 className="size-3.5" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Fights preview */}
-      {phase === "setup" && fights.length > 0 && (
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
-          <CardHeader>
-            <CardTitle className="text-base">Enfrentamientos generados</CardTitle>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              Lista
+              <Badge variant="secondary">{competitors.length}</Badge>
+            </CardTitle>
           </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-              {fights.map((f, i) => (
-                <div
-                  key={f.id}
-                  className="flex items-center justify-between gap-2 rounded-md border border-border px-3 py-2 text-sm"
-                >
-                  <span className="text-muted-foreground w-6 text-right">{i + 1}.</span>
-                  <span className="flex-1 text-right font-medium">{f.red.name}</span>
-                  <span className="text-muted-foreground text-xs px-2">vs</span>
-                  <span className="flex-1 font-medium">{f.blue.name}</span>
-                </div>
-              ))}
+          <CardContent className="px-4 pb-4 space-y-3">
+            <div className="flex gap-2">
+              <Input
+                ref={nameRef}
+                placeholder="Nombre del competidor"
+                value={quickName}
+                onChange={(e) => setQuickName(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleQuickAdd(); }}
+                className="flex-1"
+                autoFocus
+              />
+              <Input
+                placeholder="Club (opcional)"
+                value={quickTeam}
+                onChange={(e) => setQuickTeam(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") handleQuickAdd(); }}
+                className="w-36"
+              />
+              <Button
+                size="icon"
+                onClick={handleQuickAdd}
+                disabled={!quickName.trim()}
+                title="Agregar (Enter)"
+              >
+                <Plus className="size-4" />
+              </Button>
             </div>
+
+            {competitors.length === 0 ? (
+              <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
+                <AlertCircle className="size-6 opacity-30" />
+                <p className="text-xs">Escribe un nombre y presiona Enter</p>
+              </div>
+            ) : (
+              <div className="space-y-0.5 max-h-80 overflow-y-auto pr-1">
+                {competitors.map((c, i) => (
+                  <div
+                    key={c.id}
+                    className="flex items-center gap-2 rounded-lg px-2 py-2.5 hover:bg-secondary/50 group"
+                  >
+                    <span className="text-xs text-muted-foreground w-5 text-right shrink-0">{i + 1}</span>
+                    <div className="flex-1 min-w-0">
+                      <span className="font-medium text-sm truncate block">{c.name}</span>
+                      {c.team && <span className="text-xs text-muted-foreground truncate block">{c.team}</span>}
+                    </div>
+                    <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        type="button"
+                        onClick={() => openEdit(c)}
+                        className="p-1 rounded hover:bg-secondary text-muted-foreground"
+                      >
+                        <Pencil className="size-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => removeCompetitor(c.id)}
+                        className="p-1 rounded hover:bg-secondary text-destructive"
+                      >
+                        <Trash2 className="size-3" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
-      )}
 
-      {/* Add / Edit Dialog */}
+        <Card>
+          <CardHeader className="pb-2 pt-4 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              {config.mode === "elimination" ? "Llave (preview)" : "Fixture (preview)"}
+              {previewFights.length > 0 && (
+                <Badge variant="secondary">{previewFights.length} combates</Badge>
+              )}
+              {config.mode === "round-robin" && groupDist && (
+                <Badge variant="outline" className="text-xs">
+                  {groupDist.length} {groupDist.length === 1 ? "llave" : "llaves"}: {groupDist.join("+")}
+                </Badge>
+              )}
+              {config.mode === "round-robin" && !groupDist && competitors.length > 0 && (
+                <Badge variant="outline" className="border-orange-600 text-orange-400 text-xs">
+                  {competitors.length < 3 ? "Mín. 3" : "Máx. 12"} competidores
+                </Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <FixturePreview
+              fights={previewFights}
+              mode={config.mode}
+              roundLabels={roundLabels}
+            />
+          </CardContent>
+        </Card>
+      </div>
+
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>{editingId ? "Editar competidor" : "Agregar competidor"}</DialogTitle>
+            <DialogTitle>Editar competidor</DialogTitle>
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
-              <Label htmlFor="name">Nombre *</Label>
+              <Label htmlFor="edit-name">Nombre *</Label>
               <Input
-                id="name"
-                placeholder="Nombre completo"
+                id="edit-name"
                 value={form.name}
                 onChange={(e) => { setForm((f) => ({ ...f, name: e.target.value })); setFormError(""); }}
-                onKeyDown={(e) => e.key === "Enter" && handleSave()}
+                onKeyDown={(e) => { if (e.key === "Enter") handleSave(); }}
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="team">Equipo / Club</Label>
+              <Label htmlFor="edit-team">Equipo / Club</Label>
               <Input
-                id="team"
+                id="edit-team"
                 placeholder="Opcional"
                 value={form.team}
                 onChange={(e) => setForm((f) => ({ ...f, team: e.target.value }))}
               />
             </div>
             <div className="space-y-1.5">
-              <Label htmlFor="weight">Peso (kg)</Label>
+              <Label htmlFor="edit-weight">Peso (kg)</Label>
               <Input
-                id="weight"
+                id="edit-weight"
                 type="number"
                 placeholder="Opcional"
                 value={form.weight}
@@ -260,10 +572,8 @@ export function SetupPage() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setDialogOpen(false)}>
-              Cancelar
-            </Button>
-            <Button onClick={handleSave}>{editingId ? "Guardar" : "Agregar"}</Button>
+            <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancelar</Button>
+            <Button onClick={handleSave}>Guardar</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

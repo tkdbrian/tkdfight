@@ -10,9 +10,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { Trophy, RotateCcw } from "lucide-react";
+import { Trophy, RotateCcw, Download, Crown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { WIN_REASON_LABELS } from "@/lib/fight-utils";
+import { exportTournamentHTML } from "@/lib/export";
 
 interface Standing {
   competitor: { id: string; name: string; team?: string };
@@ -20,6 +21,7 @@ interface Standing {
   losses: number;
   draws: number;
   fought: number;
+  points: number;
 }
 
 function computeStandings(
@@ -31,7 +33,7 @@ function computeStandings(
     for (const side of ["red", "blue"] as const) {
       const c = f[side];
       if (!map.has(c.id)) {
-        map.set(c.id, { competitor: c, wins: 0, losses: 0, draws: 0, fought: 0 });
+        map.set(c.id, { competitor: c, wins: 0, losses: 0, draws: 0, fought: 0, points: 0 });
       }
     }
     if (!f.completed) continue;
@@ -42,17 +44,22 @@ function computeStandings(
     blueStanding.fought++;
     if (f.winner === "red") {
       redStanding.wins++;
+      redStanding.points += 3;
       blueStanding.losses++;
     } else if (f.winner === "blue") {
       blueStanding.wins++;
+      blueStanding.points += 3;
       redStanding.losses++;
     } else {
       redStanding.draws++;
+      redStanding.points += 1;
       blueStanding.draws++;
+      blueStanding.points += 1;
     }
   }
 
   return [...map.values()].sort((a, b) => {
+    if (b.points !== a.points) return b.points - a.points;
     if (b.wins !== a.wins) return b.wins - a.wins;
     return a.losses - b.losses;
   });
@@ -66,7 +73,7 @@ export function ResultsPage() {
 
   return (
     <div className="flex-1 overflow-auto p-6 space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2">
             <Trophy className="size-6 text-yellow-400" />
@@ -76,10 +83,19 @@ export function ResultsPage() {
             <p className="text-muted-foreground text-sm mt-0.5">{config.categoryName}</p>
           )}
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm text-muted-foreground">
             {completed} / {total} combates
           </span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => exportTournamentHTML(fights, competitors, config)}
+            disabled={completed === 0}
+          >
+            <Download className="size-3.5" />
+            Exportar HTML
+          </Button>
           <Button
             variant="outline"
             size="sm"
@@ -87,7 +103,7 @@ export function ResultsPage() {
             className="text-destructive border-destructive/50 hover:bg-destructive/10"
           >
             <RotateCcw className="size-4" />
-            Nuevo torneo
+            Nueva categoría
           </Button>
         </div>
       </div>
@@ -103,10 +119,11 @@ export function ResultsPage() {
               <TableRow>
                 <TableHead className="w-10">#</TableHead>
                 <TableHead>Competidor</TableHead>
+                <TableHead className="text-center font-bold text-yellow-400">Pts</TableHead>
                 <TableHead className="text-center">G</TableHead>
                 <TableHead className="text-center">E</TableHead>
                 <TableHead className="text-center">P</TableHead>
-                <TableHead className="text-center">Combates</TableHead>
+                <TableHead className="text-center">PJ</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -131,6 +148,9 @@ export function ResultsPage() {
                         <p className="text-xs text-muted-foreground">{s.competitor.team}</p>
                       )}
                     </div>
+                  </TableCell>
+                  <TableCell className="text-center font-black text-yellow-400 text-base">
+                    {s.points}
                   </TableCell>
                   <TableCell className="text-center text-green-400 font-bold">
                     {s.wins}
@@ -158,49 +178,88 @@ export function ResultsPage() {
         </CardHeader>
         <CardContent>
           <div className="space-y-2">
-            {fights.map((f, i) => (
-              <div
-                key={f.id}
-                className={cn(
-                  "flex items-center gap-3 rounded-lg border border-border px-4 py-2.5 text-sm",
-                  f.completed ? "opacity-100" : "opacity-50"
-                )}
-              >
-                <span className="text-muted-foreground w-6 text-right">{i + 1}</span>
-                <span
+            {fights.map((f, i) => {
+              const winnerName =
+                f.winner === "red"
+                  ? f.red.name
+                  : f.winner === "blue"
+                  ? f.blue.name
+                  : null;
+              const reasonLabel =
+                f.winner === "draw"
+                  ? "Empate"
+                  : WIN_REASON_LABELS[f.winReason ?? ""] ?? f.winReason ?? "Puntos";
+              const hasFlags =
+                (f.flagsRed ?? 0) > 0 || (f.flagsBlue ?? 0) > 0;
+
+              return (
+                <div
+                  key={f.id}
                   className={cn(
-                    "flex-1 font-medium",
-                    f.winner === "red" && "text-red-400 font-bold"
+                    "flex items-center gap-3 rounded-lg border border-border px-4 py-3 text-sm",
+                    f.completed ? "opacity-100" : "opacity-40"
                   )}
                 >
-                  {f.red.name}
-                </span>
-                <div className="text-center min-w-20">
-                  {f.completed ? (
-                    <Badge
+                  {/* Número */}
+                  <span className="text-muted-foreground w-5 text-right shrink-0">{i + 1}</span>
+
+                  {/* Rojo */}
+                  <div className="flex items-center gap-1.5 flex-1">
+                    {f.winner === "red" && <Crown className="size-3.5 text-yellow-400 shrink-0" />}
+                    <span
                       className={cn(
-                        "text-xs",
-                        f.winner === "draw" ? "bg-secondary" : ""
+                        "font-medium",
+                        f.winner === "red" && "text-red-400 font-bold"
                       )}
                     >
-                      {f.winner === "draw"
-                        ? "Empate"
-                        : WIN_REASON_LABELS[f.winReason ?? ""] ?? f.winReason}
-                    </Badge>
-                  ) : (
-                    <span className="text-muted-foreground text-xs">pendiente</span>
-                  )}
+                      {f.red.name}
+                    </span>
+                  </div>
+
+                  {/* Centro */}
+                  <div className="flex flex-col items-center gap-0.5 min-w-24 shrink-0">
+                    {f.completed ? (
+                      <>
+                        {hasFlags && (
+                          <span className="flex items-center gap-1 text-xs font-bold tabular-nums">
+                            <span className="text-red-400">{f.flagsRed ?? 0}</span>
+                            <span className="text-muted-foreground">—</span>
+                            <span className="text-blue-400">{f.flagsBlue ?? 0}</span>
+                            <span className="text-[10px] text-muted-foreground font-normal">jueces</span>
+                          </span>
+                        )}
+                        <Badge
+                          className={cn(
+                            "text-xs",
+                            f.winner === "draw"
+                              ? "bg-secondary text-secondary-foreground"
+                              : "bg-primary/20 text-primary border-primary/30"
+                          )}
+                        >
+                          {winnerName ? `${winnerName} ganó` : "Empate"}
+                        </Badge>
+                        <span className="text-[10px] text-muted-foreground">{reasonLabel}</span>
+                      </>
+                    ) : (
+                      <span className="text-muted-foreground text-xs">pendiente</span>
+                    )}
+                  </div>
+
+                  {/* Azul */}
+                  <div className="flex items-center justify-end gap-1.5 flex-1">
+                    <span
+                      className={cn(
+                        "font-medium text-right",
+                        f.winner === "blue" && "text-blue-400 font-bold"
+                      )}
+                    >
+                      {f.blue.name}
+                    </span>
+                    {f.winner === "blue" && <Crown className="size-3.5 text-yellow-400 shrink-0" />}
+                  </div>
                 </div>
-                <span
-                  className={cn(
-                    "flex-1 text-right font-medium",
-                    f.winner === "blue" && "text-blue-400 font-bold"
-                  )}
-                >
-                  {f.blue.name}
-                </span>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </CardContent>
       </Card>

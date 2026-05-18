@@ -11,7 +11,7 @@ const DEFAULT_SCORING_RULES = {
     mode: 'sparring',
     version: 'baseline-itf-1.0',
     judgesCount: 3,
-    rounds: { count: 2, duration_seconds: 120, rest_seconds: 30, golden_point: true, overtime_seconds: 60 },
+    rounds: { count: 2, duration_seconds: 120, rest_seconds: 0, golden_point: true, overtime_seconds: 60 },
     points: { pts_1: 1, pts_2: 2, pts_3: 3, hand_body: 1, foot_body: 1, foot_head: 2, jump_hand_head: 2, jump_foot_body: 2, jump_foot_head: 3 },
     deductions: { warning_minor: -1, warning_serious: -2, minus_point: -1, disqualify: 'DQ' },
     tiebreak_order: ['fewest_deductions_against', 'golden_point', 'first_clean_point', 'jury_decision'],

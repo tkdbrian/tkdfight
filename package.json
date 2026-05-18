@@ -6,11 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --project tsconfig.json --noEmit && vite build",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --packages=external --format=esm --outfile=dist-server/index.mjs",
+    "build:server:prod": "esbuild server/index.ts --bundle --platform=node --external:better-sqlite3 --external:canvas --format=esm --outfile=dist-server/index.mjs",
+    "build:all": "npm run build && npm run build:server",
+    "build:prod": "npm run build && npm run build:server:prod",
+    "start:prod": "node dist-server/index.mjs",
     "preview": "vite preview",
     "server": "tsx --tsconfig tsconfig.server.json server/index.ts",
     "start": "node -e \"require('child_process').spawn('npm',['run','server'],{stdio:'inherit',shell:true})\" & npm run dev",
     "test": "vitest",
     "test:ui": "vitest --ui",
+    "test:e2e": "playwright test",
     "lint": "biome lint ./src",
     "format": "biome format --write ./src"
   },
@@ -25,6 +31,7 @@
     "@types/better-sqlite3": "^7.6.13",
     "@types/qrcode": "^1.5.6",
     "better-sqlite3": "^12.8.0",
+    "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
     "express": "^5.2.1",
     "lucide-react": "^1.7.0",
@@ -34,14 +41,17 @@
     "react-router-dom": "^7.14.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
+    "sonner": "^2.0.7",
     "zod": "^4.3.6",
     "zustand": "^5.0.12"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
+    "@playwright/test": "^1.59.1",
     "@tailwindcss/vite": "^4.2.2",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
+    "@types/canvas-confetti": "^1.9.0",
     "@types/express": "^5.0.6",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
@@ -52,4 +62,9 @@
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.21.0",
-    "type
+    "typescript": "^5.4.0",
+    "vite": "^6.4.1",
+    "vite-plugin-pwa": "^1.3.0",
+    "vitest": "^3.2.4"
+  }
+}

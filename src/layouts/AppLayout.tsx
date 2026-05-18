@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { useTournamentStore } from "@/store/tournament";
+import { useSocket } from "@/hooks/useSocket";
 import {
   Trophy,
   Users,
@@ -8,12 +9,16 @@ import {
   Settings,
   Monitor,
   ExternalLink,
+  GitBranch,
+  ListOrdered,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
 const NAV_ITEMS = [
   { to: "/", icon: Users, label: "Competidores", tv: false },
   { to: "/fight", icon: Swords, label: "Combate", tv: false },
+  { to: "/bracket", icon: GitBranch, label: "Bracket", tv: false },
+  { to: "/standings", icon: ListOrdered, label: "Clasificación", tv: false },
   { to: "/results", icon: BarChart3, label: "Resultados", tv: false },
   { to: "/settings", icon: Settings, label: "Configuración", tv: false },
 ];
@@ -21,6 +26,11 @@ const NAV_ITEMS = [
 export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const phase = useTournamentStore((s) => s.phase);
   const categoryName = useTournamentStore((s) => s.config.categoryName);
+  const importedPending = useTournamentStore((s) =>
+    s.fights.filter((f) => f.importedFrom && !f.completed).length
+  );
+  const { state: serverState } = useSocket();
+  const ringAlias = serverState.ringAlias;
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
@@ -30,6 +40,11 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
         <div className="h-14 flex items-center gap-2 px-4 border-b border-border">
           <Trophy className="size-5 text-primary" />
           <span className="font-bold text-sm tracking-wide uppercase">TKD System</span>
+          {ringAlias && (
+            <span className="ml-auto text-[10px] font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+              {ringAlias}
+            </span>
+          )}
         </div>
 
         {/* Category badge */}
@@ -43,7 +58,8 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
         <nav className="flex-1 px-2 py-3 space-y-0.5">
           {NAV_ITEMS.map(({ to, icon: Icon, label }) => {
             const disabled =
-              (to === "/fight" || to === "/results") && phase === "setup";
+              (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
+              phase === "setup";
             return (
               <NavLink
                 key={to}
@@ -53,16 +69,21 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
                 tabIndex={disabled ? -1 : undefined}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors",
+                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
                     isActive
-                      ? "bg-accent text-accent-foreground font-medium"
+                      ? "bg-accent text-accent-foreground"
                       : "text-muted-foreground hover:bg-secondary hover:text-foreground",
                     disabled && "pointer-events-none opacity-40"
                   )
                 }
               >
-                <Icon className="size-4 shrink-0" />
+                <Icon className="size-5 shrink-0" />
                 {label}
+                {to === "/fight" && importedPending > 0 && (
+                  <span className="ml-auto text-[10px] font-bold bg-yellow-500 text-yellow-950 px-1.5 py-0.5 rounded-full animate-pulse min-w-[18px] text-center leading-none">
+                    {importedPending}
+                  </span>
+                )}
               </NavLink>
             );
           })}
@@ -72,11 +93,23 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
             href="/tv"
             target="_blank"
             rel="noopener noreferrer"
-            className="flex items-center gap-3 px-3 py-2 rounded-md text-sm transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
           >
-            <Monitor className="size-4 shrink-0" />
+            <Monitor className="size-5 shrink-0" />
             Pantalla TV
-            <ExternalLink className="size-3 ml-auto opacity-50" />
+            <ExternalLink className="size-4 ml-auto opacity-50" />
+          </a>
+
+          {/* Central link — opens in new tab */}
+          <a
+            href="/central"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            <Monitor className="size-5 shrink-0" />
+            Mesa Central
+            <ExternalLink className="size-4 ml-auto opacity-50" />
           </a>
         </nav>
 

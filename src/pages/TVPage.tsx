@@ -82,7 +82,7 @@ export function TVPage() {
     ((phase === "round" || phase === "rest") ? ` · R${matchState?.currentRound ?? 1}` : "");
 
   return (
-    <div className="flex-1 flex flex-col bg-gray-950 text-white overflow-hidden select-none">
+    <div className="flex flex-col h-screen bg-gray-950 text-white overflow-hidden select-none">
       {/* Top bar */}
       <div className="flex items-center justify-between px-6 py-3 bg-gray-900/80 border-b border-white/5">
         <span className="font-bold tracking-widest text-sm uppercase text-gray-400">
@@ -120,8 +120,8 @@ export function TVPage() {
             <div className={cn(
               "font-mono font-black leading-none",
               timeLeft <= 10 && isRunning && !matchPaused
-                ? "text-7xl text-red-400 animate-pulse"
-                : "text-6xl text-white"
+                ? "text-8xl text-red-400 animate-pulse"
+                : "text-8xl text-white"
             )}>
               {formatTime(timeLeft)}
             </div>

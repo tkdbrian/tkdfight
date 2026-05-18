@@ -3,6 +3,8 @@ import type { MatchState, RuleSetSparring } from "@/engine/types";
 export interface MatchInfo {
   id: string;
   ringId: string;
+  category?: string;
+  matchMode?: 'sparring' | 'patterns';
   red: { id: string; name: string; club?: string };
   blue: { id: string; name: string; club?: string };
 }
@@ -31,6 +33,12 @@ export interface FalloEntry {
   winner: string;
 }
 
+export interface RoundFlagResult {
+  red: number;
+  blue: number;
+  winner: 'red' | 'blue' | 'draw';
+}
+
 export interface ServerState {
   rules: RuleSetSparring | null;
   match: MatchInfo | null;
@@ -41,5 +49,8 @@ export interface ServerState {
   judgeTotals: Record<string, JudgeTotals>;
   penaltyCounts: PenaltyCounts;
   fallos: FalloEntry[];
+  roundFlags: RoundFlagResult[];
   serverUrl: string;
+  ringAlias?: string;
+  ringName?: string;
 }

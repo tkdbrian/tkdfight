@@ -2,13 +2,14 @@
   "mode": "sparring",
   "version": "baseline-itf-1.0",
   "notes": "Valores iniciales basados en reglas ITF ampliamente usadas; ajustar con tus archivos si difieren.",
-  "judgesCount": 3,
+  "judgesCount": 4,
+  "judgingMode": "flags",
   "rounds": {
-    "count": 2,
-    "duration_seconds": 120,
-    "rest_seconds": 30,
-    "golden_point": true,
-    "overtime_seconds": 60
+    "count": 1,
+    "duration_seconds": 90,
+    "rest_seconds": 0,
+    "golden_point": false,
+    "overtime_seconds": 30
   },
   "points": {
     "pts_1": 1,
@@ -22,9 +23,11 @@
     "jump_foot_head": 3
   },
   "deductions": {
-    "warning_minor": -1,
+    "warning_minor": 0,
     "warning_serious": -2,
     "minus_point": -1,
+    "remove_warning": 0,
+    "remove_minus_point": 1,
     "disqualify": "DQ"
   },
   "fouls_examples": [
