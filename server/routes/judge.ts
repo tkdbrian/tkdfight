@@ -45,6 +45,16 @@ export function registerJudgeRoute(router: Router) {
   .undo-btn:disabled{opacity:.35;cursor:default}
   .undo-last{font-size:.72rem;color:#666;flex:1;text-align:left}
   .wait-msg{text-align:center;color:#f90;font-size:.9rem;padding:16px;display:none}
+  /* ─── Tul mode ─── */
+  .tul-section{display:none;flex-direction:column;align-items:stretch;gap:16px;flex:1;margin-top:8px}
+  .tul-wait{text-align:center;color:#f90;font-size:1rem;padding:24px;border-radius:12px;background:#1a1a1a}
+  .tul-vote-area{display:none;flex-direction:column;gap:14px}
+  .tul-btn{width:100%;padding:30px 0;font-size:2.4rem;font-weight:900;border:none;border-radius:16px;cursor:pointer;text-transform:uppercase;letter-spacing:.06em;line-height:1}
+  .tul-btn.red{background:#c0392b;color:#fff}
+  .tul-btn.blue{background:#1a5fa8;color:#fff}
+  .tul-btn:active{opacity:.82}
+  .tul-btn:disabled{opacity:.35;cursor:default}
+  .tul-voted{display:none;text-align:center;color:#2ecc71;font-size:1.1rem;font-weight:700;padding:12px;border-radius:12px;background:#0d2e17}
 </style>
 </head>
 <body>
@@ -57,6 +67,7 @@ export function registerJudgeRoute(router: Router) {
   <div class="hdr-center">Puntos</div>
   <div class="hdr-side blue" id="hdr-blue">AZUL</div>
 </div>
+<div id="sparring-section" style="display:flex;flex-direction:column;gap:10px">
 <div class="score-row">
   <button class="s-btn plus red" onclick="score('red','pts_1',1)">+</button>
   <button class="s-btn minus red" onclick="unscore('red',1)">\u2212</button>
@@ -88,6 +99,17 @@ export function registerJudgeRoute(router: Router) {
   <span class="undo-last" id="undo-last"></span>
 </div>
 <div class="wait-msg" id="wait-msg">Esperando que inicie el combate...</div>
+</div>
+<!-- Sección Tul: se muestra solo cuando matchMode === 'tul' -->
+<div class="tul-section" id="tul-section">
+  <div class="tul-wait" id="tul-wait">Esperando que inicie la votación...</div>
+  <div class="tul-vote-area" id="tul-vote-area">
+    <p style="text-align:center;font-size:.85rem;color:#aaa;margin-bottom:4px">¿Quién ejecutó mejor el Tul?</p>
+    <button class="tul-btn red" id="tul-red-btn" onclick="tulVote('red')">ROJO</button>
+    <button class="tul-btn blue" id="tul-blue-btn" onclick="tulVote('blue')">AZUL</button>
+    <div class="tul-voted" id="tul-voted">✅ Voto registrado</div>
+  </div>
+</div>
 <script>
   const JUDGE_ID = '${judgeId}';
   const TOKEN = new URLSearchParams(location.search).get('token') || '';
@@ -118,12 +140,58 @@ export function registerJudgeRoute(router: Router) {
       document.getElementById('hdr-blue').textContent = m.blue.name;
     }
     if (ms) phaseEl.textContent = PHASE_LABELS[ms.phase] || ms.phase;
+    const isTul = m && m.matchMode === 'tul';
+    // Mostrar sección correcta según modo
+    document.getElementById('sparring-section').style.display = isTul ? 'none' : 'flex';
+    document.getElementById('tul-section').style.display = isTul ? 'flex' : 'none';
+    if (isTul) {
+      const tulPhase = data.tulPhase || 'idle';
+      const isVoting = tulPhase === 'voting';
+      const isFinished = tulPhase === 'finished' || ms?.phase === 'finished';
+      const tulWait = document.getElementById('tul-wait');
+      const tulVoteArea = document.getElementById('tul-vote-area');
+      const myVote = data.judgeVotes && data.judgeVotes[JUDGE_ID];
+      if (isFinished) {
+        const winner = ms && ms.result && ms.result.winner;
+        tulWait.style.display = 'block';
+        tulVoteArea.style.display = 'none';
+        if (winner === 'red') { tulWait.textContent = '\uD83D\uDD34 ROJO ganó'; tulWait.style.color = '#e74c3c'; }
+        else if (winner === 'blue') { tulWait.textContent = '\uD83D\uDD35 AZUL ganó'; tulWait.style.color = '#3498db'; }
+        else { tulWait.textContent = '\uD83E\uDD1D Empate'; tulWait.style.color = '#aaa'; }
+      } else if (isVoting) {
+        tulWait.style.display = 'none';
+        tulVoteArea.style.display = 'flex';
+        if (myVote) {
+          document.getElementById('tul-red-btn').disabled = true;
+          document.getElementById('tul-blue-btn').disabled = true;
+          document.getElementById('tul-voted').style.display = 'block';
+        } else {
+          document.getElementById('tul-red-btn').disabled = false;
+          document.getElementById('tul-blue-btn').disabled = false;
+          document.getElementById('tul-voted').style.display = 'none';
+        }
+      } else {
+        tulWait.style.display = 'block';
+        tulWait.textContent = 'Esperando que inicie la votación...';
+        tulWait.style.color = '#f90';
+        tulVoteArea.style.display = 'none';
+      }
+      return;
+    }
+    // Modo sparring normal
     const jt = data.judgeTotals && data.judgeTotals[JUDGE_ID];
     if (jt) { myRed = jt.red; myBlue = jt.blue; myRedEl.textContent = myRed; myBlueEl.textContent = myBlue; }
     const idle = !ms || ms.phase === 'idle' || ms.phase === 'finished';
     waitMsg.style.display = idle ? 'block' : 'none';
     document.querySelectorAll('.s-btn').forEach(b => b.disabled = idle);
   });
+  function tulVote(competitor) {
+    if (!connected) return;
+    socket.emit('judge:vote', { judgeId: JUDGE_ID, vote: competitor });
+    document.getElementById('tul-red-btn').disabled = true;
+    document.getElementById('tul-blue-btn').disabled = true;
+    document.getElementById('tul-voted').style.display = 'block';
+  }
   function score(competitor, type, pts) {
     if (!connected) return;
     socket.emit('match:event', { judgeId: JUDGE_ID, competitor, type });

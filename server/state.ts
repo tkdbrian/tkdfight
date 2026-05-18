@@ -9,7 +9,7 @@ export type MatchInfo = {
   id: string
   ringId: string
   category?: string
-  matchMode?: 'sparring' | 'patterns'
+  matchMode?: 'sparring' | 'patterns' | 'tul'
   red: { id: string; name: string; club?: string }
   blue: { id: string; name: string; club?: string }
 }
@@ -51,4 +51,6 @@ export const state = {
   roundFlags: [] as Array<{ red: number; blue: number; winner: 'red' | 'blue' | 'draw' }>,
   tickInterval: null as ReturnType<typeof setInterval> | null,
   activeTournamentId: 1 as number,
+  /** Fase de votación para modo Tul (no usa el engine de sparring) */
+  tulPhase: 'idle' as 'idle' | 'voting' | 'finished',
 }

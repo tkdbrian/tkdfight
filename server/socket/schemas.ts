@@ -26,7 +26,7 @@ export const matchLoadSchema = z.object({
     id: fightIdSchema,
     ringId: z.string().min(1).max(64).optional(),
     category: z.string().max(128).optional(),
-    matchMode: z.enum(['sparring', 'patterns']).optional(),
+    matchMode: z.enum(['sparring', 'patterns', 'tul']).optional(),
     red: z.object({
       id: competitorIdSchema,
       name: z.string().min(1).max(128),

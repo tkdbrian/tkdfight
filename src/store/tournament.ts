@@ -62,6 +62,8 @@ export interface TournamentConfig {
   ruleSet: RuleSet | null;
   judgesCount: number;
   mode: TournamentMode;
+  /** Disciplina: sparring convencional o Tul (formas, voto rojo/azul) */
+  matchType: 'sparring' | 'tul';
 }
 
 interface TournamentState {
@@ -99,6 +101,7 @@ const initialConfig: TournamentConfig = {
   ruleSet: null,
   judgesCount: 4,
   mode: "round-robin",
+  matchType: "sparring",
 };
 
 export const useTournamentStore = create<TournamentState>()(persist((set) => ({

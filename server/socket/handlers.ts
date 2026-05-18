@@ -120,6 +120,7 @@ export function registerSocketHandlers(io: Server) {
       state.rules = data.rules as RuleSetSparring
       state.match = data.match as MatchInfo
       state.matchState = createMatch(data.rules as RuleSetSparring)
+      state.tulPhase = 'idle'
       state.nextJudgeNum = 1
       state.judges.clear()
       state.judgeVotes.clear()
@@ -139,6 +140,14 @@ export function registerSocketHandlers(io: Server) {
 
     socket.on('match:start', () => {
       if (!state.matchState || !state.rules) return
+      // Tul: sin timer ni rounds — ir directo a fase de votación
+      if (state.match?.matchMode === 'tul') {
+        if (state.tulPhase !== 'idle') return
+        state.tulPhase = 'voting'
+        state.judgeVotes.clear()
+        broadcast(io)
+        return
+      }
       const phase = state.matchState.phase
       if (phase === 'idle' || phase === 'rest') {
         state.matchState = startPhase(state.matchState, state.rules)
@@ -206,6 +215,7 @@ export function registerSocketHandlers(io: Server) {
       state.matchState = createMatch(state.rules)
       state.judgeVotes.clear()
       state.roundFlags = []
+      state.tulPhase = 'idle'
       stopTicker()
       broadcast(io)
     })
@@ -341,6 +351,29 @@ export function registerSocketHandlers(io: Server) {
 
     socket.on('disconnect', () => {
       state.judges.delete(socket.id)
+      broadcast(io)
+    })
+
+    // ── Tul mode ──────────────────────────────────────────────────────────────
+
+    socket.on('tul:finish', () => {
+      if (!state.matchState || state.match?.matchMode !== 'tul') return
+      if (state.tulPhase !== 'voting') return
+      const judgesCount = state.rules?.judgesCount ?? 3
+      const { winner } = tallyFlagWinner(state.judgeVotes, judgesCount)
+      // Actualizar matchState con resultado final (la fase 'finished' ya existe en MatchPhase)
+      // biome-ignore lint/suspicious/noExplicitAny: tul bypass — 'finished' es una MatchPhase válida
+      state.matchState = { ...state.matchState, phase: 'finished', result: { winner, reason: 'points' } } as any
+      state.tulPhase = 'finished'
+      stopTicker()
+      saveFallo(winner)
+      broadcast(io)
+    })
+
+    socket.on('tul:retry', () => {
+      if (state.match?.matchMode !== 'tul') return
+      if (state.tulPhase !== 'voting') return
+      state.judgeVotes.clear()
       broadcast(io)
     })
   })

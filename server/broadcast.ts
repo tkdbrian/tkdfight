@@ -25,5 +25,6 @@ export function broadcast(io: Server) {
     serverUrl,
     ringAlias: ringConfig.alias,
     ringName: ringConfig.name,
+    tulPhase: state.tulPhase,
   })
 }

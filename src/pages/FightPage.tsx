@@ -31,6 +31,7 @@ import {
   Keyboard,
   Smartphone,
   Users,
+  Check,
 } from "lucide-react";
 import {
   PHASE_LABELS,
@@ -1173,6 +1174,7 @@ interface MatchControlsProps {
   fight: FightEntry | undefined;
   isLast: boolean;
   state: ServerState;
+  isTul?: boolean;
   onEmit: (event: string, data?: unknown) => void;
   onFinishAndNext: () => void;
 }
@@ -1185,10 +1187,86 @@ function MatchControls({
   fight,
   isLast,
   state,
+  isTul,
   onEmit,
   onFinishAndNext,
 }: Readonly<MatchControlsProps>) {
   if (!loaded) return null;
+
+  // ── Modo Tul ────────────────────────────────────────────────
+  if (isTul) {
+    if (isFinished && state.matchState?.result) {
+      const { winner, reason } = state.matchState.result;
+      return (
+        <ResultBanner
+          winner={winner}
+          reason={reason}
+          fight={fight}
+          state={state}
+          onFinishAndNext={onFinishAndNext}
+        />
+      );
+    }
+    const votes = state.judgeVotes ?? {};
+    const redVotes = Object.values(votes).filter((v) => v === "red").length;
+    const blueVotes = Object.values(votes).filter((v) => v === "blue").length;
+    const totalVoted = redVotes + blueVotes;
+    const judgesCount = state.rules?.judgesCount ?? 3;
+    const tulPhase = state.tulPhase ?? "idle";
+
+    if (tulPhase === "voting") {
+      return (
+        <div className="flex flex-col items-center gap-4 w-full">
+          {/* Conteo en tiempo real */}
+          <div className="flex items-center gap-6">
+            <span className="text-5xl font-black text-red-400">{redVotes}</span>
+            <span className="text-lg text-muted-foreground">vs</span>
+            <span className="text-5xl font-black text-blue-400">{blueVotes}</span>
+          </div>
+          <p className="text-xs text-muted-foreground">
+            {totalVoted} / {judgesCount} jueces votaron
+          </p>
+          <div className="flex flex-wrap gap-2 justify-center">
+            <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={() => onEmit("tul:finish")}>
+              <Check />
+              Confirmar resultado
+            </Button>
+            <Button size="sm" variant="outline" onClick={() => onEmit("tul:retry")}>
+              ↺ Nueva votación
+            </Button>
+          </div>
+          {/* Zona de peligro */}
+          <div className="flex items-center gap-2 w-full max-w-xs">
+            <div className="h-px flex-1 bg-border/30" />
+            <Button
+              size="sm" variant="ghost"
+              className="text-red-400/40 hover:text-white hover:bg-red-700/80 text-xs h-7 px-2.5 border border-red-900/30 hover:border-red-600 transition-all"
+              onClick={() => onEmit("match:dq", { competitor: "red" })}>
+              <UserX className="size-3 mr-1" />DQ Rojo
+            </Button>
+            <Button
+              size="sm" variant="ghost"
+              className="text-blue-400/40 hover:text-white hover:bg-blue-700/80 text-xs h-7 px-2.5 border border-blue-900/30 hover:border-blue-600 transition-all"
+              onClick={() => onEmit("match:dq", { competitor: "blue" })}>
+              <UserX className="size-3 mr-1" />DQ Azul
+            </Button>
+            <div className="h-px flex-1 bg-border/30" />
+          </div>
+        </div>
+      );
+    }
+    // tulPhase === 'idle'
+    return (
+      <div className="flex flex-col items-center gap-3 w-full">
+        <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={() => onEmit("match:start")}>
+          <Play />
+          Iniciar votación
+        </Button>
+      </div>
+    );
+  }
+
+  // ── Modo Sparring ────────────────────────────────────────────
   const totalRounds = state.rules?.rounds.count ?? 2;
   const currentRound = state.matchState?.currentRound ?? 1;
   const isLastRound = currentRound >= totalRounds;
@@ -1361,6 +1439,8 @@ export function FightPage() {
   const timeLeft = matchState?.timeLeft ?? 0;
   const currentRound = matchState?.currentRound ?? 1;
   const isRunning = phase === "round" || phase === "overtime" || phase === "golden_point";
+  /** Modo Tul: los competidores ejecutan formas, los jueces votan rojo/azul */
+  const isTul = config.matchType === 'tul';
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: setLoaded is a stable state setter — no need in deps
   React.useEffect(() => {
@@ -1483,7 +1563,7 @@ export function FightPage() {
         id: currentFight.id,
         ringId: "ring-1",
         category: config.categoryName || undefined,
-        matchMode: (rules as { mode?: string }).mode === 'patterns' ? 'patterns' : 'sparring',
+    matchMode: (rules as { mode?: string }).mode === 'patterns' ? 'patterns' : config.matchType === 'tul' ? 'tul' : 'sparring',
         red: { id: currentFight.red.id, name: currentFight.red.name, club: currentFight.red.team },
         blue: { id: currentFight.blue.id, name: currentFight.blue.name, club: currentFight.blue.team },
       },
@@ -1729,6 +1809,7 @@ export function FightPage() {
           <div className={cn(
             "font-mono font-black leading-none text-9xl",
             timerClass(timeLeft, isRunning, matchPaused),
+            isTul && "hidden",
           )}>
             {formatTime(timeLeft)}
           </div>
@@ -1741,6 +1822,7 @@ export function FightPage() {
               fight={currentFight}
               isLast={currentFightIndex === fights.length - 1}
               state={state}
+              isTul={isTul}
               onEmit={emit}
               onFinishAndNext={handleOpenResultDialog}
             />
@@ -1801,12 +1883,13 @@ export function FightPage() {
                 bottomTab === "penalties"
                   ? "border-primary text-primary"
                   : "border-transparent text-muted-foreground hover:text-foreground",
+                isTul && "hidden",
               )}
             >
               ⚠️ Penalizaciones
             </button>
-            {/* Modo Jefe/Móvil solo visible en tab Jueces */}
-            {bottomTab === "judges" && (
+            {/* Modo Jefe/Móvil: oculto en tul (siempre móvil para voto) */}
+            {bottomTab === "judges" && !isTul && (
               <div className="ml-auto flex items-center gap-1">
                 <button
                   type="button"
@@ -1848,7 +1931,7 @@ export function FightPage() {
                 judgeVotes={state.judgeVotes ?? {}}
                 serverUrl={judgeMode === "movil" ? state.serverUrl : undefined}
               />
-              {judgeMode === "mesa" && (
+              {judgeMode === "mesa" && !isTul && (
                 <JefeMesaPanel
                   judgesCount={config.judgesCount}
                   judgeVotes={state.judgeVotes}

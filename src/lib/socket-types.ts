@@ -4,7 +4,7 @@ export interface MatchInfo {
   id: string;
   ringId: string;
   category?: string;
-  matchMode?: 'sparring' | 'patterns';
+  matchMode?: 'sparring' | 'patterns' | 'tul';
   red: { id: string; name: string; club?: string };
   blue: { id: string; name: string; club?: string };
 }
@@ -53,4 +53,6 @@ export interface ServerState {
   serverUrl: string;
   ringAlias?: string;
   ringName?: string;
+  /** Fase de votación para modo Tul */
+  tulPhase?: 'idle' | 'voting' | 'finished';
 }

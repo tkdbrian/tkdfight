@@ -482,6 +482,26 @@ export function SetupPage() {
               </div>
             </div>
             <div className="space-y-1">
+              <span className="text-sm font-medium text-muted-foreground">Disciplina</span>
+              <div className="flex gap-2">
+                {(["sparring", "tul"] as const).map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => setConfig({ matchType: t })}
+                    className={cn(
+                      "px-4 py-2 rounded-full border text-sm font-medium transition-colors",
+                      (config.matchType ?? "sparring") === t
+                        ? "border-primary bg-primary text-primary-foreground"
+                        : "border-border text-muted-foreground hover:bg-secondary",
+                    )}
+                  >
+                    {t === "sparring" ? "Sparring" : "Tul / Formas"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-1">
               <span className="text-sm font-medium text-muted-foreground">Modo</span>
               <div className="flex gap-2">
                 {(["round-robin", "elimination"] as TournamentMode[]).map((m) => (
