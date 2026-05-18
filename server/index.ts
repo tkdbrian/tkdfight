@@ -43,6 +43,10 @@ app.use((_req, res, next) => {
   next()
 })
 
+// ── Health check ─────────────────────────────────────────────────────────────
+
+app.get('/health', (_req, res) => { res.json({ ok: true }) })
+
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.use(express.json())
@@ -72,4 +76,14 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log(`   Local:   http://localhost:${PORT}`)
   console.log(`   Red:     http://${localIp}:${PORT}`)
   console.log(`   Juez:    http://${localIp}:${PORT}/judge\n`)
+
+  // Keep-alive: Render free tier duerme tras 15 min de inactividad.
+  // Este ping propio cada 14 min lo mantiene despierto.
+  const selfUrl = process.env.RENDER_EXTERNAL_URL
+  if (selfUrl) {
+    setInterval(() => {
+      fetch(`${selfUrl}/health`).catch(() => {})
+    }, 14 * 60 * 1000)
+    console.log(`   Keep-alive activo → ${selfUrl}/health`)
+  }
 })
