@@ -89,6 +89,11 @@ export function registerSocketHandlers(io: Server) {
         callback({ error: 'Payload inválido' })
         return
       }
+      // Validar token de anillo — protege contra jueces no autorizados en la red
+      if (data?.token !== state.ringToken) {
+        callback({ error: 'Token inválido — escaneá el QR del tatami' })
+        return
+      }
       const maxJudges = state.rules?.judgesCount ?? 5
       if (state.judges.size >= maxJudges) {
         callback({ error: 'Máximo de jueces alcanzado' })

@@ -1,6 +1,7 @@
 import type { Router } from 'express'
 import QRCode from 'qrcode'
 import { serverUrl } from '../broadcast.js'
+import { state } from '../state.js'
 
 export function registerQrRoute(router: Router) {
   router.get('/qr/:id', async (req, res) => {
@@ -9,7 +10,7 @@ export function registerQrRoute(router: Router) {
       res.status(400).end()
       return
     }
-    const url = `${serverUrl}/judge?id=${judgeNum}`
+    const url = `${serverUrl}/judge?id=${judgeNum}&token=${state.ringToken}`
     try {
       const png = await QRCode.toBuffer(url, {
         width: 200,

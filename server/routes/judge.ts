@@ -90,6 +90,7 @@ export function registerJudgeRoute(router: Router) {
 <div class="wait-msg" id="wait-msg">Esperando que inicie el combate...</div>
 <script>
   const JUDGE_ID = '${judgeId}';
+  const TOKEN = new URLSearchParams(location.search).get('token') || '';
   const socket = io(location.origin);
   let connected = false;
   let myRed = 0, myBlue = 0;
@@ -103,7 +104,7 @@ export function registerJudgeRoute(router: Router) {
   const myBlueEl   = document.getElementById('my-blue');
 
   socket.on('connect', () => {
-    socket.emit('judge:connect', { requestedId: JUDGE_ID }, (res) => {
+    socket.emit('judge:connect', { requestedId: JUDGE_ID, token: TOKEN }, (res) => {
       if (res.error) { statusEl.textContent = '\u274c ' + res.error; statusEl.style.color = '#e74c3c'; }
       else { connected = true; statusEl.textContent = '\u2705 ' + res.judgeId + ' listo'; statusEl.style.color = '#2ecc71'; }
     });

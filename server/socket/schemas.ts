@@ -16,6 +16,7 @@ export const matchEventTypeSchema = z.string().min(1).max(32)
 export const judgeConnectSchema = z
   .object({
     requestedId: judgeIdSchema.optional(),
+    token: z.string().optional(),
   })
   .nullable()
 

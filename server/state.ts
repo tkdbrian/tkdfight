@@ -1,4 +1,5 @@
 import type { MatchState, RuleSetSparring } from '../src/engine/types.js'
+import { randomUUID } from 'node:crypto'
 
 // Max fallos en memoria por ring. Previene leak en torneos largos.
 // Se mantiene en memoria solo el histórico reciente; el persistido va a SQLite.
@@ -41,8 +42,10 @@ export const state = {
   matchState: null as MatchState | null,
   matchPaused: false,
   judges: new Map<string, string>(),   // socketId → judgeId
-  judgeVotes: new Map<string, string>(), // judgeId → 'red'|'tie'|'blue'
+  judgeVotes: new Map<string, string>(), // judgeId → 'red'|'draw'|'blue'
   nextJudgeNum: 1,
+  /** Token generado al arrancar el server. Los jueces lo reciben via QR y lo envían en judge:connect. */
+  ringToken: randomUUID(),
   fallos: [] as FalloEntry[],
   falloSeq: 1,
   roundFlags: [] as Array<{ red: number; blue: number; winner: 'red' | 'blue' | 'draw' }>,
