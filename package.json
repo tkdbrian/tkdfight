@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --project tsconfig.json --noEmit && npx --no-install vite build",
+    "build": "tsc --project tsconfig.json --noEmit && node ./node_modules/vite/bin/vite.js build",
     "build:server": "esbuild server/index.ts --bundle --platform=node --packages=external --format=esm --outfile=dist-server/index.mjs",
     "build:server:prod": "esbuild server/index.ts --bundle --platform=node --external:better-sqlite3 --external:canvas --format=esm --outfile=dist-server/index.mjs",
     "build:all": "npm run build && npm run build:server",
