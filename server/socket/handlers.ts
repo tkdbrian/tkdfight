@@ -114,7 +114,7 @@ export function registerSocketHandlers(io: Server) {
       if (!data) return
       state.rules = data.rules as RuleSetSparring
       state.match = data.match as MatchInfo
-      state.matchState = createMatch(data.rules)
+      state.matchState = createMatch(data.rules as RuleSetSparring)
       state.nextJudgeNum = 1
       state.judges.clear()
       state.judgeVotes.clear()
