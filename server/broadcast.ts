@@ -23,6 +23,7 @@ export function broadcast(io: Server) {
     fallos: [...state.fallos],
     roundFlags: [...state.roundFlags],
     serverUrl,
+    ringToken: state.ringToken,
     ringAlias: ringConfig.alias,
     ringName: ringConfig.name,
     tulPhase: state.tulPhase,

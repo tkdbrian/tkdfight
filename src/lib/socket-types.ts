@@ -51,6 +51,7 @@ export interface ServerState {
   fallos: FalloEntry[];
   roundFlags: RoundFlagResult[];
   serverUrl: string;
+  ringToken?: string;
   ringAlias?: string;
   ringName?: string;
   /** Fase de votación para modo Tul */

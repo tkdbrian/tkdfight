@@ -674,12 +674,14 @@ function JudgeCornerGrid({
   judgeTotals,
   judgeVotes,
   serverUrl,
+  ringToken,
 }: Readonly<{
   judgesCount: number;
   connectedJudges: string[];
   judgeTotals: Record<string, { red: number; blue: number }>;
   judgeVotes: Record<string, string>;
   serverUrl?: string;
+  ringToken?: string;
 }>) {
   const ids = Array.from({ length: judgesCount }, (_, i) => `J${i + 1}`);
   const cols = judgesCount <= 2 ? judgesCount : judgesCount === 3 ? 3 : 4;
@@ -712,7 +714,8 @@ function JudgeCornerGrid({
             ? "bg-secondary border-border"
             : "bg-card border-border";
         const isColored = hasPoints || vote === "red" || vote === "blue" || vote === "draw";
-        const judgeUrl = base ? `${base}/judge?id=${i + 1}` : null;
+        const tokenSuffix = ringToken ? `&token=${ringToken}` : "";
+        const judgeUrl = base ? `${base}/judge?id=${i + 1}${tokenSuffix}` : null;
 
         return (
           <JudgeCard
@@ -1930,6 +1933,7 @@ export function FightPage() {
                 judgeTotals={state.judgeTotals ?? {}}
                 judgeVotes={state.judgeVotes ?? {}}
                 serverUrl={judgeMode === "movil" ? state.serverUrl : undefined}
+                ringToken={judgeMode === "movil" ? state.ringToken : undefined}
               />
               {judgeMode === "mesa" && !isTul && (
                 <JefeMesaPanel
