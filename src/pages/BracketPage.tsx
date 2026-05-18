@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useTournamentStore } from "@/store/tournament";
+import { useShallow } from "zustand/react/shallow";
 import { generateEliminationBracket, generateDoubleBracket, getActiveBracketFights } from "@/lib/bracket";
 import { BracketView } from "@/components/BracketView";
 import { Button } from "@/components/ui/button";
@@ -32,7 +33,22 @@ export function BracketPage() {
     addFinalFights,
     config,
     phase,
-  } = useTournamentStore();
+  } = useTournamentStore(
+    useShallow((s) => ({
+      competitors: s.competitors,
+      bracketMatches: s.bracketMatches,
+      bracketSeeds: s.bracketSeeds,
+      fights: s.fights,
+      setBracket: s.setBracket,
+      setFights: s.setFights,
+      setCurrentFightIndex: s.setCurrentFightIndex,
+      setPhase: s.setPhase,
+      swapBracketSlots: s.swapBracketSlots,
+      addFinalFights: s.addFinalFights,
+      config: s.config,
+      phase: s.phase,
+    }))
+  );
 
   const [selectedMatchId, setSelectedMatchId] = React.useState<string | null>(null);
 

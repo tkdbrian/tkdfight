@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useSocket } from "@/hooks/useSocket";
 import { useTournamentStore } from "@/store/tournament";
+import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -462,10 +463,10 @@ function JefeMesaPanel({
 function JudgeQrCode({ url, size = 120 }: { url: string; size?: number }) {
   const canvasRef = React.useRef<HTMLCanvasElement>(null);
   React.useEffect(() => {
-    if (!canvasRef.current) return;
-    // @ts-ignore — qrcode no tiene types perfectos para canvas
+    const canvas = canvasRef.current;
+    if (!canvas) return;
     import("qrcode").then((QRCode) => {
-      QRCode.toCanvas(canvasRef.current, url, {
+      QRCode.toCanvas(canvas, url, {
         width: size,
         margin: 1,
         color: { dark: "#ffffff", light: "#00000000" },
@@ -1249,7 +1250,18 @@ export function FightPage() {
   const { connected, state, emit, socket } = useSocket();
   const navigate = useNavigate();
   const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights } =
-    useTournamentStore();
+    useTournamentStore(
+      useShallow((s) => ({
+        fights: s.fights,
+        currentFightIndex: s.currentFightIndex,
+        setCurrentFightIndex: s.setCurrentFightIndex,
+        completeFight: s.completeFight,
+        completeBracketMatch: s.completeBracketMatch,
+        setPhase: s.setPhase,
+        config: s.config,
+        addImportedFights: s.addImportedFights,
+      }))
+    );
 
   const [loaded, setLoaded] = React.useState(false);
   const [judgeMode, setJudgeMode] = React.useState<"mesa" | "movil">("mesa");

@@ -54,6 +54,15 @@ for (const col of ['group_id TEXT', 'flags_red INTEGER NOT NULL DEFAULT 0', 'fla
   try { db.exec(`ALTER TABLE fights ADD COLUMN ${col}`) } catch { /* already exists */ }
 }
 
+// ── Indexes ──────────────────────────────────────────────────────────────────
+// Sin estos, getFights/getQueue hacen full scan en cada llamada.
+
+db.exec(`
+  CREATE INDEX IF NOT EXISTS idx_fights_tournament_completed ON fights(tournament_id, completed);
+  CREATE INDEX IF NOT EXISTS idx_fights_tournament ON fights(tournament_id);
+  CREATE INDEX IF NOT EXISTS idx_competitors_tournament ON competitors(tournament_id);
+`)
+
 // ── Tournaments ──────────────────────────────────────────────────────────────
 
 export function createTournament(name: string, category: string): number {

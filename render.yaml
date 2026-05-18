@@ -5,8 +5,11 @@ services:
     buildCommand: npm install && npm run build:prod
     startCommand: npm run start:prod
     plan: free
+    healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
       - key: DATA_DIR
         value: /opt/render/project/src/data
+      - key: ALLOWED_ORIGINS
+        value: https://tkdfight.onrender.com

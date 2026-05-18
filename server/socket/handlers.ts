@@ -16,6 +16,19 @@ import { startTicker, stopTicker } from '../timer.js'
 import { computeJudgeTotals, computePenaltyCounts, nowTimeStr } from '../helpers.js'
 import { completeFight, insertFightIfNew, upsertCompetitor, getSourceRing } from '../db/index.js'
 import { getRingConfig } from '../ring-config.js'
+import {
+  judgeConnectSchema,
+  matchLoadSchema,
+  matchEventSchema,
+  judgeVoteSchema,
+  mesaFlagVoteSchema,
+  matchUndoSchema,
+  matchResolveJurySchema,
+  matchDqSchema,
+  matchMedicalSchema,
+  matchDeleteFalloSchema,
+  safeParse,
+} from './schemas.js'
 
 type FightWinner = Competitor | 'draw'
 
@@ -69,7 +82,12 @@ export function registerSocketHandlers(io: Server) {
       ringName: ringConfig.name,
     })
 
-    socket.on('judge:connect', (data: { requestedId?: string } | null, callback: (r: { judgeId?: string; error?: string }) => void) => {
+    socket.on('judge:connect', (raw: unknown, callback: (r: { judgeId?: string; error?: string }) => void) => {
+      const data = safeParse(judgeConnectSchema, raw, 'judge:connect')
+      if (data === null && raw !== undefined && raw !== null) {
+        callback({ error: 'Payload inválido' })
+        return
+      }
       const maxJudges = state.rules?.judgesCount ?? 5
       if (state.judges.size >= maxJudges) {
         callback({ error: 'Máximo de jueces alcanzado' })
@@ -91,9 +109,11 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('match:load', (data: { rules: RuleSetSparring; match: MatchInfo }) => {
-      state.rules = data.rules
-      state.match = data.match
+    socket.on('match:load', (raw: unknown) => {
+      const data = safeParse(matchLoadSchema, raw, 'match:load')
+      if (!data) return
+      state.rules = data.rules as RuleSetSparring
+      state.match = data.match as MatchInfo
       state.matchState = createMatch(data.rules)
       state.nextJudgeNum = 1
       state.judges.clear()
@@ -122,7 +142,9 @@ export function registerSocketHandlers(io: Server) {
       }
     })
 
-    socket.on('match:event', (data: { judgeId: string; competitor: Competitor; type: string }) => {
+    socket.on('match:event', (raw: unknown) => {
+      const data = safeParse(matchEventSchema, raw, 'match:event')
+      if (!data) return
       if (!state.matchState || !state.rules) return
       state.matchState = addMatchEvent(state.matchState, data, state.rules)
       broadcast(io)
@@ -166,7 +188,9 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('match:resolveJury', (data: { winner: Competitor }) => {
+    socket.on('match:resolveJury', (raw: unknown) => {
+      const data = safeParse(matchResolveJurySchema, raw, 'match:resolveJury')
+      if (!data) return
       if (!state.matchState) return
       state.matchState = resolveJury(state.matchState, data.winner)
       broadcast(io)
@@ -181,15 +205,18 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('judge:vote', (data: { judgeId: string; vote: string }) => {
+    socket.on('judge:vote', (raw: unknown) => {
+      const data = safeParse(judgeVoteSchema, raw, 'judge:vote')
+      if (!data) return
       const myJudgeId = state.judges.get(socket.id)
       if (!myJudgeId || myJudgeId !== data.judgeId) return
-      if (!['red', 'tie', 'blue'].includes(data.vote)) return
       state.judgeVotes.set(data.judgeId, data.vote)
       broadcast(io)
     })
 
-    socket.on('match:undo', (data: { judgeId: string }) => {
+    socket.on('match:undo', (raw: unknown) => {
+      const data = safeParse(matchUndoSchema, raw, 'match:undo')
+      if (!data) return
       if (!state.matchState) return
       const myJudgeId = state.judges.get(socket.id)
       if (!myJudgeId || myJudgeId !== data.judgeId) return
@@ -217,9 +244,10 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('match:dq', (data: { competitor: Competitor }) => {
+    socket.on('match:dq', (raw: unknown) => {
+      const data = safeParse(matchDqSchema, raw, 'match:dq')
+      if (!data) return
       if (!state.matchState || !state.rules) return
-      if (!['red', 'blue'].includes(data.competitor)) return
       state.matchState = addMatchEvent(
         state.matchState,
         { judgeId: 'arbiter', competitor: data.competitor, type: 'disqualify' },
@@ -232,8 +260,10 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('match:medical', (data: { competitor: Competitor }) => {
-      if (!state.matchState || !['red', 'blue'].includes(data.competitor)) return
+    socket.on('match:medical', (raw: unknown) => {
+      const data = safeParse(matchMedicalSchema, raw, 'match:medical')
+      if (!data) return
+      if (!state.matchState) return
       state.matchPaused = true
       broadcast(io)
     })
@@ -243,7 +273,9 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('match:deleteFallo', (data: { id: number }) => {
+    socket.on('match:deleteFallo', (raw: unknown) => {
+      const data = safeParse(matchDeleteFalloSchema, raw, 'match:deleteFallo')
+      if (!data) return
       const idx = state.fallos.findIndex((f) => f.id === data.id)
       if (idx !== -1) state.fallos.splice(idx, 1)
       broadcast(io)
@@ -269,9 +301,9 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('mesa:flagVote', (data: { judgeId: string; vote: string }) => {
-      if (!['red', 'blue', 'draw'].includes(data.vote)) return
-      if (!data.judgeId) return
+    socket.on('mesa:flagVote', (raw: unknown) => {
+      const data = safeParse(mesaFlagVoteSchema, raw, 'mesa:flagVote')
+      if (!data) return
       state.judgeVotes.set(data.judgeId, data.vote)
       broadcast(io)
     })

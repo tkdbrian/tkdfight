@@ -2,6 +2,7 @@
 import confetti from "canvas-confetti";
 import { useNavigate } from "react-router-dom";
 import { useTournamentStore, type FightEntry, type CompetitorEntry } from "@/store/tournament";
+import { useShallow } from "zustand/react/shallow";
 import { generateTiebreakFights, generateFinalFights } from "@/lib/bracket";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -434,7 +435,9 @@ function isFinalReady(
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export function StandingsPage() {
-  const { fights, config, addTiebreakFights, addFinalFights } = useTournamentStore();
+  const { fights, config, addTiebreakFights, addFinalFights } = useTournamentStore(
+    useShallow((s) => ({ fights: s.fights, config: s.config, addTiebreakFights: s.addTiebreakFights, addFinalFights: s.addFinalFights }))
+  );
   const navigate = useNavigate();
 
   const byGroup = computeGroupStandings(fights);

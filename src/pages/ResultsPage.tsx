@@ -1,4 +1,5 @@
 import { useTournamentStore } from "@/store/tournament";
+import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -66,7 +67,9 @@ function computeStandings(
 }
 
 export function ResultsPage() {
-  const { fights, competitors, config, reset } = useTournamentStore();
+  const { fights, competitors, config, reset } = useTournamentStore(
+    useShallow((s) => ({ fights: s.fights, competitors: s.competitors, config: s.config, reset: s.reset }))
+  );
   const standings = computeStandings(fights);
   const completed = fights.filter((f) => f.completed).length;
   const total = fights.length;

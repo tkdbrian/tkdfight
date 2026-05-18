@@ -1,4 +1,6 @@
-﻿import express from 'express'
+﻿import express, { type NextFunction, type Request, type Response } from 'express'
+import helmet from 'helmet'
+import rateLimit from 'express-rate-limit'
 import { createServer } from 'node:http'
 import { Server } from 'socket.io'
 import path from 'node:path'
@@ -17,7 +19,34 @@ import { registerRingRoute } from './routes/ring.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const server = createServer(app)
-const io = new Server(server, { cors: { origin: '*' } })
+
+// ── CORS allow-list ──────────────────────────────────────────────────────────
+// In production, ALLOWED_ORIGINS is a CSV (e.g. "https://tkdfight.onrender.com").
+// In development we allow any localhost / LAN origin and reflect it back.
+
+const allowedOrigins = (process.env.ALLOWED_ORIGINS ?? '')
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean)
+
+const isDev = process.env.NODE_ENV !== 'production'
+
+function isOriginAllowed(origin: string | undefined): boolean {
+  if (!origin) return true // same-origin / curl / server-to-server
+  if (isDev) return true
+  if (allowedOrigins.includes('*')) return true
+  return allowedOrigins.includes(origin)
+}
+
+const io = new Server(server, {
+  cors: {
+    origin: (origin, cb) => {
+      if (isOriginAllowed(origin)) cb(null, true)
+      else cb(new Error(`Origin not allowed: ${origin}`))
+    },
+    methods: ['GET', 'POST'],
+  },
+})
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001')
 const localIp = getLocalIp()
@@ -32,24 +61,52 @@ if (!latestTournament) {
   state.activeTournamentId = latestTournament.id
 }
 
+// ── Security headers ─────────────────────────────────────────────────────────
+// `contentSecurityPolicy: false` so the SPA bundle and inline runtime work;
+// SPA already serves only its own assets.
+
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  }),
+)
+
 // ── CORS ─────────────────────────────────────────────────────────────────────
-// Mesa Central fetches /api/ring/queue cross-origin (different ports on same LAN).
-// Without these headers the browser silently blocks the response.
-app.use((_req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*')
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin
+  if (isOriginAllowed(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin ?? '*')
+    res.setHeader('Vary', 'Origin')
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type')
-  if (_req.method === 'OPTIONS') { res.sendStatus(200); return }
+  if (req.method === 'OPTIONS') { res.sendStatus(204); return }
   next()
 })
 
+// ── Rate limiting ────────────────────────────────────────────────────────────
+// 200 req/min/IP on API routes. /health excluded so Render's healthcheck pings
+// don't get throttled.
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 200,
+  standardHeaders: 'draft-7',
+  legacyHeaders: false,
+  skip: (req) => req.path === '/health',
+})
+app.use('/api', apiLimiter)
+
 // ── Health check ─────────────────────────────────────────────────────────────
 
-app.get('/health', (_req, res) => { res.json({ ok: true }) })
+app.get('/health', (_req, res) => { res.json({ ok: true, uptime: process.uptime() }) })
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
-app.use(express.json())
+app.use(express.json({ limit: '100kb' }))
 registerJudgeRoute(app)
 registerTvRoute(app)
 registerQrRoute(app)
@@ -69,13 +126,32 @@ if (existsSync(distPath)) {
   })
 }
 
+// ── Global error handler ─────────────────────────────────────────────────────
+// Must be the LAST middleware. Express 5 forwards async rejections here.
+
+app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+  console.error(`[error] ${req.method} ${req.url}:`, err.message)
+  if (res.headersSent) return
+  res.status(500).json({ error: 'Internal server error' })
+})
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason)
+})
+process.on('uncaughtException', (err) => {
+  console.error('[uncaughtException]', err)
+})
+
 // ── Start ────────────────────────────────────────────────────────────────────
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n🥋 TKD Scoring Server`)
   console.log(`   Local:   http://localhost:${PORT}`)
   console.log(`   Red:     http://${localIp}:${PORT}`)
-  console.log(`   Juez:    http://${localIp}:${PORT}/judge\n`)
+  console.log(`   Juez:    http://${localIp}:${PORT}/judge`)
+  if (allowedOrigins.length) console.log(`   CORS:    ${allowedOrigins.join(', ')}`)
+  else if (isDev) console.log(`   CORS:    dev (open)`)
+  console.log('')
 
   // Keep-alive: Render free tier duerme tras 15 min de inactividad.
   // Este ping propio cada 14 min lo mantiene despierto.
@@ -87,3 +163,20 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`   Keep-alive activo → ${selfUrl}/health`)
   }
 })
+
+// ── Graceful shutdown ────────────────────────────────────────────────────────
+// On SIGTERM (Render redeploy) close sockets and HTTP cleanly so in-flight
+// writes flush before the process exits.
+
+function shutdown(signal: string) {
+  console.log(`\n[${signal}] graceful shutdown…`)
+  io.close()
+  server.close((err) => {
+    if (err) console.error('[shutdown] server.close error:', err)
+    process.exit(err ? 1 : 0)
+  })
+  // Force-exit fallback in case something hangs.
+  setTimeout(() => process.exit(1), 10_000).unref()
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('SIGINT', () => shutdown('SIGINT'))

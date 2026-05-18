@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { useTournamentStore } from "@/store/tournament";
+import { useShallow } from "zustand/react/shallow";
 import { useSocket } from "@/hooks/useSocket";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -59,7 +60,9 @@ function ToggleGroup<T extends string>({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-  const { config, setConfig, reset, phase } = useTournamentStore();
+  const { config, setConfig, reset, phase } = useTournamentStore(
+    useShallow((s) => ({ config: s.config, setConfig: s.setConfig, reset: s.reset, phase: s.phase }))
+  );
   const { state: serverState } = useSocket();
   const [resetOpen, setResetOpen] = useState(false);
 

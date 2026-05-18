@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useSocket } from "@/hooks/useSocket";
 import { useTournamentStore, type CompetitorEntry, type TournamentMode } from "@/store/tournament";
+import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -190,7 +191,23 @@ export function SetupPage() {
     setBracket,
     addImportedFights,
     completeFight,
-  } = useTournamentStore();  const { setGroups } = useTournamentStore();
+    setGroups,
+  } = useTournamentStore(
+    useShallow((s) => ({
+      competitors: s.competitors,
+      config: s.config,
+      addCompetitor: s.addCompetitor,
+      removeCompetitor: s.removeCompetitor,
+      updateCompetitor: s.updateCompetitor,
+      setConfig: s.setConfig,
+      setFights: s.setFights,
+      setPhase: s.setPhase,
+      setBracket: s.setBracket,
+      addImportedFights: s.addImportedFights,
+      completeFight: s.completeFight,
+      setGroups: s.setGroups,
+    }))
+  );
   const navigate = useNavigate();
   const { socket } = useSocket();
   const [cat, setCat] = useState<CatState>(EMPTY_CAT);
