@@ -30,6 +30,7 @@ import {
   ExternalLink,
   Keyboard,
   Smartphone,
+  Users,
 } from "lucide-react";
 import {
   PHASE_LABELS,
@@ -226,7 +227,7 @@ function FlagPanelFooter({ canVote, roundActive, roundNum, onEmit }: Readonly<{
 }
 
 function JefeMesaPanel({
-  judgesCount, judgeVotes, roundFlags, phase, pendingJuryDecision, penaltyCounts, redName, blueName, onEmit,
+  judgesCount, judgeVotes, roundFlags, phase, pendingJuryDecision, penaltyCounts, redName, blueName, onEmit, hidePenalties = false,
 }: Readonly<{
   judgesCount: number;
   judgeVotes: Record<string, string>;
@@ -237,6 +238,7 @@ function JefeMesaPanel({
   redName: string;
   blueName: string;
   onEmit: (event: string, data?: unknown) => void;
+  hidePenalties?: boolean;
 }>) {
   const [simple, setSimple] = React.useState(false); // false = Por juez (default)
   const ids = Array.from({ length: judgesCount }, (_, i) => `J${i + 1}`);
@@ -382,6 +384,8 @@ function JefeMesaPanel({
       )}
 
       {/* ── Penalizaciones ── */}
+      {!hidePenalties && (
+        <>
       <Separator />
       <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 pt-1">Penalizaciones</p>
       <div className="grid grid-cols-2 gap-3">
@@ -456,6 +460,8 @@ function JefeMesaPanel({
           </div>
         </div>
       </div>
+        </>
+      )}
     </div>
   );
 }
@@ -839,6 +845,44 @@ function PenaltyFloatPanel({ phase, redName, blueName, penaltyCounts, onEmit, on
   );
 }
 
+function PenaltiesTabContent({ phase, redName, blueName, penaltyCounts, onEmit }: Readonly<{
+  phase: string;
+  redName: string;
+  blueName: string;
+  penaltyCounts: { warnings: { red: number; blue: number }; fouls: { red: number; blue: number } };
+  onEmit: (event: string, data?: unknown) => void;
+}>) {
+  const canAdd = phase !== "idle" && phase !== "finished";
+
+  function addEvent(competitor: "red" | "blue", type: string) {
+    onEmit("match:event", { judgeId: "arbiter", competitor, type });
+  }
+
+  return (
+    <div className="space-y-3">
+      <p className="text-[10px] text-muted-foreground">3 advertencias = 1 punto menos automático</p>
+      {!canAdd && (
+        <p className="text-xs text-muted-foreground text-center italic">Seleccioná un combate primero</p>
+      )}
+      <CompetitorPenaltyBlock
+        name={redName} color="red"
+        warnings={penaltyCounts.warnings.red} fouls={penaltyCounts.fouls.red}
+        canAdd={canAdd}
+        onWarning={() => addEvent("red", "warning_minor")}
+        onMinusPoint={() => addEvent("red", "minus_point")}
+      />
+      <Separator />
+      <CompetitorPenaltyBlock
+        name={blueName} color="blue"
+        warnings={penaltyCounts.warnings.blue} fouls={penaltyCounts.fouls.blue}
+        canAdd={canAdd}
+        onWarning={() => addEvent("blue", "warning_minor")}
+        onMinusPoint={() => addEvent("blue", "minus_point")}
+      />
+    </div>
+  );
+}
+
 function ServerStatus({ connected, judgesCount }: Readonly<{ connected: boolean; judgesCount: number }>) {
   return (
     <div className={cn(
@@ -1170,46 +1214,58 @@ function MatchControls({
   }
 
   return (
-    <div className="flex flex-wrap gap-2 justify-center pt-1">
-      {canStart && (
-        <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={() => onEmit("match:start")}>
-          <Play />
-          Iniciar combate
-        </Button>
+    <div className="flex flex-col items-center gap-3 w-full">
+      {/* Acciones primarias */}
+      <div className="flex flex-wrap gap-2 justify-center">
+        {canStart && (
+          <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={() => onEmit("match:start")}>
+            <Play />
+            Iniciar combate
+          </Button>
+        )}
+        {canPause && (
+          <Button size="xl" variant="outline" onClick={() => onEmit("match:pause")}>
+            <Pause />
+            Pausar
+          </Button>
+        )}
+        {canResume && (
+          <Button size="xl" className="bg-yellow-700 hover:bg-yellow-600" onClick={() => onEmit("match:resume")}>
+            <Play />
+            Reanudar
+          </Button>
+        )}
+        {canFinish && (
+          <Button size="xl" variant="secondary" onClick={() => onEmit("match:finishRound")}>
+            <SkipForward />
+            Finalizar combate
+          </Button>
+        )}
+        {phase === "penalties" && (
+          <Button size="xl" className="bg-orange-700 hover:bg-orange-600" onClick={() => onEmit("match:confirmPenalties")}>
+            Confirmar penalizaciones
+          </Button>
+        )}
+      </div>
+      {/* Zona de peligro — separada visualmente, botones discretos */}
+      {!isFinished && (
+        <div className="flex items-center gap-2 w-full max-w-xs">
+          <div className="h-px flex-1 bg-border/30" />
+          <Button
+            size="sm" variant="ghost"
+            className="text-red-400/40 hover:text-white hover:bg-red-700/80 text-xs h-7 px-2.5 border border-red-900/30 hover:border-red-600 transition-all"
+            onClick={() => onEmit("match:dq", { competitor: "red" })}>
+            <UserX className="size-3 mr-1" />DQ Rojo
+          </Button>
+          <Button
+            size="sm" variant="ghost"
+            className="text-blue-400/40 hover:text-white hover:bg-blue-700/80 text-xs h-7 px-2.5 border border-blue-900/30 hover:border-blue-600 transition-all"
+            onClick={() => onEmit("match:dq", { competitor: "blue" })}>
+            <UserX className="size-3 mr-1" />DQ Azul
+          </Button>
+          <div className="h-px flex-1 bg-border/30" />
+        </div>
       )}
-      {canPause && (
-        <Button size="xl" variant="outline" onClick={() => onEmit("match:pause")}>
-          <Pause />
-          Pausar
-        </Button>
-      )}
-      {canResume && (
-        <Button size="xl" className="bg-yellow-700 hover:bg-yellow-600" onClick={() => onEmit("match:resume")}>
-          <Play />
-          Reanudar
-        </Button>
-      )}
-      {canFinish && (
-        <Button size="xl" variant="secondary" onClick={() => onEmit("match:finishRound")}>
-          <SkipForward />
-          Finalizar combate
-        </Button>
-      )}
-      {phase === "penalties" && (
-        <Button size="xl" className="bg-orange-700 hover:bg-orange-600" onClick={() => onEmit("match:confirmPenalties")}>
-          Confirmar penalizaciones
-        </Button>
-      )}
-      <Button size="lg" variant="destructive" className="opacity-80 hover:opacity-100"
-        onClick={() => onEmit("match:dq", { competitor: "red" })}>
-        <UserX className="size-4" />
-        DQ Rojo
-      </Button>
-      <Button size="lg" variant="destructive" className="opacity-80 hover:opacity-100"
-        onClick={() => onEmit("match:dq", { competitor: "blue" })}>
-        <UserX className="size-4" />
-        DQ Azul
-      </Button>
     </div>
   );
 }
@@ -1269,7 +1325,7 @@ export function FightPage() {
 
   const [loaded, setLoaded] = React.useState(false);
   const [judgeMode, setJudgeMode] = React.useState<"mesa" | "movil">("mesa");
-  const [showPenaltyPanel, setShowPenaltyPanel] = React.useState(false);
+  const [bottomTab, setBottomTab] = React.useState<"judges" | "penalties">("judges");
   const [showFightList, setShowFightList] = React.useState(false);
   const [resultDialogOpen, setResultDialogOpen] = React.useState(false);
   const [resultFlagsRed, setResultFlagsRed] = React.useState(0);
@@ -1617,33 +1673,7 @@ export function FightPage() {
 
         <div className="flex-1" />
 
-        {loaded && (
-          <Button size="sm" variant="outline"
-            className={cn("shrink-0 text-xs", showPenaltyPanel && "border-yellow-600 text-yellow-400")}
-            onClick={() => setShowPenaltyPanel((v) => !v)}>
-            ⚠️ Penalizaciones
-          </Button>
-        )}
         <ServerStatus connected={connected} judgesCount={judges.length} />
-      </div>
-
-      {/* ── FASE + PAUSA ─────────────────────────────────────────── */}
-      <div className="shrink-0 flex items-center justify-center gap-3 py-2 border-b border-border/30">
-        <Badge className={cn(
-          "text-sm px-4 py-1.5",
-          phase === "round" && "bg-green-600",
-          phase === "rest" && "bg-yellow-600",
-          phase === "overtime" && "bg-orange-600",
-          phase === "golden_point" && "bg-purple-600",
-          phase === "finished" && "bg-blue-700",
-          phase === "penalties" && "bg-red-800",
-          phase === "idle" && "bg-secondary"
-        )}>
-          {PHASE_LABELS[phase]}{roundSuffix(phase, currentRound)}
-        </Badge>
-        {showPauseBadge(matchPaused, phase) && (
-          <Badge variant="outline" className="text-yellow-400 border-yellow-600">PAUSA</Badge>
-        )}
       </div>
 
       {/* ── BANNER PELEA REASIGNADA ───────────────────────────── */}
@@ -1664,12 +1694,8 @@ export function FightPage() {
           <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-red-950/30 text-red-400 ring-card-red tabular-nums">
             {scoreDisplay.red}
           </div>
-          <p className="text-sm tracking-[0.2em] text-muted-foreground/70 uppercase font-semibold">Jueces</p>
-
-          {/* Penalizaciones ROJO inline */}
-          <div className="flex flex-col items-center gap-2 w-full max-w-[250px]">
-            {/* Advertencias */}
-            <div className="flex items-center justify-between w-full">
+          {penaltyCounts.warnings.red > 0 && (
+            <div className="flex items-center gap-2">
               <span className="text-xl font-black text-yellow-400">⚠ {penaltyCounts.warnings.red}</span>
               {warnDeductions(penaltyCounts.warnings.red) > 0 && (
                 <span className="text-sm font-bold text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
@@ -1677,40 +1703,29 @@ export function FightPage() {
                 </span>
               )}
             </div>
-            <div className="flex gap-2 w-full">
-              <Button size="sm" variant="outline" disabled={!loaded || phase === "idle" || phase === "finished"}
-                className="flex-1 text-yellow-400 border-yellow-700/60 hover:bg-yellow-900/30 text-xs h-8"
-                onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "warning_minor" })}>
-                + Adv
-              </Button>
-              <Button size="sm" variant="outline" disabled={!loaded || phase === "idle" || phase === "finished" || penaltyCounts.warnings.red === 0}
-                className="flex-1 text-yellow-600 border-yellow-800/50 hover:bg-yellow-900/20 text-xs h-8"
-                onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_warning" })}>
-                − Adv
-              </Button>
-            </div>
-            {/* Punto menos directo */}
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!loaded || phase === "idle" || phase === "finished"}
-              className="w-full h-10 text-sm font-bold text-red-300 border-red-600 bg-red-950/40 hover:bg-red-900/50"
-              onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "minus_point" })}>
-              − Punto directo
-            </Button>
-            <div className="flex items-center justify-between w-full">
-              <span className="text-base font-bold text-red-400">Pts. descontados: {penaltyCounts.fouls.red}</span>
-              <Button size="sm" variant="ghost" disabled={!loaded || phase === "idle" || phase === "finished" || penaltyCounts.fouls.red === 0}
-                className="text-muted-foreground hover:text-foreground text-xs h-6 px-2"
-                onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_minus_point" })}>
-                ↩
-              </Button>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* CENTRO: timer + controles */}
-        <div className="flex flex-col items-center justify-center gap-5 px-8 py-6 min-w-[340px]">
+        <div className="flex flex-col items-center justify-center gap-4 px-8 py-6 min-w-85">
+          {/* Phase + pause badges */}
+          <div className="flex items-center gap-2">
+            <Badge className={cn(
+              "text-sm px-4 py-1.5",
+              phase === "round" && "bg-green-600",
+              phase === "rest" && "bg-yellow-600",
+              phase === "overtime" && "bg-orange-600",
+              phase === "golden_point" && "bg-purple-600",
+              phase === "finished" && "bg-blue-700",
+              phase === "penalties" && "bg-red-800",
+              phase === "idle" && "bg-secondary"
+            )}>
+              {PHASE_LABELS[phase]}{roundSuffix(phase, currentRound)}
+            </Badge>
+            {showPauseBadge(matchPaused, phase) && (
+              <Badge variant="outline" className="text-yellow-400 border-yellow-600">PAUSA</Badge>
+            )}
+          </div>
           <div className={cn(
             "font-mono font-black leading-none text-9xl",
             timerClass(timeLeft, isRunning, matchPaused),
@@ -1747,12 +1762,8 @@ export function FightPage() {
           <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-blue-950/30 text-blue-400 ring-card-blue tabular-nums">
             {scoreDisplay.blue}
           </div>
-          <p className="text-sm tracking-[0.2em] text-muted-foreground/70 uppercase font-semibold">Jueces</p>
-
-          {/* Penalizaciones AZUL inline */}
-          <div className="flex flex-col items-center gap-2 w-full max-w-[250px]">
-            {/* Advertencias */}
-            <div className="flex items-center justify-between w-full">
+          {penaltyCounts.warnings.blue > 0 && (
+            <div className="flex items-center gap-2">
               <span className="text-xl font-black text-yellow-400">⚠ {penaltyCounts.warnings.blue}</span>
               {warnDeductions(penaltyCounts.warnings.blue) > 0 && (
                 <span className="text-sm font-bold text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
@@ -1760,106 +1771,111 @@ export function FightPage() {
                 </span>
               )}
             </div>
-            <div className="flex gap-2 w-full">
-              <Button size="sm" variant="outline" disabled={!loaded || phase === "idle" || phase === "finished"}
-                className="flex-1 text-yellow-400 border-yellow-700/60 hover:bg-yellow-900/30 text-xs h-8"
-                onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "warning_minor" })}>
-                + Adv
-              </Button>
-              <Button size="sm" variant="outline" disabled={!loaded || phase === "idle" || phase === "finished" || penaltyCounts.warnings.blue === 0}
-                className="flex-1 text-yellow-600 border-yellow-800/50 hover:bg-yellow-900/20 text-xs h-8"
-                onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_warning" })}>
-                − Adv
-              </Button>
-            </div>
-            {/* Punto menos directo */}
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={!loaded || phase === "idle" || phase === "finished"}
-              className="w-full h-10 text-sm font-bold text-blue-300 border-blue-600 bg-blue-950/40 hover:bg-blue-900/50"
-              onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "minus_point" })}>
-              − Punto directo
-            </Button>
-            <div className="flex items-center justify-between w-full">
-              <span className="text-base font-bold text-blue-400">Pts. descontados: {penaltyCounts.fouls.blue}</span>
-              <Button size="sm" variant="ghost" disabled={!loaded || phase === "idle" || phase === "finished" || penaltyCounts.fouls.blue === 0}
-                className="text-muted-foreground hover:text-foreground text-xs h-6 px-2"
-                onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_minus_point" })}>
-                ↩
-              </Button>
-            </div>
-          </div>
+          )}
         </div>
       </div>
 
-      {/* ── PANEL JUECES ─────────────────────────────────────────── */}
+      {/* ── PANEL INFERIOR (TABS) ─────────────────────────────────── */}
       {loaded && (
         <div className="shrink-0 border-t border-border bg-card/40 px-4 py-2 space-y-2 max-h-[42vh] overflow-y-auto">
-          {/* Header: tabs modo en fila horizontal */}
-          <div className="flex items-center gap-2">
+          {/* Tab bar */}
+          <div className="flex items-center gap-1 border-b border-border/40 pb-1">
             <button
               type="button"
-              onClick={() => setJudgeMode("mesa")}
+              onClick={() => setBottomTab("judges")}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-medium transition-colors",
-                judgeMode === "mesa"
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border text-muted-foreground hover:bg-secondary",
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
+                bottomTab === "judges"
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              <Keyboard className="size-3" />
-              Jefe de Mesa
+              <Users className="size-3" />
+              Jueces
             </button>
             <button
               type="button"
-              onClick={() => setJudgeMode("movil")}
+              onClick={() => setBottomTab("penalties")}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-medium transition-colors",
-                judgeMode === "movil"
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border text-muted-foreground hover:bg-secondary",
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
+                bottomTab === "penalties"
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              <Smartphone className="size-3" />
-              Pro / Móvil
+              ⚠️ Penalizaciones
             </button>
+            {/* Modo Jefe/Móvil solo visible en tab Jueces */}
+            {bottomTab === "judges" && (
+              <div className="ml-auto flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setJudgeMode("mesa")}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-medium transition-colors",
+                    judgeMode === "mesa"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-secondary",
+                  )}
+                >
+                  <Keyboard className="size-3" />
+                  Jefe de Mesa
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setJudgeMode("movil")}
+                  className={cn(
+                    "flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-medium transition-colors",
+                    judgeMode === "movil"
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border text-muted-foreground hover:bg-secondary",
+                  )}
+                >
+                  <Smartphone className="size-3" />
+                  Pro / Móvil
+                </button>
+              </div>
+            )}
           </div>
-          {/* Grilla de jueces compacta */}
-          <JudgeCornerGrid
-            judgesCount={config.judgesCount}
-            connectedJudges={judges}
-            judgeTotals={state.judgeTotals ?? {}}
-            judgeVotes={state.judgeVotes ?? {}}
-            serverUrl={judgeMode === "movil" ? state.serverUrl : undefined}
-          />
-          {/* Contenido del modo seleccionado */}
-          {judgeMode === "mesa" ? (
-            <JefeMesaPanel
-              judgesCount={config.judgesCount}
-              judgeVotes={state.judgeVotes}
-              roundFlags={state.roundFlags ?? []}
+
+          {/* Tab: Jueces */}
+          {bottomTab === "judges" && (
+            <>
+              <JudgeCornerGrid
+                judgesCount={config.judgesCount}
+                connectedJudges={judges}
+                judgeTotals={state.judgeTotals ?? {}}
+                judgeVotes={state.judgeVotes ?? {}}
+                serverUrl={judgeMode === "movil" ? state.serverUrl : undefined}
+              />
+              {judgeMode === "mesa" && (
+                <JefeMesaPanel
+                  judgesCount={config.judgesCount}
+                  judgeVotes={state.judgeVotes}
+                  roundFlags={state.roundFlags ?? []}
+                  phase={phase}
+                  pendingJuryDecision={matchState?.pendingJuryDecision ?? false}
+                  penaltyCounts={penaltyCounts}
+                  redName={currentFight?.red.name ?? "Rojo"}
+                  blueName={currentFight?.blue.name ?? "Azul"}
+                  onEmit={emit}
+                  hidePenalties={true}
+                />
+              )}
+            </>
+          )}
+
+          {/* Tab: Penalizaciones */}
+          {bottomTab === "penalties" && (
+            <PenaltiesTabContent
               phase={phase}
-              pendingJuryDecision={matchState?.pendingJuryDecision ?? false}
-              penaltyCounts={penaltyCounts}
               redName={currentFight?.red.name ?? "Rojo"}
               blueName={currentFight?.blue.name ?? "Azul"}
+              penaltyCounts={penaltyCounts}
               onEmit={emit}
             />
-          ) : null}
+          )}
         </div>
-      )}
-
-      {/* ── PANEL FLOTANTE DE PENALIZACIONES ─────────────────────── */}
-      {showPenaltyPanel && (
-        <PenaltyFloatPanel
-          phase={phase}
-          redName={currentFight?.red.name ?? "Rojo"}
-          blueName={currentFight?.blue.name ?? "Azul"}
-          penaltyCounts={penaltyCounts}
-          onEmit={emit}
-          onClose={() => setShowPenaltyPanel(false)}
-        />
       )}
 
       {/* ── PANEL PELEAS REASIGNADAS DESDE OTRO TATAMI ───────────── */}
