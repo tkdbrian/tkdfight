@@ -100,7 +100,7 @@ export function exportTournamentHTML(
   <tbody>${fightRows}</tbody>
 </table>
 
-<p style="margin-top:3rem;color:#475569;font-size:0.75rem;text-align:center">TKD Tournament System</p>
+<p style="margin-top:3rem;color:#475569;font-size:0.75rem;text-align:center">TKD Fight · tkdfight.onrender.com · Open source</p>
 </body>
 </html>`;
 

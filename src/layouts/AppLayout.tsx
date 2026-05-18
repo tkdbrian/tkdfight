@@ -7,7 +7,8 @@ import {
   Swords,
   BarChart3,
   Settings,
-  Monitor,
+  Tv,
+  LayoutDashboard,
   ExternalLink,
   GitBranch,
   ListOrdered,
@@ -39,7 +40,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
         {/* Logo */}
         <div className="h-14 flex items-center gap-2 px-4 border-b border-border">
           <Trophy className="size-5 text-primary" />
-          <span className="font-bold text-sm tracking-wide uppercase">TKD System</span>
+          <span className="font-bold text-sm tracking-wide uppercase">TKD Fight</span>
           {ringAlias && (
             <span className="ml-auto text-[10px] font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">
               {ringAlias}
@@ -95,7 +96,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
             rel="noopener noreferrer"
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
           >
-            <Monitor className="size-5 shrink-0" />
+            <Tv className="size-5 shrink-0" />
             Pantalla TV
             <ExternalLink className="size-4 ml-auto opacity-50" />
           </a>
@@ -107,7 +108,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
             rel="noopener noreferrer"
             className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
           >
-            <Monitor className="size-5 shrink-0" />
+            <LayoutDashboard className="size-5 shrink-0" />
             Mesa Central
             <ExternalLink className="size-4 ml-auto opacity-50" />
           </a>

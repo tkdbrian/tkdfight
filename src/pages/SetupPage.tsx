@@ -15,7 +15,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Pencil, Trash2, Swords, AlertCircle, Plus } from "lucide-react";
+import { Pencil, Trash2, Swords, AlertCircle, Plus, Wifi, Smartphone, Zap, ArrowRight, Trophy } from "lucide-react";
 import { generateGroupsTournament, generateEliminationBracket, getGroupDistribution } from "@/lib/bracket";
 import { cn } from "@/lib/utils";
 
@@ -194,6 +194,8 @@ export function SetupPage() {
   const navigate = useNavigate();
   const { socket } = useSocket();
   const [cat, setCat] = useState<CatState>(EMPTY_CAT);
+  const [welcomeDismissed, setWelcomeDismissed] = useState(false);
+  const showWelcome = competitors.length === 0 && !welcomeDismissed;
 
   // Cuando Mesa Central reasigna peleas a este tatami, navegar automáticamente a /fight.
   useEffect(() => {
@@ -245,6 +247,23 @@ export function SetupPage() {
     const next = { ...cat, ...patch };
     setCat(next);
     setConfig({ categoryName: buildCategoryName(next) });
+  }
+
+  const DEMO_COMPETITORS = [
+    { name: "Marcos Pérez", team: "Club Almagro" },
+    { name: "Ana García", team: "Club Flores" },
+    { name: "Luis Mendoza", team: "Club Almagro" },
+    { name: "Carla López", team: "Club Palermo" },
+    { name: "Diego Fernández", team: "Club Flores" },
+    { name: "María Torres", team: "Club Palermo" },
+    { name: "Sebastián Ruiz", team: "Club Almagro" },
+    { name: "Valentina Díaz", team: "Club Flores" },
+  ];
+
+  function loadDemo() {
+    setWelcomeDismissed(true);
+    updateCat({ weight: "Mediano A", belt: "Danes", gender: "M" });
+    DEMO_COMPETITORS.forEach((c) => addCompetitor(c));
   }
 
   const [quickName, setQuickName] = useState("");
@@ -336,6 +355,56 @@ export function SetupPage() {
   const canStart = config.mode === "elimination"
     ? competitors.length >= 2 && config.categoryName.trim() !== ""
     : competitors.length >= 3 && competitors.length <= 12 && config.categoryName.trim() !== "";
+
+  if (showWelcome) {
+    return (
+      <div className="flex-1 flex flex-col items-center justify-center p-8 gap-10 text-center overflow-auto">
+        <div className="space-y-3">
+          <div className="flex items-center justify-center gap-3 mb-2">
+            <Trophy className="size-10 text-primary" />
+            <h1 className="text-5xl font-black tracking-tight">TKD Fight</h1>
+          </div>
+          <p className="text-muted-foreground text-lg max-w-md mx-auto">
+            Sistema de scoring para torneos de Taekwondo ITF.<br />
+            Gratis, sin registro y funciona sin internet.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl w-full text-left">
+          <div className="rounded-xl border border-border bg-secondary/30 p-5 space-y-2">
+            <Wifi className="size-6 text-primary" />
+            <p className="font-semibold text-sm">Funciona sin internet</p>
+            <p className="text-xs text-muted-foreground">Versión USB portable para gimnasios sin wifi confiable.</p>
+          </div>
+          <div className="rounded-xl border border-border bg-secondary/30 p-5 space-y-2">
+            <Smartphone className="size-6 text-primary" />
+            <p className="font-semibold text-sm">Jueces via celular</p>
+            <p className="text-xs text-muted-foreground">Jueces conectan escaneando un QR desde su celular, sin apps.</p>
+          </div>
+          <div className="rounded-xl border border-border bg-secondary/30 p-5 space-y-2">
+            <Zap className="size-6 text-primary" />
+            <p className="font-semibold text-sm">Bracket automático</p>
+            <p className="text-xs text-muted-foreground">Round Robin y Eliminación directa. Desempates incluidos.</p>
+          </div>
+        </div>
+
+        <div className="flex gap-4 flex-wrap justify-center">
+          <Button size="lg" onClick={loadDemo} className="gap-2">
+            <Zap className="size-4" />
+            Ver demo (8 competidores)
+          </Button>
+          <Button size="lg" variant="outline" onClick={() => setWelcomeDismissed(true)} className="gap-2">
+            Nuevo torneo
+            <ArrowRight className="size-4" />
+          </Button>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Open source · github.com/tkdbrian/tkdfight
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex-1 overflow-auto p-4 space-y-4">

@@ -108,7 +108,41 @@ export function ResultsPage() {
         </div>
       </div>
 
-      {/* Standings */}
+      {/* Podio */}
+      {standings.length >= 1 && completed > 0 && (
+        <div className="grid grid-cols-3 gap-3 items-end">
+          {standings[1] ? (
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-border bg-secondary/20 p-4 mt-4">
+              <div className="text-4xl">🥈</div>
+              <p className="font-bold text-sm text-center text-gray-300 truncate max-w-full">{standings[1].competitor.name}</p>
+              {standings[1].competitor.team && (
+                <p className="text-xs text-muted-foreground text-center truncate w-full">{standings[1].competitor.team}</p>
+              )}
+              <Badge variant="secondary">{standings[1].points} pts</Badge>
+            </div>
+          ) : <div />}
+          <div className="flex flex-col items-center gap-2 rounded-xl border border-yellow-700/40 bg-yellow-950/20 p-5">
+            <div className="text-5xl">🥇</div>
+            <p className="font-bold text-base text-center text-yellow-300 truncate max-w-full">{standings[0].competitor.name}</p>
+            {standings[0].competitor.team && (
+              <p className="text-xs text-yellow-600 text-center truncate w-full">{standings[0].competitor.team}</p>
+            )}
+            <Badge className="bg-yellow-600 text-yellow-950 border-0 hover:bg-yellow-600">{standings[0].points} pts</Badge>
+          </div>
+          {standings[2] ? (
+            <div className="flex flex-col items-center gap-2 rounded-xl border border-border bg-secondary/20 p-4 mt-4">
+              <div className="text-4xl">🥉</div>
+              <p className="font-bold text-sm text-center text-amber-600 truncate max-w-full">{standings[2].competitor.name}</p>
+              {standings[2].competitor.team && (
+                <p className="text-xs text-muted-foreground text-center truncate w-full">{standings[2].competitor.team}</p>
+              )}
+              <Badge variant="secondary">{standings[2].points} pts</Badge>
+            </div>
+          ) : <div />}
+        </div>
+      )}
+
+      {/* Standings */}}
       <Card>
         <CardHeader>
           <CardTitle className="text-base">Clasificación</CardTitle>

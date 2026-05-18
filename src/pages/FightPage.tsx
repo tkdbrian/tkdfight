@@ -48,8 +48,8 @@ function judgesLabel(count: number): string {
 }
 
 function timerClass(timeLeft: number, isRunning: boolean, matchPaused: boolean): string {
-  if (timeLeft <= 10 && isRunning && !matchPaused) return "text-red-400 text-9xl";
-  return "text-9xl";
+  if (timeLeft <= 10 && isRunning && !matchPaused) return "text-red-400 text-5xl sm:text-7xl xl:text-9xl";
+  return "text-5xl sm:text-7xl xl:text-9xl";
 }
 
 function showPauseBadge(matchPaused: boolean, phase: string): boolean {
