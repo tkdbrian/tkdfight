@@ -52,7 +52,9 @@ const io = new Server(server, {
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)
 const localIp = getLocalIp()
-setServerUrl(`http://${localIp}:${PORT}`)
+// En producción (Render) usamos la URL pública; en LAN usamos la IP local.
+const publicUrl = process.env.RENDER_EXTERNAL_URL ?? (allowedOrigins.length === 1 ? allowedOrigins[0] : null)
+setServerUrl(publicUrl ?? `http://${localIp}:${PORT}`)
 
 // ── Init DB ───────────────────────────────────────────────────────────────────
 
