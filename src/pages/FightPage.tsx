@@ -565,6 +565,7 @@ function JudgeCard({
   judgeUrl,
   cardBg,
   isColored,
+  onQrClick,
 }: Readonly<{
   jid: string;
   index: number;
@@ -575,8 +576,8 @@ function JudgeCard({
   judgeUrl: string | null;
   cardBg: string;
   isColored: boolean;
+  onQrClick?: (url: string, jid: string) => void;
 }>) {
-  const [showQr, setShowQr] = React.useState(false);
   const hasPoints = totals.red > 0 || totals.blue > 0;
   const leading: "red" | "blue" | "tied" =
     totals.red > totals.blue ? "red" :
@@ -628,41 +629,27 @@ function JudgeCard({
 
       {/* Link + botón QR */}
       {judgeUrl && (
-        <>
-          <div className={cn(
-            "flex items-center gap-1.5 border border-t-0 border-border px-3 py-1.5 bg-card",
-            showQr ? "" : "rounded-b-xl",
-          )}>
-            <span className={cn("size-1.5 rounded-full shrink-0", isConn ? "bg-green-400" : "bg-muted-foreground/20")} />
-            <a
-              href={judgeUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="text-[10px] text-muted-foreground truncate flex-1 hover:text-primary transition-colors"
-            >
-              {judgeUrl}
-            </a>
-            <ExternalLink className="size-2.5 text-muted-foreground shrink-0" />
+        <div className="flex items-center gap-1.5 border border-t-0 border-border px-3 py-1.5 bg-card rounded-b-xl">
+          <span className={cn("size-1.5 rounded-full shrink-0", isConn ? "bg-green-400" : "bg-muted-foreground/20")} />
+          <a
+            href={judgeUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="text-[10px] text-muted-foreground truncate flex-1 hover:text-primary transition-colors"
+          >
+            {judgeUrl}
+          </a>
+          <ExternalLink className="size-2.5 text-muted-foreground shrink-0" />
+          {onQrClick && (
             <button
               type="button"
-              onClick={() => setShowQr((v) => !v)}
-              className={cn(
-                "ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded border transition-colors",
-                showQr
-                  ? "border-primary bg-primary/10 text-primary"
-                  : "border-border text-muted-foreground hover:bg-secondary",
-              )}
+              onClick={() => onQrClick(judgeUrl, jid)}
+              className="ml-1 text-[10px] font-bold px-1.5 py-0.5 rounded border border-border text-muted-foreground hover:bg-secondary transition-colors"
             >
               QR
             </button>
-          </div>
-          {showQr && (
-            <div className="flex flex-col items-center gap-2 rounded-b-xl border border-t-0 border-border bg-black/60 py-4">
-              <JudgeQrCode url={judgeUrl} size={180} />
-              <span className="text-[10px] text-muted-foreground">{jid} — escaneá desde el dispositivo</span>
-            </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -684,55 +671,87 @@ function JudgeCornerGrid({
   ringToken?: string;
 }>) {
   const ids = Array.from({ length: judgesCount }, (_, i) => `J${i + 1}`);
-  const cols = judgesCount <= 2 ? judgesCount : judgesCount === 3 ? 3 : 4;
   const hasMobile = connectedJudges.length > 0;
   const base = serverUrl ? serverUrl.replace(/\/$/, "") : "";
+  const [qrModal, setQrModal] = React.useState<{ url: string; jid: string; isConn: boolean } | null>(null);
 
   return (
-    <div
-      className="grid gap-2 w-full"
-      style={{ gridTemplateColumns: `repeat(auto-fit, minmax(80px, 1fr))` }}
-    >
-      {ids.map((jid, i) => {
-        const isConn = connectedJudges.includes(jid);
-        const vote = judgeVotes?.[jid];
-        const totals = judgeTotals?.[jid] ?? { red: 0, blue: 0 };
-        const hasPoints = totals.red > 0 || totals.blue > 0;
-        const leading: "red" | "blue" | "tied" =
-          totals.red > totals.blue ? "red" :
-          totals.blue > totals.red ? "blue" : "tied";
-        const cardBg =
-          hasPoints && leading === "red"
-            ? "bg-red-700 border-red-600"
-            : hasPoints && leading === "blue"
-            ? "bg-blue-700 border-blue-600"
-            : vote === "red"
-            ? "bg-red-700 border-red-600"
-            : vote === "blue"
-            ? "bg-blue-700 border-blue-600"
-            : vote === "draw"
-            ? "bg-secondary border-border"
-            : "bg-card border-border";
-        const isColored = hasPoints || vote === "red" || vote === "blue" || vote === "draw";
-        const tokenSuffix = ringToken ? `&token=${ringToken}` : "";
-        const judgeUrl = base ? `${base}/judge?id=${i + 1}${tokenSuffix}` : null;
+    <>
+      <div
+        className="grid gap-2 w-full"
+        style={{ gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))" }}
+      >
+        {ids.map((jid, i) => {
+          const isConn = connectedJudges.includes(jid);
+          const vote = judgeVotes?.[jid];
+          const totals = judgeTotals?.[jid] ?? { red: 0, blue: 0 };
+          const hasPoints = totals.red > 0 || totals.blue > 0;
+          const leading: "red" | "blue" | "tied" =
+            totals.red > totals.blue ? "red" :
+            totals.blue > totals.red ? "blue" : "tied";
+          const cardBg =
+            hasPoints && leading === "red"
+              ? "bg-red-700 border-red-600"
+              : hasPoints && leading === "blue"
+              ? "bg-blue-700 border-blue-600"
+              : vote === "red"
+              ? "bg-red-700 border-red-600"
+              : vote === "blue"
+              ? "bg-blue-700 border-blue-600"
+              : vote === "draw"
+              ? "bg-secondary border-border"
+              : "bg-card border-border";
+          const isColored = hasPoints || vote === "red" || vote === "blue" || vote === "draw";
+          const tokenSuffix = ringToken ? `&token=${ringToken}` : "";
+          const judgeUrl = base ? `${base}/judge?id=${i + 1}${tokenSuffix}` : null;
 
-        return (
-          <JudgeCard
-            key={jid}
-            jid={jid}
-            index={i}
-            isConn={isConn}
-            hasMobile={hasMobile}
-            vote={vote}
-            totals={totals}
-            judgeUrl={judgeUrl}
-            cardBg={cardBg}
-            isColored={isColored}
-          />
-        );
-      })}
-    </div>
+          return (
+            <JudgeCard
+              key={jid}
+              jid={jid}
+              index={i}
+              isConn={isConn}
+              hasMobile={hasMobile}
+              vote={vote}
+              totals={totals}
+              judgeUrl={judgeUrl}
+              cardBg={cardBg}
+              isColored={isColored}
+              onQrClick={judgeUrl ? (url, id) => setQrModal({ url, jid: id, isConn }) : undefined}
+            />
+          );
+        })}
+      </div>
+
+      {/* Modal QR fullscreen */}
+      <Dialog open={qrModal !== null} onOpenChange={() => setQrModal(null)}>
+        <DialogContent className="max-w-xs sm:max-w-sm mx-auto">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <span className={cn("size-2.5 rounded-full shrink-0", qrModal?.isConn ? "bg-green-400" : "bg-muted-foreground/30")} />
+              {qrModal?.jid}
+              {qrModal?.isConn && <span className="text-xs font-normal text-green-400">· conectado</span>}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="flex flex-col items-center gap-4 py-2">
+            {qrModal && <JudgeQrCode url={qrModal.url} size={260} />}
+            {qrModal && (
+              <a
+                href={qrModal.url}
+                target="_blank"
+                rel="noreferrer"
+                className="text-xs text-muted-foreground text-center break-all hover:text-primary transition-colors"
+              >
+                {qrModal.url}
+              </a>
+            )}
+          </div>
+          <DialogFooter>
+            <Button variant="outline" className="w-full" onClick={() => setQrModal(null)}>Cerrar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
