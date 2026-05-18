@@ -16,12 +16,12 @@ import {
 import { NavLink } from "react-router-dom";
 
 const NAV_ITEMS = [
-  { to: "/", icon: Users, label: "Competidores", tv: false },
-  { to: "/fight", icon: Swords, label: "Combate", tv: false },
-  { to: "/bracket", icon: GitBranch, label: "Bracket", tv: false },
-  { to: "/standings", icon: ListOrdered, label: "Clasificación", tv: false },
-  { to: "/results", icon: BarChart3, label: "Resultados", tv: false },
-  { to: "/settings", icon: Settings, label: "Configuración", tv: false },
+  { to: "/", icon: Users, label: "Competidores", short: "Inicio" },
+  { to: "/fight", icon: Swords, label: "Combate", short: "Combate" },
+  { to: "/bracket", icon: GitBranch, label: "Bracket", short: "Bracket" },
+  { to: "/standings", icon: ListOrdered, label: "Clasificación", short: "Tabla" },
+  { to: "/results", icon: BarChart3, label: "Resultados", short: "Resultados" },
+  { to: "/settings", icon: Settings, label: "Configuración", short: "Config" },
 ];
 
 export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -35,8 +35,8 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
-      {/* Sidebar */}
-      <aside className="w-56 shrink-0 border-r border-border flex flex-col">
+      {/* Sidebar — visible md+ only */}
+      <aside className="hidden md:flex w-56 shrink-0 border-r border-border flex-col">
         {/* Logo */}
         <div className="h-14 flex items-center gap-2 px-4 border-b border-border">
           <Trophy className="size-5 text-primary" />
@@ -130,9 +130,69 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
         </div>
       </aside>
 
-      {/* Main */}
-      <main className="flex-1 flex flex-col overflow-hidden">
-        {children}
+      {/* Main column */}
+      <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        {/* Mobile top header — hidden md+ */}
+        <header className="md:hidden h-12 shrink-0 border-b border-border flex items-center gap-2 px-4">
+          <Trophy className="size-4 text-primary" />
+          <span className="font-bold text-sm tracking-wide uppercase">TKD Fight</span>
+          {categoryName && (
+            <span className="ml-2 text-[10px] text-muted-foreground truncate max-w-30">
+              {categoryName}
+            </span>
+          )}
+          {ringAlias && (
+            <span className="ml-auto text-[10px] font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded shrink-0">
+              {ringAlias}
+            </span>
+          )}
+        </header>
+
+        {/* Page content */}
+        <div className="flex-1 overflow-hidden">
+          {children}
+        </div>
+
+        {/* Mobile bottom navigation — hidden md+ */}
+        <nav className="md:hidden shrink-0 border-t border-border bg-background flex items-stretch h-14">
+          {NAV_ITEMS.map(({ to, icon: Icon, short }) => {
+            const disabled =
+              (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
+              phase === "setup";
+            return (
+              <NavLink
+                key={to}
+                to={to}
+                end={to === "/"}
+                aria-disabled={disabled}
+                tabIndex={disabled ? -1 : undefined}
+                className={({ isActive }) =>
+                  cn(
+                    "flex-1 flex flex-col items-center justify-center gap-0.5 text-center transition-colors relative",
+                    isActive
+                      ? "text-primary"
+                      : "text-muted-foreground",
+                    disabled && "pointer-events-none opacity-30"
+                  )
+                }
+              >
+                {({ isActive }) => (
+                  <>
+                    <Icon className={cn("size-5 shrink-0", isActive && "stroke-[2.5]")} />
+                    <span className="text-[9px] leading-none font-medium truncate w-full px-0.5 text-center">
+                      {short}
+                    </span>
+                    {to === "/fight" && importedPending > 0 && (
+                      <span className="absolute top-1.5 right-[calc(50%-18px)] text-[8px] font-bold bg-yellow-500 text-yellow-950 px-1 py-0.5 rounded-full animate-pulse leading-none">
+                        {importedPending}
+                      </span>
+                    )}
+                  </>
+                )}
+              </NavLink>
+            );
+          })}
+        </nav>
       </main>
     </div>
   );

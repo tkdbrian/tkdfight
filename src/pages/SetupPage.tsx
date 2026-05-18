@@ -377,13 +377,13 @@ export function SetupPage() {
 
   if (showWelcome) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-8 gap-10 text-center overflow-auto">
+      <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8 gap-6 sm:gap-10 text-center overflow-auto">
         <div className="space-y-3">
           <div className="flex items-center justify-center gap-3 mb-2">
-            <Trophy className="size-10 text-primary" />
-            <h1 className="text-5xl font-black tracking-tight">TKD Fight</h1>
+            <Trophy className="size-8 sm:size-10 text-primary" />
+            <h1 className="text-3xl sm:text-5xl font-black tracking-tight">TKD Fight</h1>
           </div>
-          <p className="text-muted-foreground text-lg max-w-md mx-auto">
+          <p className="text-muted-foreground text-base sm:text-lg max-w-md mx-auto">
             Sistema de scoring para torneos de Taekwondo ITF.<br />
             Gratis, sin registro y funciona sin internet.
           </p>
@@ -453,10 +453,10 @@ export function SetupPage() {
       </div>
 
       <Card>
-        <CardHeader className="pb-3 pt-5 px-5">
+        <CardHeader className="pb-3 pt-5 px-3 sm:px-5">
           <CardTitle className="text-sm">Definir categoría</CardTitle>
         </CardHeader>
-        <CardContent className="px-5 pb-5 space-y-4">
+        <CardContent className="px-3 sm:px-5 pb-5 space-y-4">
           <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
           <ChipGroup label="Grado" options={GRADO_OPTIONS} value={cat.belt} onChange={(v) => updateCat({ belt: v })} />
           <div className="flex flex-wrap gap-4 items-end">

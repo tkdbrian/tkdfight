@@ -151,6 +151,7 @@ export function ResultsPage() {
           <CardTitle className="text-base">Clasificación</CardTitle>
         </CardHeader>
         <CardContent>
+          <div className="overflow-x-auto">
           <Table>
             <TableHeader>
               <TableRow>
@@ -158,9 +159,9 @@ export function ResultsPage() {
                 <TableHead>Competidor</TableHead>
                 <TableHead className="text-center font-bold text-yellow-400">Pts</TableHead>
                 <TableHead className="text-center">G</TableHead>
-                <TableHead className="text-center">E</TableHead>
+                <TableHead className="text-center hidden sm:table-cell">E</TableHead>
                 <TableHead className="text-center">P</TableHead>
-                <TableHead className="text-center">PJ</TableHead>
+                <TableHead className="text-center hidden sm:table-cell">PJ</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -192,19 +193,20 @@ export function ResultsPage() {
                   <TableCell className="text-center text-green-400 font-bold">
                     {s.wins}
                   </TableCell>
-                  <TableCell className="text-center text-muted-foreground">
+                  <TableCell className="text-center text-muted-foreground hidden sm:table-cell">
                     {s.draws}
                   </TableCell>
                   <TableCell className="text-center text-red-400 font-bold">
                     {s.losses}
                   </TableCell>
-                  <TableCell className="text-center text-muted-foreground">
+                  <TableCell className="text-center text-muted-foreground hidden sm:table-cell">
                     {s.fought}
                   </TableCell>
                 </TableRow>
               ))}
             </TableBody>
           </Table>
+          </div>
         </CardContent>
       </Card>
 

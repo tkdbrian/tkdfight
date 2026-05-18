@@ -294,18 +294,19 @@ function GroupCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
+        <div className="overflow-x-auto">
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead className="w-8">Pos</TableHead>
               <TableHead>Nombre</TableHead>
               <TableHead className="text-center">Ganados</TableHead>
-              <TableHead className="text-center">Empates</TableHead>
-              <TableHead className="text-center">Perdidos</TableHead>
+              <TableHead className="text-center hidden sm:table-cell">Empates</TableHead>
+              <TableHead className="text-center hidden sm:table-cell">Perdidos</TableHead>
               <TableHead className="text-center text-white font-black text-sm bg-white/5 border-b-2 border-white/20">Puntos</TableHead>
-              <TableHead className="text-center text-amber-400/80 font-semibold">Banderines a favor</TableHead>
-              <TableHead className="text-center">Banderines en contra</TableHead>
-              <TableHead className="text-center">Diferencia</TableHead>
+              <TableHead className="text-center text-amber-400/80 font-semibold hidden sm:table-cell">Banderines a favor</TableHead>
+              <TableHead className="text-center hidden sm:table-cell">Banderines en contra</TableHead>
+              <TableHead className="text-center hidden sm:table-cell">Diferencia</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -324,8 +325,8 @@ function GroupCard({
                     {isTied && <span className="ml-1.5 text-xs text-orange-400">⚡ Empate</span>}
                   </TableCell>
                   <TableCell className="text-center font-bold text-green-400">{s.wins}</TableCell>
-                  <TableCell className="text-center text-yellow-400">{s.draws}</TableCell>
-                  <TableCell className="text-center text-red-400">{s.losses}</TableCell>
+                  <TableCell className="text-center text-yellow-400 hidden sm:table-cell">{s.draws}</TableCell>
+                  <TableCell className="text-center text-red-400 hidden sm:table-cell">{s.losses}</TableCell>
                   <TableCell className="text-center bg-white/5">
                     <span className={cn(
                       "inline-block tabular-nums font-black rounded px-2 py-0.5",
@@ -336,7 +337,7 @@ function GroupCard({
                       {s.points}
                     </span>
                   </TableCell>
-                  <TableCell className="text-center">
+                  <TableCell className="text-center hidden sm:table-cell">
                     <span className={cn(
                       "font-bold tabular-nums",
                       isFirst ? "text-amber-400 text-base" : "text-amber-400/50",
@@ -344,8 +345,8 @@ function GroupCard({
                       {s.flagsFor}
                     </span>
                   </TableCell>
-                  <TableCell className="text-center text-muted-foreground">{s.flagsAgainst}</TableCell>
-                  <TableCell className={cn("text-center font-medium", flagDiffClass(s.flagDiff))}>
+                  <TableCell className="text-center text-muted-foreground hidden sm:table-cell">{s.flagsAgainst}</TableCell>
+                  <TableCell className={cn("text-center font-medium hidden sm:table-cell", flagDiffClass(s.flagDiff))}>
                     {s.flagDiff > 0 ? `+${s.flagDiff}` : s.flagDiff}
                   </TableCell>
                 </TableRow>
@@ -353,6 +354,7 @@ function GroupCard({
             })}
           </TableBody>
         </Table>
+        </div>
 
         {tiebreak.status === "needed" && (
           <Button

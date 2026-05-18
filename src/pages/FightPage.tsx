@@ -691,7 +691,7 @@ function JudgeCornerGrid({
   return (
     <div
       className="grid gap-2 w-full"
-      style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}
+      style={{ gridTemplateColumns: `repeat(auto-fit, minmax(80px, 1fr))` }}
     >
       {ids.map((jid, i) => {
         const isConn = connectedJudges.includes(jid);
