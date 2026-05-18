@@ -10,7 +10,7 @@ import {
 } from '../../src/engine/match-machine.js'
 import type { Competitor, RuleSetSparring } from '../../src/engine/types.js'
 import type { MatchInfo } from '../state.js'
-import { state } from '../state.js'
+import { state, MAX_FALLOS_IN_MEMORY } from '../state.js'
 import { broadcast, serverUrl } from '../broadcast.js'
 import { startTicker, stopTicker } from '../timer.js'
 import { computeJudgeTotals, computePenaltyCounts, nowTimeStr } from '../helpers.js'
@@ -368,6 +368,10 @@ function saveFallo(winnerOverride?: 'red' | 'blue' | 'draw') {
     blueScore: blueTotal,
     winner,
   })
+  // Cap en memoria: los excedentes ya están persistidos en SQLite via completeFight()
+  if (state.fallos.length > MAX_FALLOS_IN_MEMORY) {
+    state.fallos.splice(0, state.fallos.length - MAX_FALLOS_IN_MEMORY)
+  }
   // Persist to SQLite if fight has an id
   if (state.match?.id) {
     try {

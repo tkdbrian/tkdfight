@@ -1,5 +1,9 @@
 import type { MatchState, RuleSetSparring } from '../src/engine/types.js'
 
+// Max fallos en memoria por ring. Previene leak en torneos largos.
+// Se mantiene en memoria solo el histórico reciente; el persistido va a SQLite.
+export const MAX_FALLOS_IN_MEMORY = 500
+
 export type MatchInfo = {
   id: string
   ringId: string
