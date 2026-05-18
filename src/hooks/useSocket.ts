@@ -23,7 +23,7 @@ export function useSocket() {
   const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
-    const sock = io({ path: "/socket.io", transports: ["websocket", "polling"] });
+    const sock = io({ path: "/socket.io", transports: ["polling", "websocket"] });
     socketRef.current = sock;
     setSocket(sock);
 
