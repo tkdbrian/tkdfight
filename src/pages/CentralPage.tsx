@@ -1038,9 +1038,8 @@ function TatamiCard({
         </div>
 
         {/* Completados — acordeón expandible */}
-        {/* biome-ignore lint/style/noNonNullAssertion: outer condition checks state?.fallos?.length > 0, so state is defined */}
         {(state?.fallos?.length ?? 0) > 0 && (
-          <CompletedFightsAccordion fallos={state!.fallos} />
+          <CompletedFightsAccordion fallos={state?.fallos ?? []} />
         )}
 
         {/* Match Caller — próximas peleas / Selección para reasignación */}

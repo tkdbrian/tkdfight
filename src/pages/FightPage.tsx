@@ -476,6 +476,7 @@ function JudgeQrCode({ url, size = 120 }: { url: string; size?: number }) {
   return <canvas ref={canvasRef} className="rounded" />;
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: component defined but not yet rendered — kept for planned future use
 function JuecesMovilPanel({
   judgesCount, serverUrl, connectedJudges,
 }: Readonly<{
@@ -494,6 +495,7 @@ function JuecesMovilPanel({
           {showQr ? "Escanear QR desde el dispositivo:" : "Abrir link desde el dispositivo:"}
         </p>
         <button
+          type="button"
           onClick={() => setShowQr((v) => !v)}
           className="text-xs font-semibold text-primary border border-primary/40 rounded px-2 py-0.5 hover:bg-primary/10 transition-colors"
         >
@@ -732,6 +734,7 @@ function totalPenaltyPoints(warnings: number, fouls: number): number {
   return warnDeductions(warnings) + fouls;
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: component defined but not yet rendered — kept for planned future use
 function PenaltyInfo({ fouls, warnings }: Readonly<{ fouls: number; warnings: number }>) {
   if (fouls === 0 && warnings === 0) return null;
   const total = totalPenaltyPoints(warnings, fouls);
@@ -891,6 +894,7 @@ function FightListRow({ fight, index, active, onSelect }: Readonly<{
   );
 }
 
+// biome-ignore lint/correctness/noUnusedVariables: component defined but not yet rendered — kept for planned future use
 function FightPicker({
   fights,
   currentIndex,
@@ -1277,12 +1281,12 @@ export function FightPage() {
   const penaltyCounts = state.penaltyCounts ?? { warnings: { red: 0, blue: 0 }, fouls: { red: 0, blue: 0 } };
   const phase = matchState?.phase ?? "idle";
   const isFinished = phase === "finished";
-  const roundsWon = countRoundsWon(state.roundFlags ?? []);
+  const _roundsWon = countRoundsWon(state.roundFlags ?? []);
   // Cuántos jueces van ganando por puntos acumulados (móvil)
   const judgeLeadCount = Object.values(state.judgeTotals ?? {}).reduce(
     (acc, j) => {
-      if ((j.red ?? 0) > (j.blue ?? 0)) return { ...acc, red: acc.red + 1 };
-      if ((j.blue ?? 0) > (j.red ?? 0)) return { ...acc, blue: acc.blue + 1 };
+      if ((j.red ?? 0) > (j.blue ?? 0)) acc.red += 1;
+      else if ((j.blue ?? 0) > (j.red ?? 0)) acc.blue += 1;
       return acc;
     },
     { red: 0, blue: 0 },
@@ -1296,12 +1300,13 @@ export function FightPage() {
   const hasMobileData = Object.values(state.judgeTotals ?? {}).some(
     (j) => (j.red ?? 0) > 0 || (j.blue ?? 0) > 0,
   );
-  const judgesCount = config.judgesCount ?? 4;
+  const _judgesCount = config.judgesCount ?? 4;
   const scoreDisplay = hasMobileData ? judgeLeadCount : flagCount;
   const timeLeft = matchState?.timeLeft ?? 0;
   const currentRound = matchState?.currentRound ?? 1;
   const isRunning = phase === "round" || phase === "overtime" || phase === "golden_point";
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setLoaded is a stable state setter — no need in deps
   React.useEffect(() => {
     setLoaded(false);
   }, [currentFightIndex]);
@@ -1862,8 +1867,10 @@ export function FightPage() {
         if (imported.length === 0) return null;
         const byOrigin = new Map<string, typeof fights>();
         for (const f of imported) {
+          // biome-ignore lint/style/noNonNullAssertion: imported array was filtered to only include f.importedFrom truthy values
           const key = f.importedFrom!;
           if (!byOrigin.has(key)) byOrigin.set(key, []);
+          // biome-ignore lint/style/noNonNullAssertion: byOrigin.set() called above guarantees key exists
           byOrigin.get(key)!.push(f);
         }
         return (
