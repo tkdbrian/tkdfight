@@ -16,6 +16,7 @@ import { startTicker, stopTicker } from '../timer.js'
 import { computeJudgeTotals, computePenaltyCounts, nowTimeStr } from '../helpers.js'
 import { completeFight, insertFightIfNew, upsertCompetitor, getSourceRing } from '../db/index.js'
 import { getRingConfig } from '../ring-config.js'
+import { logger } from '../logger.js'
 import {
   judgeConnectSchema,
   matchLoadSchema,
@@ -127,7 +128,7 @@ export function registerSocketHandlers(io: Server) {
         upsertCompetitor({ id: data.match.blue.id, tournament_id: tid, name: data.match.blue.name, team: data.match.blue.club })
         insertFightIfNew({ id: data.match.id, tournament_id: tid, red_id: data.match.red.id, blue_id: data.match.blue.id })
       } catch (err) {
-        console.error('[match:load] DB persist error:', err)
+        logger.error({ err }, '[match:load] DB persist error')
       }
       broadcast(io)
     })

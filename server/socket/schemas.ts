@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { logger } from '../logger.js'
 
 // ── Primitive schemas ────────────────────────────────────────────────────────
 
@@ -81,7 +82,7 @@ export const matchDeleteFalloSchema = z.object({
 export function safeParse<T>(schema: z.ZodType<T>, payload: unknown, event: string): T | null {
   const result = schema.safeParse(payload)
   if (!result.success) {
-    console.warn(`[socket] invalid payload on "${event}":`, result.error.issues.map((i) => i.message).join(', '))
+    logger.warn({ event, issues: result.error.issues.map((i) => i.message) }, `invalid socket payload on "${event}"`)
     return null
   }
   return result.data

@@ -15,6 +15,7 @@ import { registerJudgeRoute } from './routes/judge.js'
 import { registerTvRoute } from './routes/tv.js'
 import { registerQrRoute } from './routes/qr.js'
 import { registerRingRoute } from './routes/ring.js'
+import { logger } from './logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -130,28 +131,30 @@ if (existsSync(distPath)) {
 // Must be the LAST middleware. Express 5 forwards async rejections here.
 
 app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
-  console.error(`[error] ${req.method} ${req.url}:`, err.message)
+  logger.error({ method: req.method, url: req.url, err: err.message }, 'request error')
   if (res.headersSent) return
   res.status(500).json({ error: 'Internal server error' })
 })
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[unhandledRejection]', reason)
+  logger.error({ reason }, 'unhandledRejection')
 })
 process.on('uncaughtException', (err) => {
-  console.error('[uncaughtException]', err)
+  logger.error({ err }, 'uncaughtException')
 })
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🥋 TKD Scoring Server`)
-  console.log(`   Local:   http://localhost:${PORT}`)
-  console.log(`   Red:     http://${localIp}:${PORT}`)
-  console.log(`   Juez:    http://${localIp}:${PORT}/judge`)
-  if (allowedOrigins.length) console.log(`   CORS:    ${allowedOrigins.join(', ')}`)
-  else if (isDev) console.log(`   CORS:    dev (open)`)
-  console.log('')
+  logger.info(
+    {
+      local: `http://localhost:${PORT}`,
+      red: `http://${localIp}:${PORT}`,
+      judge: `http://${localIp}:${PORT}/judge`,
+      cors: allowedOrigins.length ? allowedOrigins.join(', ') : isDev ? 'dev (open)' : 'none',
+    },
+    '🥋 TKD Scoring Server',
+  )
 
   // Keep-alive: Render free tier duerme tras 15 min de inactividad.
   // Este ping propio cada 14 min lo mantiene despierto.
@@ -160,7 +163,7 @@ server.listen(PORT, '0.0.0.0', () => {
     setInterval(() => {
       fetch(`${selfUrl}/health`).catch(() => {})
     }, 14 * 60 * 1000)
-    console.log(`   Keep-alive activo → ${selfUrl}/health`)
+    logger.info({ url: `${selfUrl}/health` }, 'keep-alive activo')
   }
 })
 
@@ -169,10 +172,10 @@ server.listen(PORT, '0.0.0.0', () => {
 // writes flush before the process exits.
 
 function shutdown(signal: string) {
-  console.log(`\n[${signal}] graceful shutdown…`)
+  logger.info({ signal }, 'graceful shutdown')
   io.close()
   server.close((err) => {
-    if (err) console.error('[shutdown] server.close error:', err)
+    if (err) logger.error({ err }, 'server.close error during shutdown')
     process.exit(err ? 1 : 0)
   })
   // Force-exit fallback in case something hangs.
