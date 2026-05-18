@@ -27,6 +27,7 @@ import {
   matchDqSchema,
   matchMedicalSchema,
   matchDeleteFalloSchema,
+  timerAdjustSchema,
   safeParse,
 } from './schemas.js'
 
@@ -295,6 +296,19 @@ export function registerSocketHandlers(io: Server) {
       if (!data) return
       const idx = state.fallos.findIndex((f) => f.id === data.id)
       if (idx !== -1) state.fallos.splice(idx, 1)
+      broadcast(io)
+    })
+
+    socket.on('timer:addSeconds', (raw: unknown) => {
+      const data = safeParse(timerAdjustSchema, raw, 'timer:addSeconds')
+      if (!data) return
+      if (!state.matchState || !state.matchPaused) return
+      const phase = state.matchState.phase
+      if (phase !== 'round' && phase !== 'overtime' && phase !== 'rest') return
+      state.matchState = {
+        ...state.matchState,
+        timeLeft: Math.max(0, state.matchState.timeLeft + data.seconds),
+      }
       broadcast(io)
     })
 

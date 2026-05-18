@@ -228,40 +228,35 @@ function FlagPanelFooter({ canVote, roundActive, roundNum, onEmit }: Readonly<{
 }
 
 function JefeMesaPanel({
-  judgesCount, judgeVotes, roundFlags, phase, pendingJuryDecision, penaltyCounts, redName, blueName, onEmit, hidePenalties = false,
+  judgesCount, judgeVotes, roundFlags, phase, pendingJuryDecision, onEmit, mode, tulMode,
 }: Readonly<{
   judgesCount: number;
   judgeVotes: Record<string, string>;
   roundFlags: Array<{ red: number; blue: number; winner: string }>;
   phase: string;
   pendingJuryDecision: boolean;
-  penaltyCounts: { warnings: { red: number; blue: number }; fouls: { red: number; blue: number } };
-  redName: string;
-  blueName: string;
   onEmit: (event: string, data?: unknown) => void;
-  hidePenalties?: boolean;
+  mode: "mesa" | "porjuez";
+  tulMode?: boolean;
 }>) {
-  const [simple, setSimple] = React.useState(false); // false = Por juez (default)
   const ids = Array.from({ length: judgesCount }, (_, i) => `J${i + 1}`);
-  const roundActive = phase === "round" || phase === "golden_point";
-  const canVote = (phase !== "idle" && phase !== "finished") || (phase === "finished" && pendingJuryDecision);
-  const canConfirm = canVote && !roundActive;
+  const roundActive = tulMode ? false : (phase === "round" || phase === "golden_point");
+  const canVote = tulMode ? true : ((phase !== "idle" && phase !== "finished") || (phase === "finished" && pendingJuryDecision));
+  const canConfirm = tulMode ? true : (canVote && !roundActive);
   const flags = countFlags(judgesCount, judgeVotes);
   const roundWinner = flagRoundWinner(flags);
   const allVoted = ids.every((jid) => judgeVotes[jid] === "red" || judgeVotes[jid] === "blue" || judgeVotes[jid] === "draw");
   const roundNum = roundFlags.length + 1;
 
-  // Modo simple: vota todos los jueces con el mismo resultado y confirma
   function voteSingle(side: FlagSide) {
     ids.forEach((jid) => { onEmit("mesa:flagVote", { judgeId: jid, vote: side }); });
-    // pequeño delay para que el estado se actualice antes de confirmar
-    setTimeout(() => onEmit("mesa:confirmRound"), 80);
+    setTimeout(() => onEmit(tulMode ? "tul:finish" : "mesa:confirmRound"), 80);
   }
 
   return (
     <div className="space-y-3">
       {/* Historial de rounds */}
-      {roundFlags.length > 0 && (
+      {!tulMode && roundFlags.length > 0 && (
         <div className="flex flex-wrap gap-2">
           {roundFlags.map((r, i) => (
             <RoundHistoryBadge key={`r${i + 1}-${r.red}-${r.blue}`} round={r} idx={i} />
@@ -269,32 +264,8 @@ function JefeMesaPanel({
         </div>
       )}
 
-      {/* Toggle Simple / Por juez */}
-      <div className="flex items-center justify-end gap-1">
-        <button
-          type="button"
-          onClick={() => setSimple(true)}
-          className={cn(
-            "text-xs px-2.5 py-0.5 rounded border transition-colors",
-            simple ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary",
-          )}
-        >
-          Manual
-        </button>
-        <button
-          type="button"
-          onClick={() => setSimple(false)}
-          className={cn(
-            "text-xs px-2.5 py-0.5 rounded border transition-colors",
-            !simple ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground hover:bg-secondary",
-          )}
-        >
-          Por juez
-        </button>
-      </div>
-
-      {simple ? (
-        /* ── MODO MANUAL: 3 botones grandes, 1 clic confirma ── */
+      {mode === "mesa" ? (
+        /* ── MESA DECIDE: 3 botones grandes, 1 clic confirma ── */
         canVote ? (
           <div className="flex gap-3">
             <button
@@ -341,7 +312,7 @@ function JefeMesaPanel({
           <FlagPanelFooter canVote={canVote} roundActive={roundActive} roundNum={roundNum} onEmit={onEmit} />
         )
       ) : (
-        /* ── MODO POR JUEZ: filas individuales ── */
+        /* ── POR JUEZ: filas individuales ── */
         <>
           {canVote && (
             <div className="flex items-center gap-3 py-1">
@@ -369,7 +340,7 @@ function JefeMesaPanel({
             <Button
               size="lg"
               disabled={!allVoted || !canConfirm}
-              onClick={() => onEmit("mesa:confirmRound")}
+              onClick={() => tulMode ? onEmit("tul:finish") : onEmit("mesa:confirmRound")}
               title={roundActive ? "Terminá el round para confirmar" : undefined}
               className={cn(
                 "w-full",
@@ -380,89 +351,10 @@ function JefeMesaPanel({
               {roundActive ? "⏱ Votando… terminá el round para confirmar" : confirmBtnLabel(roundWinner)}
             </Button>
           ) : null}
-          <FlagPanelFooter canVote={canVote} roundActive={roundActive} roundNum={roundNum} onEmit={onEmit} />
+          {!tulMode && <FlagPanelFooter canVote={canVote} roundActive={roundActive} roundNum={roundNum} onEmit={onEmit} />}
         </>
       )}
 
-      {/* ── Penalizaciones ── */}
-      {!hidePenalties && (
-        <>
-      <Separator />
-      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 pt-1">Penalizaciones</p>
-      <div className="grid grid-cols-2 gap-3">
-        {/* ROJO */}
-        <div className="space-y-1.5">
-          <p className="text-xs font-bold text-red-400 truncate">{redName}</p>
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-black text-yellow-400">⚠ {penaltyCounts.warnings.red}</span>
-            {warnDeductions(penaltyCounts.warnings.red) > 0 && (
-              <span className="text-xs font-bold text-orange-400">−{warnDeductions(penaltyCounts.warnings.red)} pts</span>
-            )}
-          </div>
-          <div className="flex gap-1">
-            <Button size="sm" variant="outline" disabled={phase === "idle" || phase === "finished"}
-              className="flex-1 text-yellow-400 border-yellow-700/60 hover:bg-yellow-900/30 text-xs h-7"
-              onClick={() => onEmit("match:event", { judgeId: "arbiter", competitor: "red", type: "warning_minor" })}>
-              + Adv
-            </Button>
-            <Button size="sm" variant="outline" disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.red === 0}
-              className="flex-1 text-yellow-600 border-yellow-800/50 hover:bg-yellow-900/20 text-xs h-7"
-              onClick={() => onEmit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_warning" })}>
-              − Adv
-            </Button>
-          </div>
-          <Button size="sm" variant="outline" disabled={phase === "idle" || phase === "finished"}
-            className="w-full h-8 text-xs font-bold text-red-300 border-red-600 bg-red-950/40 hover:bg-red-900/50"
-            onClick={() => onEmit("match:event", { judgeId: "arbiter", competitor: "red", type: "minus_point" })}>
-            − Punto directo
-          </Button>
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-red-400">Descontados: {penaltyCounts.fouls.red}</span>
-            <Button size="sm" variant="ghost" disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.red === 0}
-              className="text-muted-foreground text-xs h-6 px-1.5"
-              onClick={() => onEmit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_minus_point" })}>
-              ↩
-            </Button>
-          </div>
-        </div>
-        {/* AZUL */}
-        <div className="space-y-1.5">
-          <p className="text-xs font-bold text-blue-400 truncate">{blueName}</p>
-          <div className="flex items-center justify-between">
-            <span className="text-sm font-black text-yellow-400">⚠ {penaltyCounts.warnings.blue}</span>
-            {warnDeductions(penaltyCounts.warnings.blue) > 0 && (
-              <span className="text-xs font-bold text-orange-400">−{warnDeductions(penaltyCounts.warnings.blue)} pts</span>
-            )}
-          </div>
-          <div className="flex gap-1">
-            <Button size="sm" variant="outline" disabled={phase === "idle" || phase === "finished"}
-              className="flex-1 text-yellow-400 border-yellow-700/60 hover:bg-yellow-900/30 text-xs h-7"
-              onClick={() => onEmit("match:event", { judgeId: "arbiter", competitor: "blue", type: "warning_minor" })}>
-              + Adv
-            </Button>
-            <Button size="sm" variant="outline" disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.blue === 0}
-              className="flex-1 text-yellow-600 border-yellow-800/50 hover:bg-yellow-900/20 text-xs h-7"
-              onClick={() => onEmit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_warning" })}>
-              − Adv
-            </Button>
-          </div>
-          <Button size="sm" variant="outline" disabled={phase === "idle" || phase === "finished"}
-            className="w-full h-8 text-xs font-bold text-blue-300 border-blue-600 bg-blue-950/40 hover:bg-blue-900/50"
-            onClick={() => onEmit("match:event", { judgeId: "arbiter", competitor: "blue", type: "minus_point" })}>
-            − Punto directo
-          </Button>
-          <div className="flex items-center justify-between">
-            <span className="text-xs text-blue-400">Descontados: {penaltyCounts.fouls.blue}</span>
-            <Button size="sm" variant="ghost" disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.blue === 0}
-              className="text-muted-foreground text-xs h-6 px-1.5"
-              onClick={() => onEmit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_minus_point" })}>
-              ↩
-            </Button>
-          </div>
-        </div>
-      </div>
-        </>
-      )}
     </div>
   );
 }
@@ -877,48 +769,6 @@ function PenaltyFloatPanel({ phase, redName, blueName, penaltyCounts, onEmit, on
 
       <Separator />
 
-      <CompetitorPenaltyBlock
-        name={blueName} color="blue"
-        warnings={penaltyCounts.warnings.blue} fouls={penaltyCounts.fouls.blue}
-        canAdd={canAdd}
-        onWarning={() => addEvent("blue", "warning_minor")}
-        onMinusPoint={() => addEvent("blue", "minus_point")}
-        onRemoveWarning={() => addEvent("blue", "remove_warning")}
-        onRemoveMinusPoint={() => addEvent("blue", "remove_minus_point")}
-      />
-    </div>
-  );
-}
-
-function PenaltiesTabContent({ phase, redName, blueName, penaltyCounts, onEmit }: Readonly<{
-  phase: string;
-  redName: string;
-  blueName: string;
-  penaltyCounts: { warnings: { red: number; blue: number }; fouls: { red: number; blue: number } };
-  onEmit: (event: string, data?: unknown) => void;
-}>) {
-  const canAdd = phase !== "idle" && phase !== "finished";
-
-  function addEvent(competitor: "red" | "blue", type: string) {
-    onEmit("match:event", { judgeId: "arbiter", competitor, type });
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-[10px] text-muted-foreground">3 advertencias = 1 punto menos automático</p>
-      {!canAdd && (
-        <p className="text-xs text-muted-foreground text-center italic">Seleccioná un combate primero</p>
-      )}
-      <CompetitorPenaltyBlock
-        name={redName} color="red"
-        warnings={penaltyCounts.warnings.red} fouls={penaltyCounts.fouls.red}
-        canAdd={canAdd}
-        onWarning={() => addEvent("red", "warning_minor")}
-        onMinusPoint={() => addEvent("red", "minus_point")}
-        onRemoveWarning={() => addEvent("red", "remove_warning")}
-        onRemoveMinusPoint={() => addEvent("red", "remove_minus_point")}
-      />
-      <Separator />
       <CompetitorPenaltyBlock
         name={blueName} color="blue"
         warnings={penaltyCounts.warnings.blue} fouls={penaltyCounts.fouls.blue}
@@ -1373,23 +1223,42 @@ function MatchControls({
           </Button>
         )}
       </div>
-      {/* Zona de peligro — separada visualmente, botones discretos */}
+      {/* +15s — solo cuando el combate está pausado */}
+      {canResume && (
+        <div className="flex items-center gap-1.5">
+          <Button
+            size="sm" variant="outline"
+            className="text-xs h-7 px-2.5 border-dashed"
+            onClick={() => onEmit("timer:addSeconds", { seconds: -15 })}>
+            −15s
+          </Button>
+          <span className="text-[10px] text-muted-foreground">ajustar tiempo</span>
+          <Button
+            size="sm" variant="outline"
+            className="text-xs h-7 px-2.5 border-dashed"
+            onClick={() => onEmit("timer:addSeconds", { seconds: 15 })}>
+            +15s
+          </Button>
+        </div>
+      )}
+      {/* Zona de descalificación */}
       {!isFinished && (
-        <div className="flex items-center gap-2 w-full max-w-xs">
-          <div className="h-px flex-1 bg-border/30" />
-          <Button
-            size="sm" variant="ghost"
-            className="text-red-400/40 hover:text-white hover:bg-red-700/80 text-xs h-7 px-2.5 border border-red-900/30 hover:border-red-600 transition-all"
-            onClick={() => onEmit("match:dq", { competitor: "red" })}>
-            <UserX className="size-3 mr-1" />DQ Rojo
-          </Button>
-          <Button
-            size="sm" variant="ghost"
-            className="text-blue-400/40 hover:text-white hover:bg-blue-700/80 text-xs h-7 px-2.5 border border-blue-900/30 hover:border-blue-600 transition-all"
-            onClick={() => onEmit("match:dq", { competitor: "blue" })}>
-            <UserX className="size-3 mr-1" />DQ Azul
-          </Button>
-          <div className="h-px flex-1 bg-border/30" />
+        <div className="flex flex-col items-center gap-1 w-full max-w-xs">
+          <p className="text-[10px] text-muted-foreground/50 uppercase tracking-widest">Descalificación</p>
+          <div className="flex items-center gap-2 w-full">
+            <Button
+              size="sm" variant="ghost"
+              className="flex-1 text-red-400/50 hover:text-white hover:bg-red-700/80 text-xs h-7 px-2 border border-red-900/30 hover:border-red-600 transition-all"
+              onClick={() => onEmit("match:dq", { competitor: "red" })}>
+              <UserX className="size-3 mr-1" />Descalif. Rojo
+            </Button>
+            <Button
+              size="sm" variant="ghost"
+              className="flex-1 text-blue-400/50 hover:text-white hover:bg-blue-700/80 text-xs h-7 px-2 border border-blue-900/30 hover:border-blue-600 transition-all"
+              onClick={() => onEmit("match:dq", { competitor: "blue" })}>
+              <UserX className="size-3 mr-1" />Descalif. Azul
+            </Button>
+          </div>
         </div>
       )}
     </div>
@@ -1450,8 +1319,7 @@ export function FightPage() {
     );
 
   const [loaded, setLoaded] = React.useState(false);
-  const [judgeMode, setJudgeMode] = React.useState<"mesa" | "movil">("mesa");
-  const [bottomTab, setBottomTab] = React.useState<"judges" | "penalties">("judges");
+  const [bottomTab, setBottomTab] = React.useState<"mesa" | "porjuez" | "remotos">("mesa");
   const [showFightList, setShowFightList] = React.useState(false);
   const [resultDialogOpen, setResultDialogOpen] = React.useState(false);
   const [resultFlagsRed, setResultFlagsRed] = React.useState(0);
@@ -1489,6 +1357,7 @@ export function FightPage() {
   const isRunning = phase === "round" || phase === "overtime" || phase === "golden_point";
   /** Modo Tul: los competidores ejecutan formas, los jueces votan rojo/azul */
   const isTul = config.matchType === 'tul';
+  const tulPhase = state.tulPhase ?? "idle";
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: setLoaded is a stable state setter — no need in deps
   React.useEffect(() => {
@@ -1603,7 +1472,7 @@ export function FightPage() {
     // judgingMode must match the UI mode: mobile judges score points, mesa judges vote flags
     const rules: RuleSetSparring = {
       ...baseRules,
-      judgingMode: judgeMode === "movil" ? "points" : "flags",
+      judgingMode: bottomTab === "remotos" ? "points" : "flags",
     };
     emit("match:load", {
       rules,
@@ -1621,10 +1490,12 @@ export function FightPage() {
 
   // When judge mode changes while a fight is loaded in "idle", reload so judgingMode matches.
   // If mid-fight, just warn — change takes effect on next fight.
-  const prevJudgeModeRef = React.useRef(judgeMode);
+  // In Tul mode, skip: tab changes don't affect judgingMode (always flags), and reloading would reset tulPhase.
+  const prevBottomTabRef = React.useRef(bottomTab);
   React.useEffect(() => {
-    if (prevJudgeModeRef.current === judgeMode) return;
-    prevJudgeModeRef.current = judgeMode;
+    if (prevBottomTabRef.current === bottomTab) return;
+    prevBottomTabRef.current = bottomTab;
+    if (isTul) return;
     if (!loaded || !currentFight) return;
     if (phase === "idle") {
       handleLoad();
@@ -1825,14 +1696,21 @@ export function FightPage() {
             <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-red-950/30 text-red-400 ring-card-red tabular-nums">
               {scoreDisplay.red}
             </div>
-            {penaltyCounts.warnings.red > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-xl font-black text-yellow-400">⚠ {penaltyCounts.warnings.red}</span>
-                {warnDeductions(penaltyCounts.warnings.red) > 0 && (
-                  <span className="text-sm font-bold text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
-                    −{warnDeductions(penaltyCounts.warnings.red)} pts
-                  </span>
+            {(penaltyCounts.warnings.red > 0 || penaltyCounts.fouls.red > 0) && (
+              <div className="flex items-center gap-1.5 text-sm font-bold">
+                {penaltyCounts.warnings.red > 0 && (
+                  <span className="text-yellow-400">⚠ {penaltyCounts.warnings.red} adv</span>
                 )}
+                {penaltyCounts.warnings.red > 0 && penaltyCounts.fouls.red > 0 && (
+                  <span className="text-muted-foreground">+</span>
+                )}
+                {penaltyCounts.fouls.red > 0 && (
+                  <span className="text-red-300">{penaltyCounts.fouls.red} directo</span>
+                )}
+                <span className="text-muted-foreground">=</span>
+                <span className="text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
+                  −{totalPenaltyPoints(penaltyCounts.warnings.red, penaltyCounts.fouls.red)} pts
+                </span>
               </div>
             )}
             {loaded && !isTul && (
@@ -1871,7 +1749,7 @@ export function FightPage() {
             )}
           </div>
 
-          {/* CENTRO: timer + controles */}}
+          {/* CENTRO: timer + controles */}
           <div className="flex flex-col items-center justify-center gap-4 px-8 py-6 min-w-85">
             {/* Phase + pause badges */}
             <div className="flex items-center gap-2">
@@ -1929,14 +1807,21 @@ export function FightPage() {
             <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-blue-950/30 text-blue-400 ring-card-blue tabular-nums">
               {scoreDisplay.blue}
             </div>
-            {penaltyCounts.warnings.blue > 0 && (
-              <div className="flex items-center gap-2">
-                <span className="text-xl font-black text-yellow-400">⚠ {penaltyCounts.warnings.blue}</span>
-                {warnDeductions(penaltyCounts.warnings.blue) > 0 && (
-                  <span className="text-sm font-bold text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
-                    −{warnDeductions(penaltyCounts.warnings.blue)} pts
-                  </span>
+            {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && (
+              <div className="flex items-center gap-1.5 text-sm font-bold">
+                {penaltyCounts.warnings.blue > 0 && (
+                  <span className="text-yellow-400">⚠ {penaltyCounts.warnings.blue} adv</span>
                 )}
+                {penaltyCounts.warnings.blue > 0 && penaltyCounts.fouls.blue > 0 && (
+                  <span className="text-muted-foreground">+</span>
+                )}
+                {penaltyCounts.fouls.blue > 0 && (
+                  <span className="text-blue-300">{penaltyCounts.fouls.blue} directo</span>
+                )}
+                <span className="text-muted-foreground">=</span>
+                <span className="text-orange-400 bg-orange-950/50 rounded px-2 py-0.5">
+                  −{totalPenaltyPoints(penaltyCounts.warnings.blue, penaltyCounts.fouls.blue)} pts
+                </span>
               </div>
             )}
             {loaded && !isTul && (
@@ -2015,12 +1900,19 @@ export function FightPage() {
               <div className="text-7xl font-black leading-none text-red-400 tabular-nums">
                 {scoreDisplay.red}
               </div>
-              {penaltyCounts.warnings.red > 0 && (
-                <div className="flex items-center gap-1">
-                  <span className="text-base font-black text-yellow-400">⚠ {penaltyCounts.warnings.red}</span>
-                  {warnDeductions(penaltyCounts.warnings.red) > 0 && (
-                    <span className="text-xs font-bold text-orange-400">−{warnDeductions(penaltyCounts.warnings.red)}pts</span>
+              {(penaltyCounts.warnings.red > 0 || penaltyCounts.fouls.red > 0) && (
+                <div className="flex items-center gap-1 text-xs font-bold">
+                  {penaltyCounts.warnings.red > 0 && (
+                    <span className="text-yellow-400">⚠{penaltyCounts.warnings.red}</span>
                   )}
+                  {penaltyCounts.warnings.red > 0 && penaltyCounts.fouls.red > 0 && (
+                    <span className="text-muted-foreground">+</span>
+                  )}
+                  {penaltyCounts.fouls.red > 0 && (
+                    <span className="text-red-300">{penaltyCounts.fouls.red}dir</span>
+                  )}
+                  <span className="text-muted-foreground">=</span>
+                  <span className="text-orange-400">−{totalPenaltyPoints(penaltyCounts.warnings.red, penaltyCounts.fouls.red)}pts</span>
                 </div>
               )}
               {loaded && !isTul && (
@@ -2060,12 +1952,19 @@ export function FightPage() {
               <div className="text-7xl font-black leading-none text-blue-400 tabular-nums">
                 {scoreDisplay.blue}
               </div>
-              {penaltyCounts.warnings.blue > 0 && (
-                <div className="flex items-center gap-1">
-                  <span className="text-base font-black text-yellow-400">⚠ {penaltyCounts.warnings.blue}</span>
-                  {warnDeductions(penaltyCounts.warnings.blue) > 0 && (
-                    <span className="text-xs font-bold text-orange-400">−{warnDeductions(penaltyCounts.warnings.blue)}pts</span>
+              {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && (
+                <div className="flex items-center gap-1 text-xs font-bold">
+                  {penaltyCounts.warnings.blue > 0 && (
+                    <span className="text-yellow-400">⚠{penaltyCounts.warnings.blue}</span>
                   )}
+                  {penaltyCounts.warnings.blue > 0 && penaltyCounts.fouls.blue > 0 && (
+                    <span className="text-muted-foreground">+</span>
+                  )}
+                  {penaltyCounts.fouls.blue > 0 && (
+                    <span className="text-blue-300">{penaltyCounts.fouls.blue}dir</span>
+                  )}
+                  <span className="text-muted-foreground">=</span>
+                  <span className="text-orange-400">−{totalPenaltyPoints(penaltyCounts.warnings.blue, penaltyCounts.fouls.blue)}pts</span>
                 </div>
               )}
               {loaded && !isTul && (
@@ -2129,101 +2028,89 @@ export function FightPage() {
         <div className="shrink-0 border-t border-border bg-card/40 px-4 py-2 space-y-2 max-h-[42vh] overflow-y-auto">
           {/* Tab bar */}
           <div className="flex items-center gap-1 border-b border-border/40 pb-1">
-            <button
-              type="button"
-              onClick={() => setBottomTab("judges")}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
-                bottomTab === "judges"
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-              )}
-            >
-              <Users className="size-3" />
-              Jueces
-            </button>
-            <button
-              type="button"
-              onClick={() => setBottomTab("penalties")}
-              className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
-                bottomTab === "penalties"
-                  ? "border-primary text-primary"
-                  : "border-transparent text-muted-foreground hover:text-foreground",
-                isTul && "hidden",
-              )}
-            >
-              ⚠️ Penalizaciones
-            </button>
-            {/* Modo Jefe/Móvil: oculto en tul (siempre móvil para voto) */}
-            {bottomTab === "judges" && !isTul && (
-              <div className="ml-auto flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => setJudgeMode("mesa")}
-                  className={cn(
-                    "flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-medium transition-colors",
-                    judgeMode === "mesa"
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border text-muted-foreground hover:bg-secondary",
-                  )}
-                >
-                  <Keyboard className="size-3" />
-                  Jefe de Mesa
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setJudgeMode("movil")}
-                  className={cn(
-                    "flex items-center gap-1.5 px-3 py-1 rounded-full border text-xs font-medium transition-colors",
-                    judgeMode === "movil"
-                      ? "border-primary bg-primary/10 text-primary"
-                      : "border-border text-muted-foreground hover:bg-secondary",
-                  )}
-                >
-                  <Smartphone className="size-3" />
-                  Pro / Móvil
-                </button>
-              </div>
+            {(!isTul || tulPhase === "voting") && (
+              <button
+                type="button"
+                onClick={() => setBottomTab("mesa")}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
+                  bottomTab === "mesa"
+                    ? "border-primary text-primary"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Keyboard className="size-3" />
+                Mesa decide
+              </button>
             )}
+            {(!isTul || tulPhase === "voting") && (
+              <button
+                type="button"
+                onClick={() => setBottomTab("porjuez")}
+                className={cn(
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
+                  bottomTab === "porjuez"
+                    ? "border-primary text-primary"
+                    : "border-transparent text-muted-foreground hover:text-foreground",
+                )}
+              >
+                <Users className="size-3" />
+                Por juez
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setBottomTab("remotos")}
+              className={cn(
+                "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
+                (bottomTab === "remotos" || (isTul && tulPhase !== "voting"))
+                  ? "border-primary text-primary"
+                  : "border-transparent text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <Smartphone className="size-3" />
+              Remotos
+            </button>
           </div>
 
-          {/* Tab: Jueces */}
-          {bottomTab === "judges" && (
-            <>
-              <JudgeCornerGrid
-                judgesCount={config.judgesCount}
-                connectedJudges={judges}
-                judgeTotals={state.judgeTotals ?? {}}
-                judgeVotes={state.judgeVotes ?? {}}
-                serverUrl={judgeMode === "movil" ? state.serverUrl : undefined}
-                ringToken={judgeMode === "movil" ? state.ringToken : undefined}
-              />
-              {judgeMode === "mesa" && !isTul && (
-                <JefeMesaPanel
-                  judgesCount={config.judgesCount}
-                  judgeVotes={state.judgeVotes}
-                  roundFlags={state.roundFlags ?? []}
-                  phase={phase}
-                  pendingJuryDecision={matchState?.pendingJuryDecision ?? false}
-                  penaltyCounts={penaltyCounts}
-                  redName={currentFight?.red.name ?? "Rojo"}
-                  blueName={currentFight?.blue.name ?? "Azul"}
-                  onEmit={emit}
-                  hidePenalties={true}
-                />
-              )}
-            </>
+          {/* Tab: Mesa decide */}
+          {/* Tab: Mesa decide (sparring + tul voting) */}
+          {bottomTab === "mesa" && (!isTul || tulPhase === "voting") && (
+            <JefeMesaPanel
+              judgesCount={config.judgesCount}
+              judgeVotes={state.judgeVotes}
+              roundFlags={state.roundFlags ?? []}
+              phase={phase}
+              pendingJuryDecision={matchState?.pendingJuryDecision ?? false}
+              onEmit={emit}
+              mode="mesa"
+              tulMode={isTul}
+            />
           )}
 
-          {/* Tab: Penalizaciones */}
-          {bottomTab === "penalties" && (
-            <PenaltiesTabContent
+          {/* Tab: Por juez (sparring + tul voting) */}
+          {bottomTab === "porjuez" && (!isTul || tulPhase === "voting") && (
+            <JefeMesaPanel
+              judgesCount={config.judgesCount}
+              judgeVotes={state.judgeVotes}
+              roundFlags={state.roundFlags ?? []}
               phase={phase}
-              redName={currentFight?.red.name ?? "Rojo"}
-              blueName={currentFight?.blue.name ?? "Azul"}
-              penaltyCounts={penaltyCounts}
+              pendingJuryDecision={matchState?.pendingJuryDecision ?? false}
               onEmit={emit}
+              mode="porjuez"
+              tulMode={isTul}
+            />
+          )}
+
+          {/* Tab: Remotos */}
+          {(bottomTab === "remotos" || (isTul && tulPhase !== "voting")) && (
+            <JudgeCornerGrid
+              judgesCount={config.judgesCount}
+              connectedJudges={judges}
+              judgeTotals={state.judgeTotals ?? {}}
+              judgeVotes={state.judgeVotes ?? {}}
+              serverUrl={state.serverUrl}
+              ringToken={state.ringToken}
             />
           )}
         </div>
@@ -2335,7 +2222,7 @@ export function FightPage() {
                 <p className="text-sm font-medium">Banderines totales</p>
                 <div className="grid grid-cols-2 gap-3">
                   <FlagCounterField
-                    isMesa={judgeMode === "mesa"}
+                    isMesa={bottomTab === "mesa"}
                     value={resultFlagsRed}
                     onChange={setResultFlagsRed}
                     color="red"
@@ -2343,7 +2230,7 @@ export function FightPage() {
                     max={config.judgesCount}
                   />
                   <FlagCounterField
-                    isMesa={judgeMode === "mesa"}
+                    isMesa={bottomTab === "mesa"}
                     value={resultFlagsBlue}
                     onChange={setResultFlagsBlue}
                     color="blue"

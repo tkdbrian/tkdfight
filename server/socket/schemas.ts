@@ -76,6 +76,10 @@ export const matchDeleteFalloSchema = z.object({
   id: z.number().int().nonnegative(),
 })
 
+export const timerAdjustSchema = z.object({
+  seconds: z.number().int().min(-120).max(120),
+})
+
 /**
  * Safely parse a socket payload. On failure, logs at debug level and returns null.
  * Use the returned typed value or short-circuit the handler.
