@@ -4,6 +4,7 @@ import { state } from './state.js'
 export function getLocalIp(): string {
   const nets = os.networkInterfaces()
   for (const name of Object.keys(nets)) {
+    // biome-ignore lint/style/noNonNullAssertion: networkInterfaces() returns undefined only for unknown keys, impossible here
     for (const net of nets[name]!) {
       if (net.family === 'IPv4' && !net.internal) return net.address
     }

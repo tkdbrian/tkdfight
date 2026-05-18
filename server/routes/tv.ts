@@ -144,7 +144,7 @@ export function registerTvRoute(router: Router) {
       if (el) el.className = 'tv-judge-dot' + (connected.includes(jid) ? ' connected' : '');
     });
   });
-<\/script>
+</script>
 </body>
 </html>`)
   })

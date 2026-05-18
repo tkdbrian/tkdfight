@@ -73,6 +73,7 @@ function interleaveGroupFights(groupFights: FightEntry[][]): FightEntry[] {
   while (queues.some((q) => q.length > 0)) {
     for (const queue of queues) {
       if (queue.length > 0) {
+        // biome-ignore lint/style/noNonNullAssertion: queue.length > 0 checked above
         result.push(queue.shift()!);
       }
     }
@@ -122,7 +123,9 @@ export function generateTiebreakFights(
 
   return schedule.map(([la, lb]) => ({
     id: crypto.randomUUID(),
+    // biome-ignore lint/style/noNonNullAssertion: letterMap built from same LETTERS slice, keys guaranteed to exist
     red: letterMap.get(la)!,
+    // biome-ignore lint/style/noNonNullAssertion: letterMap built from same LETTERS slice, keys guaranteed to exist
     blue: letterMap.get(lb)!,
     completed: false,
     groupId,

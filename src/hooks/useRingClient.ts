@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { ServerState } from "@/lib/socket-types";
 
@@ -39,7 +39,7 @@ export function useRingClient(targets: RingTarget[]) {
 
   const key = (t: RingTarget) => `${t.ip}:${t.port}`;
 
-  // Sync sockets with targets
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `key` is a stable inline function; adding it to deps would cause infinite reconnect loops
   useEffect(() => {
     const currentKeys = new Set(targets.map(key));
     const existing = socketsRef.current;

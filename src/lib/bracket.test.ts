@@ -26,7 +26,7 @@ describe("getGroupDistribution", () => {
     for (let n = 3; n <= 12; n++) {
       const dist = getGroupDistribution(n);
       expect(dist).toBeDefined();
-      expect(dist!.reduce((a, b) => a + b, 0)).toBe(n);
+      expect(dist?.reduce((a, b) => a + b, 0)).toBe(n);
     }
   });
 

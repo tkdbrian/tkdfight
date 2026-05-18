@@ -5,7 +5,6 @@ import {
   addMatchEvent,
   endPhase,
   resolveJury,
-  confirmPenalties,
   undoLastEvent,
 } from '../../src/engine/match-machine.js'
 import type { Competitor, RuleSetSparring } from '../../src/engine/types.js'

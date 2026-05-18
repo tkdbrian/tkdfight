@@ -1,4 +1,4 @@
-import { Users, Swords, BarChart3, Monitor, Settings } from "lucide-react";
+import { Swords, BarChart3, Monitor, Settings } from "lucide-react";
 
 function PlaceholderPage({ icon: Icon, title }: { icon: React.ElementType; title: string }) {
   return (

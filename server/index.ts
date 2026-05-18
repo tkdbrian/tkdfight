@@ -49,7 +49,7 @@ const io = new Server(server, {
   },
 })
 
-const PORT = Number.parseInt(process.env.PORT ?? '3001')
+const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)
 const localIp = getLocalIp()
 setServerUrl(`http://${localIp}:${PORT}`)
 

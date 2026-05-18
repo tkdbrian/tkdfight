@@ -6,7 +6,7 @@ import { state } from '../state.js'
 import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, insertFightIfNew, getSourceRing } from '../db/index.js'
 import db from '../db/index.js'
 
-const PORT = Number.parseInt(process.env.PORT ?? '3001')
+const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)
 
 export function registerRingRoute(app: Express, io: Server) {
   // ── GET /api/ring/status ─────────────────────────────────────────────────
