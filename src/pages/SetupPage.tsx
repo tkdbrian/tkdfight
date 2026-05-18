@@ -282,7 +282,7 @@ export function SetupPage() {
   function loadDemo() {
     setWelcomeDismissed(true);
     updateCat({ weight: "Mediano A", belt: "Danes", gender: "M" });
-    DEMO_COMPETITORS.forEach((c) => addCompetitor(c));
+    DEMO_COMPETITORS.forEach((c) => { addCompetitor(c); });
   }
 
   const [quickName, setQuickName] = useState("");

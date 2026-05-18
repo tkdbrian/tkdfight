@@ -165,7 +165,9 @@ export function generateFinalFights(winners: CompetitorEntry[]): FightEntry[] {
 
   return schedule.map(([la, lb]) => ({
     id: crypto.randomUUID(),
+    // biome-ignore lint/style/noNonNullAssertion: letterMap is built from the same LETTERS slice — keys always exist
     red: letterMap.get(la)!,
+    // biome-ignore lint/style/noNonNullAssertion: letterMap is built from the same LETTERS slice — keys always exist
     blue: letterMap.get(lb)!,
     completed: false,
     groupId: "FINAL",

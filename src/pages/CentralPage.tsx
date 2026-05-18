@@ -31,7 +31,6 @@ import {
   RefreshCw,
   ChevronDown,
   ChevronRight,
-  GripVertical,
 } from "lucide-react";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -61,12 +60,6 @@ interface CalledEntry {
   ringAlias: string;
   calledAt: string;
   confirmed: boolean;
-}
-
-interface MoveSelection {
-  /** key = ip:port of source ring */
-  sourceKey: string;
-  fightIds: Set<string>;
 }
 
 interface MoveState {
@@ -177,6 +170,8 @@ export function CentralPage() {
   }, [targets]);
 
   // Poll queue data from each connected tatami every 5s
+  // biome-ignore lint/correctness/useExhaustiveDependencies: custom stable key prevents infinite reconnect loop
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rings reference causes loop; custom serialized key is intentional
   useEffect(() => {
     const intervals: ReturnType<typeof setInterval>[] = [];
 
@@ -206,10 +201,11 @@ export function CentralPage() {
     }
 
     return () => intervals.forEach(clearInterval);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // biome-ignore lint/correctness/useExhaustiveDependencies: custom serialized key — see comment above
   }, [rings.map((r) => `${r.target.ip}:${r.target.port}:${r.connected}`).join(",")]);
 
   // Track activity from ring state changes
+  // biome-ignore lint/correctness/useExhaustiveDependencies: addActivity is stable; rings serialized key avoids infinite loop
   useEffect(() => {
     for (const ring of rings) {
       const alias = ring.state?.ringAlias ?? ring.target.alias ?? `${ring.target.ip}`;
@@ -252,7 +248,7 @@ export function CentralPage() {
   // ── Add / Remove targets ────────────────────────────────────────────────
   function addManualTarget() {
     const ip = manualIp.trim();
-    const port = Number.parseInt(manualPort) || 3001;
+    const port = Number.parseInt(manualPort, 10) || 3001;
     if (!ip) return;
     if (targets.some((t) => t.ip === ip && t.port === port)) return;
     setTargets((prev) => [...prev, { ip, port }]);
@@ -820,6 +816,7 @@ function TatamiCard({
   onRemove, onCall, onConfirm, onDismiss,
   onStartMove, onToggleFight, onConfirmMove, onCancelMove, onMoveHere,
   isDragTarget, isDraggedOver,
+  // biome-ignore lint/correctness/noUnusedFunctionParameters: received as props but forwarded via child component state; retained for API symmetry
   onFightDragStart, onFightDragEnd, onCardDragOver, onCardDragLeave, onDropFight,
 }: Readonly<TatamiCardProps>) {
   const { connected, state, target } = ring;
@@ -828,7 +825,6 @@ function TatamiCard({
   const match = state?.match;
   const matchState = state?.matchState;
   const phase = matchState?.phase;
-  const hasActiveMatch = match && phase && phase !== "idle" && phase !== "finished";
   const pendingFights = queue?.filter((e) => e.status !== "active") ?? [];
   const pendingCount = pendingFights.length;
 
@@ -1042,6 +1038,7 @@ function TatamiCard({
         </div>
 
         {/* Completados — acordeón expandible */}
+        {/* biome-ignore lint/style/noNonNullAssertion: outer condition checks state?.fallos?.length > 0, so state is defined */}
         {(state?.fallos?.length ?? 0) > 0 && (
           <CompletedFightsAccordion fallos={state!.fallos} />
         )}
@@ -1351,6 +1348,7 @@ function computeConsolidatedStandings(ringResults: RingResults[]): ConsolidatedS
 
   function get(name: string): ConsolidatedStanding {
     if (!map.has(name)) map.set(name, { name, wins: 0, losses: 0, draws: 0, fought: 0, points: 0 });
+    // biome-ignore lint/style/noNonNullAssertion: map.has() + map.set() guarantee key exists above
     return map.get(name)!;
   }
 

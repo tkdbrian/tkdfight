@@ -250,7 +250,7 @@ function JefeMesaPanel({
 
   // Modo simple: vota todos los jueces con el mismo resultado y confirma
   function voteSingle(side: FlagSide) {
-    ids.forEach((jid) => onEmit("mesa:flagVote", { judgeId: jid, vote: side }));
+    ids.forEach((jid) => { onEmit("mesa:flagVote", { judgeId: jid, vote: side }); });
     // pequeño delay para que el estado se actualice antes de confirmar
     setTimeout(() => onEmit("mesa:confirmRound"), 80);
   }

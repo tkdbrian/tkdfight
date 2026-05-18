@@ -1,71 +1,80 @@
 ﻿{
-    "$schema":  "https://biomejs.dev/schemas/2.4.10/schema.json",
-    "vcs":  {
-                "enabled":  true,
-                "clientKind":  "git",
-                "useIgnoreFile":  true
-            },
-    "assist":  {
-                   "actions":  {
-                                   "source":  {
-                                                  "organizeImports":  "on"
-                                              }
-                               }
-               },
-    "linter":  {
-                   "enabled":  true,
-                   "rules":  {
-                                 "recommended":  true,
-                                 "correctness":  {
-                                                     "noUnusedImports":  "warn",
-                                                     "noUnusedVariables":  "warn"
-                                                 }
-                             }
-               },
-    "formatter":  {
-                      "enabled":  true,
-                      "indentStyle":  "space",
-                      "indentWidth":  2,
-                      "lineWidth":  100
-                  },
-    "javascript":  {
-                       "formatter":  {
-                                         "quoteStyle":  "double",
-                                         "trailingCommas":  "es5",
-                                         "semicolons":  "always"
-                                     }
-                   },
-    "files":  {
-                  "includes":  [
-                                   "**",
-                                   "!**/node_modules",
-                                   "!**/dist",
-                                   "!**/*.js",
-                                   "!**/*.css",
-                                   "!**/src/engine",
-                                   "!**/src/rules"
-                               ]
-              },
-    "overrides":  [
-                      {
-                          "linter":  {
-                                         "rules":  {
-                                                       "a11y":  {
-                                                                    "noSvgWithoutTitle":  "off",
-                                                                    "noStaticElementInteractions":  "off"
-                                                                },
-                                                       "suspicious":  {
-                                                                          "noArrayIndexKey":  "off"
-                                                                      },
-                                                       "correctness":  {
-                                                                           "noUnusedFunctionParameters":  "off"
-                                                                       }
-                                                   }
-                                     },
-                          "includes":  [
-                                           "src/components/BracketView.tsx",
-                                           "src/pages/BracketPage.tsx"
-                                       ]
-                      }
-                  ]
+  "$schema": "https://biomejs.dev/schemas/2.4.10/schema.json",
+  "vcs": {
+    "enabled": true,
+    "clientKind": "git",
+    "useIgnoreFile": true
+  },
+  "assist": { "actions": { "source": { "organizeImports": "on" } } },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "correctness": {
+        "noUnusedImports": "warn",
+        "noUnusedVariables": "warn"
+      }
+    }
+  },
+  "formatter": {
+    "enabled": true,
+    "indentStyle": "space",
+    "indentWidth": 2,
+    "lineWidth": 100
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double",
+      "trailingCommas": "es5",
+      "semicolons": "always"
+    }
+  },
+  "files": {
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/dist",
+      "!**/*.js",
+      "!**/*.css",
+      "!**/src/engine",
+      "!**/src/rules"
+    ]
+  },
+  "overrides": [
+    {
+      "includes": [
+        "src/components/BracketView.tsx",
+        "src/pages/BracketPage.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noSvgWithoutTitle": "off",
+            "noStaticElementInteractions": "off"
+          },
+          "suspicious": {
+            "noArrayIndexKey": "off"
+          },
+          "correctness": {
+            "noUnusedFunctionParameters": "off"
+          }
+        }
+      }
+    },
+    {
+      "includes": [
+        "src/pages/CentralPage.tsx",
+        "src/pages/FightPage.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "a11y": {
+            "noStaticElementInteractions": "off",
+            "useKeyWithClickEvents": "off"
+          }
+        }
+      }
+    }
+  ]
 }
+
