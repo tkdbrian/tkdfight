@@ -86,6 +86,11 @@ export function deletePendingFights(tournamentId: number) {
   db.prepare('DELETE FROM fights WHERE tournament_id = ? AND completed = 0').run(tournamentId)
 }
 
+export function clearTournamentData(tournamentId: number) {
+  db.prepare('DELETE FROM fights WHERE tournament_id = ?').run(tournamentId)
+  db.prepare('DELETE FROM competitors WHERE tournament_id = ?').run(tournamentId)
+}
+
 // ── Competitors ──────────────────────────────────────────────────────────────
 
 export function upsertCompetitor(c: {

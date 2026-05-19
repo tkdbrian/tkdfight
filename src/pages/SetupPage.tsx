@@ -16,7 +16,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Pencil, Trash2, Swords, AlertCircle, Plus, Wifi, Smartphone, Zap, ArrowRight, Trophy } from "lucide-react";
+import { Pencil, Trash2, Swords, AlertCircle, Plus, Wifi, Smartphone, Zap, ArrowRight, Trophy, ChevronDown, ChevronUp } from "lucide-react";
 import { generateGroupsTournament, generateEliminationBracket, getGroupDistribution } from "@/lib/bracket";
 import { cn } from "@/lib/utils";
 
@@ -157,19 +157,19 @@ function ChipGroup({ label, options, value, onChange }: Readonly<{
   onChange: (v: string) => void;
 }>) {
   return (
-    <div className="space-y-1">
-      <span className="text-sm font-medium text-muted-foreground">{label}</span>
-      <div className="flex flex-wrap gap-2">
+    <div className="space-y-2">
+      <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">{label}</span>
+      <div className="flex flex-wrap gap-2 items-center">
         {options.map((opt) => (
           <button
             key={opt}
             type="button"
             onClick={() => onChange(value === opt ? "" : opt)}
             className={cn(
-              "px-4 py-2 rounded-full border text-sm font-medium transition-colors",
+              "rounded-full border font-medium transition-all duration-150",
               value === opt
-                ? "border-primary bg-primary text-primary-foreground"
-                : "border-border text-muted-foreground hover:bg-secondary",
+                ? "px-5 py-2 text-sm font-bold border-2 border-primary bg-primary/10 text-primary ring-2 ring-primary/20 shadow-sm"
+                : "px-3 py-1.5 text-xs border border-border/50 text-muted-foreground/60 hover:border-border hover:text-muted-foreground hover:bg-secondary",
             )}
           >
             {opt}
@@ -194,6 +194,8 @@ export function SetupPage() {
     addImportedFights,
     completeFight,
     setGroups,
+    setupStarted,
+    setSetupStarted,
   } = useTournamentStore(
     useShallow((s) => ({
       competitors: s.competitors,
@@ -208,13 +210,29 @@ export function SetupPage() {
       addImportedFights: s.addImportedFights,
       completeFight: s.completeFight,
       setGroups: s.setGroups,
+      setupStarted: s.setupStarted,
+      setSetupStarted: s.setSetupStarted,
     }))
   );
   const navigate = useNavigate();
   const { socket } = useSocket();
   const [cat, setCat] = useState<CatState>(EMPTY_CAT);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
-  const showWelcome = competitors.length === 0 && !welcomeDismissed;
+  const showWelcome = competitors.length === 0 && !setupStarted && !welcomeDismissed;
+
+  const [draftTournamentName, setDraftTournamentName] = useState(config.tournamentName ?? "");
+  const [draftAlias, setDraftAlias] = useState("");
+  const [draftRingName, setDraftRingName] = useState("");
+
+  useEffect(() => {
+    fetch("/api/ring/status")
+      .then((r) => r.json())
+      .then((d: { alias?: string; name?: string }) => {
+        if (d.alias) setDraftAlias(d.alias);
+        if (d.name) setDraftRingName(d.name);
+      })
+      .catch(() => {});
+  }, []);
 
   // Cuando Mesa Central reasigna peleas a este tatami, navegar automáticamente a /fight.
   useEffect(() => {
@@ -285,9 +303,31 @@ export function SetupPage() {
     DEMO_COMPETITORS.forEach((c) => { addCompetitor(c); });
   }
 
+  async function handleNewTournament() {
+    if (draftAlias.trim()) {
+      try {
+        await fetch("/api/ring/config", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ alias: draftAlias.trim(), name: draftRingName.trim() || draftAlias.trim() }),
+        });
+      } catch {
+        // non-critical
+      }
+    }
+    if (draftTournamentName.trim()) {
+      setConfig({ tournamentName: draftTournamentName.trim() });
+    }
+    setSetupStarted(true);
+    setWelcomeDismissed(true);
+  }
+
   const [quickName, setQuickName] = useState("");
   const [quickTeam, setQuickTeam] = useState("");
   const nameRef = useRef<HTMLInputElement>(null);
+
+  // Category card starts expanded when no category is set yet, collapsed otherwise
+  const [catExpanded, setCatExpanded] = useState(config.categoryName === "");
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -377,7 +417,8 @@ export function SetupPage() {
 
   if (showWelcome) {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center p-4 sm:p-8 gap-6 sm:gap-10 text-center overflow-auto">
+      <div className="flex-1 overflow-auto">
+        <div className="flex flex-col items-center justify-center min-h-full p-4 sm:p-8 gap-6 sm:gap-10 text-center">
         <div className="space-y-3">
           <div className="flex items-center justify-center gap-3 mb-2">
             <Trophy className="size-8 sm:size-10 text-primary" />
@@ -388,6 +429,44 @@ export function SetupPage() {
             Gratis, sin registro y funciona sin internet.
           </p>
         </div>
+
+        <Card className="w-full max-w-2xl text-left">
+          <CardHeader className="pb-3">
+            <CardTitle className="text-sm">Configuración del torneo</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="wiz-tournament-name">Nombre del evento</Label>
+              <Input
+                id="wiz-tournament-name"
+                placeholder="Torneo Regional ITF 2026"
+                value={draftTournamentName}
+                onChange={(e) => setDraftTournamentName(e.target.value)}
+              />
+            </div>
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1.5">
+                <Label htmlFor="wiz-ring-alias">Alias del cuadrilátero</Label>
+                <Input
+                  id="wiz-ring-alias"
+                  placeholder="T1"
+                  value={draftAlias}
+                  onChange={(e) => setDraftAlias(e.target.value.slice(0, 4))}
+                  className="font-mono"
+                />
+              </div>
+              <div className="space-y-1.5">
+                <Label htmlFor="wiz-ring-name">Nombre del cuadrilátero</Label>
+                <Input
+                  id="wiz-ring-name"
+                  placeholder="Cuadrilátero 1"
+                  value={draftRingName}
+                  onChange={(e) => setDraftRingName(e.target.value)}
+                />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl w-full text-left">
           <div className="rounded-xl border border-border bg-secondary/30 p-5 space-y-2">
@@ -412,7 +491,7 @@ export function SetupPage() {
             <Zap className="size-4" />
             Ver demo (8 competidores)
           </Button>
-          <Button size="lg" variant="outline" onClick={() => setWelcomeDismissed(true)} className="gap-2">
+          <Button size="lg" variant="outline" onClick={() => void handleNewTournament()} className="gap-2">
             Nuevo torneo
             <ArrowRight className="size-4" />
           </Button>
@@ -421,117 +500,171 @@ export function SetupPage() {
         <p className="text-xs text-muted-foreground">
           Open source · github.com/tkdbrian/tkdfight
         </p>
+        </div>
       </div>
     );
   }
 
+  let canStartHint = "Seleccioná la categoría primero";
+  if (config.categoryName) {
+    canStartHint = config.mode === "round-robin" && competitors.length < 3
+      ? "Mínimo 3 competidores"
+      : "Mínimo 2 competidores";
+  }
+
   return (
     <div className="flex-1 overflow-auto p-4 space-y-4">
+      {/* ── HEADER ─────────────────────────────────────────────── */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-xl font-bold">Competidores</h1>
-          <p className="text-muted-foreground text-sm">Completa la lista y lanza la categoría.</p>
-          {config.categoryName && (
-            <p className="text-sm font-semibold text-primary mt-1">{config.categoryName}</p>
+          {config.tournamentName && (
+            <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-1">
+              {config.tournamentName}
+            </p>
           )}
+          <h1 className={cn(
+            "font-black tracking-tight leading-tight transition-all",
+            config.categoryName ? "text-2xl text-foreground" : "text-xl text-muted-foreground",
+          )}>
+            {config.categoryName || "Sin categoría"}
+          </h1>
+          <p className="text-muted-foreground text-xs mt-1">
+            {competitors.length === 0
+              ? "Agrega competidores e iniciá el torneo"
+              : (() => {
+                  const modeLabel = config.mode === "round-robin" ? "Round Robin" : "Eliminación";
+                  const plural = competitors.length === 1 ? "competidor" : "competidores";
+                  return `${competitors.length} ${plural} · ${modeLabel}`;
+                })()}
+          </p>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <Button onClick={() => void handleStart()} disabled={!canStart} size="xl">
+        <div className="flex flex-col items-end gap-1.5">
+          <Button
+            onClick={() => void handleStart()}
+            disabled={!canStart}
+            size="xl"
+            className={cn(
+              "transition-all",
+              canStart
+                ? "bg-green-600 hover:bg-green-500 text-white border-green-600 shadow-lg shadow-green-900/40 ring-2 ring-green-600/25"
+                : "",
+            )}
+          >
             <Swords className="size-5" />
             Iniciar Categoría
           </Button>
-          {!canStart && (
-            <p className="text-xs text-muted-foreground">
-              {!config.categoryName
-                ? "Selecciona la categoría"
-                : config.mode === "round-robin" && competitors.length < 3
-                ? "Mínimo 3 competidores"
-                : "Mínimo 2 competidores"}
-            </p>
-          )}
+          {canStart ? null : <p className="text-xs text-muted-foreground/60">{canStartHint}</p>}
         </div>
       </div>
 
+      {/* ── CATEGORÍA (colapsable) ──────────────────────────────── */}
       <Card>
-        <CardHeader className="pb-3 pt-5 px-3 sm:px-5">
-          <CardTitle className="text-sm">Definir categoría</CardTitle>
-        </CardHeader>
-        <CardContent className="px-3 sm:px-5 pb-5 space-y-4">
-          <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
-          <ChipGroup label="Grado" options={GRADO_OPTIONS} value={cat.belt} onChange={(v) => updateCat({ belt: v })} />
-          <div className="flex flex-wrap gap-4 items-end">
-            <ChipGroup label="Género" options={GENERO_OPTIONS} value={cat.gender} onChange={(v) => updateCat({ gender: v })} />
-            <div className="space-y-1">
-              <span className="text-sm font-medium text-muted-foreground">Edad</span>
-              <div className="flex items-center gap-1.5">
-                <Input
-                  type="number"
-                  placeholder="Desde"
-                  value={cat.ageFrom}
-                  onChange={(e) => updateCat({ ageFrom: e.target.value })}
-                  className="w-24 h-9 text-sm"
-                />
-                <span className="text-xs text-muted-foreground">-</span>
-                <Input
-                  type="number"
-                  placeholder="Hasta"
-                  value={cat.ageTo}
-                  onChange={(e) => updateCat({ ageTo: e.target.value })}
-                  className="w-24 h-9 text-sm"
-                />
-              </div>
-            </div>
-            <div className="space-y-1">
-              <span className="text-sm font-medium text-muted-foreground">Disciplina</span>
-              <div className="flex gap-2">
-                {(["sparring", "tul"] as const).map((t) => (
-                  <button
-                    key={t}
-                    type="button"
-                    onClick={() => setConfig({ matchType: t })}
-                    className={cn(
-                      "px-4 py-2 rounded-full border text-sm font-medium transition-colors",
-                      (config.matchType ?? "sparring") === t
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border text-muted-foreground hover:bg-secondary",
-                    )}
-                  >
-                    {t === "sparring" ? "Sparring" : "Tul / Formas"}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="space-y-1">
-              <span className="text-sm font-medium text-muted-foreground">Modo</span>
-              <div className="flex gap-2">
-                {(["round-robin", "elimination"] as TournamentMode[]).map((m) => (
-                  <button
-                    key={m}
-                    type="button"
-                    onClick={() => setConfig({ mode: m })}
-                    className={cn(
-                      "px-4 py-2 rounded-full border text-sm font-medium transition-colors",
-                      config.mode === m
-                        ? "border-primary bg-primary text-primary-foreground"
-                        : "border-border text-muted-foreground hover:bg-secondary",
-                    )}
-                  >
-                    {m === "round-robin" ? "Round Robin" : "Eliminación"}
-                  </button>
-                ))}
-              </div>
-            </div>
+        <button
+          type="button"
+          className="w-full flex items-center justify-between px-4 sm:px-5 py-3 hover:bg-secondary/30 transition-colors rounded-t-xl"
+          onClick={() => setCatExpanded((v) => !v)}
+        >
+          <div className="flex items-center gap-3">
+            <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
+              Categoría
+            </span>
+            {config.categoryName && (
+              <span className="text-sm font-semibold text-primary">{config.categoryName}</span>
+            )}
+            {!config.categoryName && (
+              <span className="text-xs text-muted-foreground/50">Sin definir</span>
+            )}
           </div>
-          <div className="space-y-1">
-            <span className="text-sm font-medium text-muted-foreground">Jefe de mesa</span>
-            <Input
-              placeholder="Nombre del jefe de mesa"
-              value={config.tableChief}
-              onChange={(e) => setConfig({ tableChief: e.target.value })}
-              className="max-w-xs h-9 text-sm"
-            />
+          <div className="flex items-center gap-2">
+            {config.categoryName && !catExpanded && (
+              <span className="text-xs text-muted-foreground/60 font-medium">Editar</span>
+            )}
+            {catExpanded ? (
+              <ChevronUp className="size-4 text-muted-foreground/50" />
+            ) : (
+              <ChevronDown className="size-4 text-muted-foreground/50" />
+            )}
           </div>
-        </CardContent>
+        </button>
+
+        {catExpanded && (
+          <CardContent className="px-3 sm:px-5 pb-5 pt-1 space-y-4 border-t border-border/40">
+            <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
+            <ChipGroup label="Grado" options={GRADO_OPTIONS} value={cat.belt} onChange={(v) => updateCat({ belt: v })} />
+            <div className="flex flex-wrap gap-4 items-end">
+              <ChipGroup label="Género" options={GENERO_OPTIONS} value={cat.gender} onChange={(v) => updateCat({ gender: v })} />
+              <div className="space-y-2">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Edad</span>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="number"
+                    placeholder="Desde"
+                    value={cat.ageFrom}
+                    onChange={(e) => updateCat({ ageFrom: e.target.value })}
+                    className="w-24 h-9 text-sm"
+                  />
+                  <span className="text-xs text-muted-foreground/50">—</span>
+                  <Input
+                    type="number"
+                    placeholder="Hasta"
+                    value={cat.ageTo}
+                    onChange={(e) => updateCat({ ageTo: e.target.value })}
+                    className="w-24 h-9 text-sm"
+                  />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Disciplina</span>
+                <div className="flex gap-2">
+                  {(["sparring", "tul"] as const).map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => setConfig({ matchType: t })}
+                      className={cn(
+                        "rounded-full border font-medium transition-all duration-150",
+                        (config.matchType ?? "sparring") === t
+                          ? "px-5 py-2 text-sm font-bold border-2 border-primary bg-primary/10 text-primary ring-2 ring-primary/20 shadow-sm"
+                          : "px-3 py-1.5 text-xs border border-border/50 text-muted-foreground/60 hover:border-border hover:text-muted-foreground hover:bg-secondary",
+                      )}
+                    >
+                      {t === "sparring" ? "Sparring" : "Tul / Formas"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Modo</span>
+                <div className="flex gap-2">
+                  {(["round-robin", "elimination"] as TournamentMode[]).map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      onClick={() => setConfig({ mode: m })}
+                      className={cn(
+                        "rounded-full border font-medium transition-all duration-150",
+                        config.mode === m
+                          ? "px-5 py-2 text-sm font-bold border-2 border-primary bg-primary/10 text-primary ring-2 ring-primary/20 shadow-sm"
+                          : "px-3 py-1.5 text-xs border border-border/50 text-muted-foreground/60 hover:border-border hover:text-muted-foreground hover:bg-secondary",
+                      )}
+                    >
+                      {m === "round-robin" ? "Round Robin" : "Eliminación"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Jefe de mesa</span>
+              <Input
+                placeholder="Nombre del jefe de mesa"
+                value={config.tableChief}
+                onChange={(e) => setConfig({ tableChief: e.target.value })}
+                className="max-w-xs h-9 text-sm"
+              />
+            </div>
+          </CardContent>
+        )}
       </Card>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -580,9 +713,11 @@ export function SetupPage() {
                 {competitors.map((c, i) => (
                   <div
                     key={c.id}
-                    className="flex items-center gap-2 rounded-lg px-2 py-2.5 hover:bg-secondary/50 group"
+                    className="flex items-center gap-2.5 rounded-lg px-2 py-2.5 hover:bg-secondary/50 group"
                   >
-                    <span className="text-xs text-muted-foreground w-5 text-right shrink-0">{i + 1}</span>
+                    <span className="size-6 shrink-0 rounded-full bg-secondary text-[11px] font-bold text-muted-foreground flex items-center justify-center">
+                      {i + 1}
+                    </span>
                     <div className="flex-1 min-w-0">
                       <span className="font-medium text-sm truncate block">{c.name}</span>
                       {c.team && <span className="text-xs text-muted-foreground truncate block">{c.team}</span>}

@@ -10,10 +10,10 @@ interface BracketViewProps {
   onSwap?: (aMatchId: string, aSlot: "red" | "blue", bMatchId: string, bSlot: "red" | "blue") => void;
 }
 
-const MATCH_W = 160;
-const MATCH_H = 60;
-const ROUND_GAP = 80;
-const MATCH_V_GAP = 20;
+const MATCH_W = 200;
+const MATCH_H = 80;
+const ROUND_GAP = 90;
+const MATCH_V_GAP = 24;
 const DRAG_THRESHOLD = 5;
 
 function getRoundLabel(round: number, totalRounds: number): string {
@@ -187,9 +187,9 @@ export function BracketView({
           <text
             key={`round-label-r${round}`}
             x={getMatchX(round) + MATCH_W / 2}
-            y={12}
+            y={16}
             textAnchor="middle"
-            fontSize={10}
+            fontSize={13}
             fill="hsl(var(--muted-foreground))"
           >
             {getRoundLabel(round, totalRounds)}
@@ -242,22 +242,22 @@ export function BracketView({
                 stroke="hsl(var(--border))" strokeWidth={1}
               />
               <text
-                x={x + 8} y={y + MATCH_H * 0.32}
-                fontSize={11}
+                x={x + 10} y={y + MATCH_H * 0.32}
+                fontSize={14}
                 fill={slotFill(redIsWinner, !!match.red.competitor, match.red.fromMatchId)}
                 fontWeight={redIsWinner ? "bold" : "normal"}
                 opacity={redIsDragSource && isDragging ? 0.25 : 1}
               >
-                {competitorName(match.red).substring(0, 18)}
+                {competitorName(match.red).substring(0, 22)}
               </text>
               <text
-                x={x + 8} y={y + MATCH_H * 0.72}
-                fontSize={11}
+                x={x + 10} y={y + MATCH_H * 0.72}
+                fontSize={14}
                 fill={slotFill(blueIsWinner, !!match.blue.competitor, match.blue.fromMatchId)}
                 fontWeight={blueIsWinner ? "bold" : "normal"}
                 opacity={blueIsDragSource && isDragging ? 0.25 : 1}
               >
-                {competitorName(match.blue).substring(0, 18)}
+                {competitorName(match.blue).substring(0, 22)}
               </text>
               {isCurrent && (
                 <circle cx={x + MATCH_W - 8} cy={y + 8} r={4} fill="hsl(var(--primary))" />

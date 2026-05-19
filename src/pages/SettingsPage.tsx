@@ -13,8 +13,9 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { RotateCcw, AlertTriangle, Check } from "lucide-react";
+import { RotateCcw, AlertTriangle, Check, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
 
@@ -43,7 +44,7 @@ function ToggleGroup<T extends string>({
             type="button"
             onClick={() => onChange(o.value)}
             className={cn(
-              "px-5 py-3 rounded-lg border text-base font-medium transition-colors",
+              "px-3 py-2 rounded-lg border text-sm font-medium transition-colors",
               value === o.value
                 ? "border-primary bg-primary/10 text-primary"
                 : "border-border bg-transparent text-muted-foreground hover:bg-secondary"
@@ -60,11 +61,19 @@ function ToggleGroup<T extends string>({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-  const { config, setConfig, reset, phase } = useTournamentStore(
-    useShallow((s) => ({ config: s.config, setConfig: s.setConfig, reset: s.reset, phase: s.phase }))
+  const { config, setConfig, reset } = useTournamentStore(
+    useShallow((s) => ({ config: s.config, setConfig: s.setConfig, reset: s.reset }))
   );
-  const { state: serverState } = useSocket();
+  const { state: serverState, socket } = useSocket();
   const [resetOpen, setResetOpen] = useState(false);
+  const [resetting, setResetting] = useState(false);
+
+  useEffect(() => {
+    if (!socket) return;
+    function onFullReset() { reset(); }
+    socket.on("ring:full-reset", onFullReset);
+    return () => { socket.off("ring:full-reset", onFullReset); };
+  }, [socket, reset]);
 
   // ── Nombre del tatami ────────────────────────────────────────────────────
   const [alias, setAlias] = useState("");
@@ -123,225 +132,179 @@ export function SettingsPage() {
     setConfig({ ruleSet: updated, judgesCount: count });
   }
 
-  const fighting = phase !== "setup";
+
+  const formatDur = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
   return (
-    <div className="flex-1 overflow-auto p-6 space-y-6 max-w-2xl">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Configuración</h1>
-          <p className="text-muted-foreground text-sm mt-0.5">
-            Reglas y parámetros de la categoría.
-            {fighting && (
-              <span className="ml-2 text-yellow-500">
-                (Reinicia la categoría para aplicar cambios)
-              </span>
-            )}
-          </p>
-        </div>
+    <div className="flex-1 overflow-auto p-6 space-y-4 max-w-2xl">
+      <div>
+        <h1 className="text-2xl font-bold">Configuración</h1>
+        <p className="text-sm text-muted-foreground mt-0.5">
+          {judges} jueces · {roundCount} rounds · {formatDur(roundDuration)} min{goldenPoint ? " · Golden Point" : ""}
+        </p>
       </div>
 
-      {/* Nombre del tatami */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Nombre del tatami</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label htmlFor="ring-alias">Alias corto</Label>
-              <Input
-                id="ring-alias"
-                value={alias}
-                onChange={(e) => setAlias(e.target.value.slice(0, 4))}
-                placeholder="T1"
-                className="font-mono"
+      <Tabs defaultValue="rules" className="space-y-4">
+        <TabsList className="grid w-full grid-cols-2">
+          <TabsTrigger value="rules">Reglas del combate</TabsTrigger>
+          <TabsTrigger value="ring">Este cuadrilátero</TabsTrigger>
+        </TabsList>
+
+        {/* ── Tab: Reglas del combate ── */}
+        <TabsContent value="rules">
+          <Card>
+            <CardContent className="space-y-5 pt-6">
+              <ToggleGroup
+                label="Jueces"
+                value={String(judges)}
+                onChange={(v) => setJudges(Number(v))}
+                options={[
+                  { label: "1", value: "1" },
+                  { label: "3", value: "3" },
+                  { label: "4", value: "4" },
+                  { label: "5", value: "5" },
+                ]}
               />
-              <p className="text-xs text-muted-foreground">Máx. 4 caracteres. Se muestra en el sidebar y en Mesa Central.</p>
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="ring-name">Nombre completo</Label>
-              <Input
-                id="ring-name"
-                value={tatamiName}
-                onChange={(e) => setTatamiName(e.target.value)}
-                placeholder="Tatami 1"
+              <p className="text-xs text-muted-foreground -mt-3">
+                Cada juez se conecta desde su celular en{" "}
+                <code className="bg-secondary px-1 rounded">http://&lt;IP&gt;:3001/judge?id=N</code>
+              </p>
+
+              <div className="border-t border-border" />
+
+              <ToggleGroup
+                label="Duración del round"
+                value={String(roundDuration)}
+                onChange={(v) => update({ duration_seconds: Number(v) })}
+                options={[
+                  { label: "40 s", value: "40" },
+                  { label: "1 min", value: "60" },
+                  { label: "1:30 min", value: "90" },
+                  { label: "2 min", value: "120" },
+                  { label: "2:30 min", value: "150" },
+                  { label: "3 min", value: "180" },
+                ]}
               />
-              <p className="text-xs text-muted-foreground">Nombre descriptivo para reportes.</p>
-            </div>
-          </div>
-          <Button
-            onClick={handleSaveName}
-            disabled={saving || !alias.trim()}
-            variant={saved ? "outline" : "default"}
-            className={saved ? "border-green-600 text-green-400" : ""}
-          >
-            {saved ? <><Check className="size-4" /> Guardado</> : saving ? "Guardando…" : "Guardar nombre"}
-          </Button>
-        </CardContent>
-      </Card>
 
-      {/* Jueces */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Jueces</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <ToggleGroup
-            label="Número de jueces"
-            value={String(judges)}
-            onChange={(v) => setJudges(Number(v))}
-            options={[
-              { label: "1", value: "1" },
-              { label: "3", value: "3" },
-              { label: "4", value: "4" },
-              { label: "5", value: "5" },
-            ]}
-          />
-          <p className="text-xs text-muted-foreground">
-            Cada juez se conecta desde su celular en{" "}
-            <code className="bg-secondary px-1 rounded">
-              http://&lt;IP&gt;:3001/judge?id=N
-            </code>
-          </p>
-        </CardContent>
-      </Card>
+              <ToggleGroup
+                label="Cantidad de rounds"
+                value={String(roundCount)}
+                onChange={(v) => update({ count: Number(v) })}
+                options={[
+                  { label: "1 round", value: "1" },
+                  { label: "2 rounds", value: "2" },
+                  { label: "3 rounds", value: "3" },
+                ]}
+              />
 
-      {/* Rounds */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Rounds</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-5">
-          <ToggleGroup
-            label="Cantidad de rounds"
-            value={String(roundCount)}
-            onChange={(v) => update({ count: Number(v) })}
-            options={[
-              { label: "1 round", value: "1" },
-              { label: "2 rounds", value: "2" },
-              { label: "3 rounds", value: "3" },
-            ]}
-          />
+              <ToggleGroup
+                label="Descanso entre rounds"
+                value={String(restDuration)}
+                onChange={(v) => update({ rest_seconds: Number(v) })}
+                options={[
+                  { label: "Sin descanso", value: "0" },
+                  { label: "20 s", value: "20" },
+                  { label: "30 s", value: "30" },
+                  { label: "45 s", value: "45" },
+                  { label: "60 s", value: "60" },
+                ]}
+              />
 
-          <ToggleGroup
-            label="Duración de cada round"
-            value={String(roundDuration)}
-            onChange={(v) => update({ duration_seconds: Number(v) })}
-            options={[
-              { label: "40 s", value: "40" },
-              { label: "1 min", value: "60" },
-              { label: "1:30 min", value: "90" },
-              { label: "2 min", value: "120" },
-              { label: "2:30 min", value: "150" },
-              { label: "3 min", value: "180" },
-            ]}
-          />
+              <div className="border-t border-border" />
 
-          <ToggleGroup
-            label="Descanso entre rounds"
-            value={String(restDuration)}
-            onChange={(v) => update({ rest_seconds: Number(v) })}
-            options={[
-              { label: "Sin descanso", value: "0" },
-              { label: "20 s", value: "20" },
-              { label: "30 s", value: "30" },
-              { label: "45 s", value: "45" },
-              { label: "60 s", value: "60" },
-            ]}
-          />
-        </CardContent>
-      </Card>
+              <ToggleGroup
+                label="Punto de oro (Golden Point)"
+                value={goldenPoint ? "on" : "off"}
+                onChange={(v) => {
+                  const on = v === "on";
+                  update({ golden_point: on, overtime_seconds: on ? (rules.rounds.overtime_seconds ?? 30) : 0 });
+                }}
+                options={[
+                  { label: "Activado", value: "on" },
+                  { label: "Desactivado", value: "off" },
+                ]}
+              />
+              {goldenPoint && (
+                <ToggleGroup
+                  label="Tiempo extra"
+                  value={String(rules.rounds.overtime_seconds ?? 60)}
+                  onChange={(v) => update({ overtime_seconds: Number(v) })}
+                  options={[
+                    { label: "30 s", value: "30" },
+                    { label: "60 s", value: "60" },
+                    { label: "90 s", value: "90" },
+                  ]}
+                />
+              )}
+              {goldenPoint && (
+                <p className="text-xs text-muted-foreground -mt-3">
+                  Si el combate termina en empate, se disputa un round adicional donde el primer punto gana.
+                </p>
+              )}
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-      {/* Desempate */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-base">Desempate</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <ToggleGroup
-            label="Punto de oro (Golden Point)"
-            value={goldenPoint ? "on" : "off"}
-            onChange={(v) => {
-              const on = v === "on";
-              update({ golden_point: on, overtime_seconds: on ? (rules.rounds.overtime_seconds ?? 30) : 0 });
-            }}
-            options={[
-              { label: "Activado", value: "on" },
-              { label: "Desactivado", value: "off" },
-            ]}
-          />
-          {goldenPoint && (
-            <ToggleGroup
-              label="Duración de tiempo extra"
-              value={String(rules.rounds.overtime_seconds ?? 60)}
-              onChange={(v) => update({ overtime_seconds: Number(v) })}
-              options={[
-                { label: "30 s", value: "30" },
-                { label: "60 s", value: "60" },
-                { label: "90 s", value: "90" },
-              ]}
-            />
-          )}
-          <p className="text-xs text-muted-foreground">
-            Si el combate termina en empate, se disputa un round adicional donde
-            el primer punto gana.
-          </p>
-        </CardContent>
-      </Card>
+        {/* ── Tab: Este cuadrilátero ── */}
+        <TabsContent value="ring" className="space-y-4">
+          <Card>
+            <CardContent className="space-y-4 pt-6">
+              <p className="text-xs text-muted-foreground">
+                Identifica este cuadrilátero en la Mesa Central y en los reportes.
+              </p>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label htmlFor="ring-alias">Alias corto</Label>
+                  <Input
+                    id="ring-alias"
+                    value={alias}
+                    onChange={(e) => setAlias(e.target.value.slice(0, 4))}
+                    placeholder="T1"
+                    className="font-mono"
+                  />
+                  <p className="text-xs text-muted-foreground">Máx. 4 caracteres.</p>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="ring-name">Nombre completo</Label>
+                  <Input
+                    id="ring-name"
+                    value={tatamiName}
+                    onChange={(e) => setTatamiName(e.target.value)}
+                    placeholder="Cuadrilátero 1"
+                  />
+                </div>
+              </div>
+              <Button
+                onClick={handleSaveName}
+                disabled={saving || !alias.trim()}
+                variant={saved ? "outline" : "default"}
+                className={saved ? "border-green-600 text-green-400" : ""}
+              >
+                {saved ? <><Check className="size-4" /> Guardado</> : saving ? "Guardando…" : "Guardar nombre"}
+              </Button>
+            </CardContent>
+          </Card>
 
-      {/* Resumen de config activa */}
-      <Card className="border-border/50 bg-secondary/30">
-        <CardHeader>
-          <CardTitle className="text-sm text-muted-foreground">Configuración activa</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <dl className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-2 text-sm">
-            <div>
-              <dt className="text-muted-foreground text-xs">Jueces</dt>
-              <dd className="font-bold">{judges}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground text-xs">Rounds</dt>
-              <dd className="font-bold">{roundCount}</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground text-xs">Duración</dt>
-              <dd className="font-bold">{Math.floor(roundDuration / 60)}:{String(roundDuration % 60).padStart(2, "0")} min</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground text-xs">Descanso</dt>
-              <dd className="font-bold">{restDuration} s</dd>
-            </div>
-            <div>
-              <dt className="text-muted-foreground text-xs">Golden Point</dt>
-              <dd className="font-bold">{goldenPoint ? "Sí" : "No"}</dd>
-            </div>
-          </dl>
-        </CardContent>
-      </Card>
-
-      {/* Reiniciar torneo */}
-      {fighting && (
-        <Card className="border-destructive/40">
-          <CardHeader>
-            <CardTitle className="text-base text-destructive">Zona peligrosa</CardTitle>
-          </CardHeader>
-          <CardContent className="flex items-center justify-between gap-4">
-            <p className="text-sm text-muted-foreground">
-              Borra todos los combates, resultados y competidores de la categoría actual.
-            </p>
-            <Button
-              variant="destructive"
-              onClick={() => setResetOpen(true)}
-              className="shrink-0"
-            >
-              <RotateCcw className="size-4" />
-              Reiniciar categoría
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+          <Card className="border-destructive/40">
+            <CardHeader>
+              <CardTitle className="text-base text-destructive">Zona peligrosa</CardTitle>
+            </CardHeader>
+            <CardContent className="flex items-center justify-between gap-4">
+              <p className="text-sm text-muted-foreground">
+                Borra todos los combates, resultados y competidores. Afecta todas las tabs abiertas de este cuadrilátero.
+              </p>
+              <Button
+                variant="destructive"
+                onClick={() => setResetOpen(true)}
+                className="shrink-0"
+              >
+                <RotateCcw className="size-4" />
+                Reiniciar todo
+              </Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {/* Confirm reset dialog */}
       <Dialog open={resetOpen} onOpenChange={setResetOpen}>
@@ -357,17 +320,27 @@ export function SettingsPage() {
             acción no se puede deshacer.
           </p>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setResetOpen(false)}>
+            <Button variant="outline" onClick={() => setResetOpen(false)} disabled={resetting}>
               Cancelar
             </Button>
             <Button
               variant="destructive"
-              onClick={() => {
-                reset();
-                setResetOpen(false);
+              disabled={resetting}
+              onClick={async () => {
+                setResetting(true);
+                try {
+                  await fetch("/api/ring/full-reset", { method: "POST" });
+                } catch {
+                  // server may be down — reset locally anyway
+                  reset();
+                } finally {
+                  setResetting(false);
+                  setResetOpen(false);
+                }
               }}
             >
-              Sí, reiniciar
+              {resetting ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
+              {resetting ? "Reiniciando…" : "Sí, reiniciar todo"}
             </Button>
           </DialogFooter>
         </DialogContent>

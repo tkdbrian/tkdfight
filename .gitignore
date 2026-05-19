@@ -3,4 +3,10 @@ dist/
 dist-server/
 dist-produccion/
 data/*.db
+data/*.db-shm
+data/*.db-wal
 data/*.sqlite3
+data-*/*.db
+data-*/*.db-shm
+data-*/*.db-wal
+data-*/*.sqlite3

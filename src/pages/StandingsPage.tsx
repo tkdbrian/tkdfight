@@ -583,6 +583,24 @@ export function StandingsPage() {
         );
       })}
 
+      {canStartFinal && (
+        <div className="rounded-2xl border-2 border-yellow-500/70 bg-yellow-950/40 p-6 flex flex-col sm:flex-row items-center gap-4 shadow-xl animate-pulse">
+          <Trophy className="size-12 text-yellow-400 shrink-0" />
+          <div className="flex-1 text-center sm:text-left">
+            <p className="text-yellow-300 font-black text-xl leading-tight">¡Clasificación completada!</p>
+            <p className="text-yellow-500/80 text-sm mt-0.5">Todos los grupos terminaron. Ya podés iniciar la Fase Final.</p>
+          </div>
+          <Button
+            size="lg"
+            className="shrink-0 bg-yellow-500 hover:bg-yellow-400 text-black font-black text-base px-6 shadow-lg shadow-yellow-900/40"
+            onClick={handleStartFinal}
+          >
+            <Trophy className="size-5" />
+            Iniciar Fase Final
+          </Button>
+        </div>
+      )}
+
       {finalRows && finalTiebreak && (
         <GroupCard
           groupId="FINAL"

@@ -32,6 +32,7 @@ import {
   Smartphone,
   Users,
   Check,
+  List,
 } from "lucide-react";
 import {
   PHASE_LABELS,
@@ -837,6 +838,47 @@ function FightListRow({ fight, index, active, onSelect }: Readonly<{
   );
 }
 
+function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
+  fights: FightEntry[];
+  currentIndex: number;
+  onSelect: (i: number) => void;
+}>) {
+  const refs = React.useRef<Array<HTMLButtonElement | null>>([]);
+  React.useEffect(() => {
+    refs.current[currentIndex]?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+  }, [currentIndex]);
+
+  return (
+    <div className="flex gap-1.5 overflow-x-auto px-4 pb-2.5 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {fights.map((fight, i) => {
+        let btnCls: string;
+        if (i === currentIndex) {
+          btnCls = "size-8 bg-primary text-primary-foreground ring-2 ring-primary/30";
+        } else if (fight.completed) {
+          btnCls = "size-6 bg-muted/20 text-muted-foreground/30";
+        } else {
+          btnCls = "size-6 border border-border/50 text-muted-foreground/60 hover:bg-secondary";
+        }
+        return (
+          <button
+            key={fight.id}
+            ref={(el) => { refs.current[i] = el; }}
+            type="button"
+            onClick={() => onSelect(i)}
+            title={`${i + 1}. ${fight.red.name} vs ${fight.blue.name}`}
+            className={cn(
+              "shrink-0 rounded-full font-bold tabular-nums transition-all text-xs flex items-center justify-center",
+              btnCls,
+            )}
+          >
+            {i + 1}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // biome-ignore lint/correctness/noUnusedVariables: component defined but not yet rendered — kept for planned future use
 function FightPicker({
   fights,
@@ -1304,7 +1346,7 @@ function FlagCounterField({
 export function FightPage() {
   const { connected, state, emit, socket } = useSocket();
   const navigate = useNavigate();
-  const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights } =
+  const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights, postponeFight } =
     useTournamentStore(
       useShallow((s) => ({
         fights: s.fights,
@@ -1315,6 +1357,7 @@ export function FightPage() {
         setPhase: s.setPhase,
         config: s.config,
         addImportedFights: s.addImportedFights,
+        postponeFight: s.postponeFight,
       }))
     );
 
@@ -1342,10 +1385,16 @@ export function FightPage() {
     { red: 0, blue: 0 },
   );
   // Banderines manuales del round actual
-  const flagCount = {
-    red: Object.values(state.judgeVotes ?? {}).filter((v) => v === "red").length,
-    blue: Object.values(state.judgeVotes ?? {}).filter((v) => v === "blue").length,
-  };
+  const flagCount = (() => {
+    const votes = state.judgeVotes ?? {};
+    const red = Object.values(votes).filter((v) => v === "red").length;
+    const blue = Object.values(votes).filter((v) => v === "blue").length;
+    const draw = Object.values(votes).filter((v) => v === "draw").length;
+    // Si el resultado es empate pero los votos crudos son asimétricos, ocultar (engañoso)
+    const resolved = flagRoundWinner({ red, blue, draw });
+    if (resolved === "draw" && red !== blue) return { red: 0, blue: 0 };
+    return { red, blue };
+  })();
   // Solo muestra número cuando alguien tiene mayoría estricta de jueces
   const hasMobileData = Object.values(state.judgeTotals ?? {}).some(
     (j) => (j.red ?? 0) > 0 || (j.blue ?? 0) > 0,
@@ -1516,6 +1565,10 @@ export function FightPage() {
         else if ((t.blue ?? 0) > (t.red ?? 0)) fb++;
       }
     }
+    // Garantizar que el perdedor tenga estrictamente menos banderas que el ganador
+    const w = matchState.result.winner;
+    if (w === "red" && fb >= fr) fb = Math.max(0, fr - 1);
+    if (w === "blue" && fr >= fb) fr = Math.max(0, fb - 1);
     setResultFlagsRed(fr);
     setResultFlagsBlue(fb);
     setResultDialogOpen(true);
@@ -1555,124 +1608,160 @@ export function FightPage() {
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
 
-      {/* Click-away overlay para cerrar la lista de combates */}
-      {showFightList && (
-        <div className="fixed inset-0 z-40" onClick={() => setShowFightList(false)} />
-      )}
+      {/* ── FIGHT LIST DIALOG ──────────────────────────────────── */}
+      <Dialog open={showFightList} onOpenChange={setShowFightList}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Combates · {config.categoryName || "Categoría"}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[60vh] overflow-y-auto space-y-0.5 pr-1">
+            {(() => {
+              const regular = fights.filter((f) => !f.isTiebreakExtra && !f.isFinalFight);
+              const finals = fights.filter((f) => f.isFinalFight);
+              const tiebreaks = fights.filter((f) => f.isTiebreakExtra);
+              const groups = Array.from(new Set(regular.map((f) => f.groupId ?? "—")));
+              const isGrouped = groups.some((g) => g !== "—");
+
+              const mkRow = (f: FightEntry) => {
+                const i = fights.indexOf(f);
+                return (
+                  <FightListRow
+                    key={f.id} fight={f} index={i} active={i === currentFightIndex}
+                    onSelect={(idx) => { setCurrentFightIndex(idx); setShowFightList(false); }}
+                  />
+                );
+              };
+
+              const regularSection = isGrouped
+                ? groups.map((gid) => {
+                    const gFights = regular.filter((f) => (f.groupId ?? "—") === gid);
+                    return (
+                      <div key={gid}>
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-1 pt-2 pb-1">
+                          Llave {gid}
+                        </p>
+                        {gFights.map(mkRow)}
+                      </div>
+                    );
+                  })
+                : regular.map(mkRow);
+
+              return [
+                ...regularSection,
+                finals.length > 0 && (
+                  <div key="__finals__">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-yellow-400/80 px-1 pt-2 pb-1">🏆 Final</p>
+                    {finals.map(mkRow)}
+                  </div>
+                ),
+                tiebreaks.length > 0 && (
+                  <div key="__tiebreaks__">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-orange-400/70 px-1 pt-2 pb-1">⚡ Desempate</p>
+                    {tiebreaks.map(mkRow)}
+                  </div>
+                ),
+              ];
+            })()}
+          </div>
+        </DialogContent>
+      </Dialog>
 
       {/* ── TOP BAR ─────────────────────────────────────────────── */}
-      <div className="shrink-0 border-b border-border px-4 py-2 flex items-center gap-2">
+      <div className="shrink-0 border-b border-border">
 
-        {/* Navegación de combates con dropdown */}
-        <div className="relative z-50 flex items-center gap-1 shrink-0">
-          <Button
-            size="icon" variant="ghost" className="size-8"
-            disabled={currentFightIndex === 0}
-            onClick={() => setCurrentFightIndex(currentFightIndex - 1)}
-          >
-            <ChevronLeft className="size-4" />
-          </Button>
-          <button
-            type="button"
-            onClick={() => setShowFightList((v) => !v)}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-secondary hover:bg-accent text-sm font-medium transition-colors"
-          >
-            <span className="tabular-nums text-xs text-muted-foreground font-normal shrink-0">
+        {/* Fila 1: navegación + nombres + acciones */}
+        <div className="px-3 py-2 flex items-center gap-2">
+
+          {/* Izquierda: flechas + contador */}
+          <div className="flex items-center gap-1 shrink-0">
+            <Button
+              size="icon" variant="ghost" className="size-8"
+              disabled={currentFightIndex === 0}
+              onClick={() => setCurrentFightIndex(currentFightIndex - 1)}
+            >
+              <ChevronLeft className="size-4" />
+            </Button>
+            <span className="text-xs tabular-nums text-muted-foreground/60 w-10 text-center shrink-0">
               {currentFightIndex + 1}/{fights.length}
             </span>
-            {currentFight && (
+            <Button
+              size="icon" variant="ghost" className="size-8"
+              disabled={currentFightIndex === fights.length - 1}
+              onClick={() => setCurrentFightIndex(currentFightIndex + 1)}
+            >
+              <ChevronRight className="size-4" />
+            </Button>
+          </div>
+
+          {/* Centro: nombres del combate */}
+          <div className="flex-1 flex items-center justify-center gap-2 min-w-0">
+            {currentFight ? (
               <>
-                <span className="text-red-400 font-bold max-w-[8rem] truncate">{currentFight.red.name}</span>
-                <span className="text-muted-foreground text-xs shrink-0">vs</span>
-                <span className="text-blue-400 font-bold max-w-[8rem] truncate">{currentFight.blue.name}</span>
+                <span className="text-base font-black text-red-400 truncate max-w-48">{currentFight.red.name}</span>
+                <span className="text-xs text-muted-foreground/50 shrink-0">vs</span>
+                <span className="text-base font-black text-blue-400 truncate max-w-48">{currentFight.blue.name}</span>
               </>
+            ) : (
+              <span className="text-sm text-muted-foreground">Sin combate seleccionado</span>
             )}
-            <ChevronDown className={cn("size-3.5 text-muted-foreground shrink-0 ml-1 transition-transform", showFightList && "rotate-180")} />
-          </button>
-          <Button
-            size="icon" variant="ghost" className="size-8"
-            disabled={currentFightIndex === fights.length - 1}
-            onClick={() => setCurrentFightIndex(currentFightIndex + 1)}
-          >
-            <ChevronRight className="size-4" />
-          </Button>
+          </div>
 
-          {/* Dropdown lista de combates */}
-          {showFightList && (
-            <div className="absolute top-full left-0 mt-1.5 w-80 rounded-xl border border-border bg-popover shadow-2xl overflow-hidden">
-              <div className="max-h-72 overflow-y-auto p-2 space-y-0.5">
-                {(() => {
-                  const regular = fights.filter((f) => !f.isTiebreakExtra && !f.isFinalFight);
-                  const finals = fights.filter((f) => f.isFinalFight);
-                  const tiebreaks = fights.filter((f) => f.isTiebreakExtra);
-                  const groups = Array.from(new Set(regular.map((f) => f.groupId ?? "—")));
-                  const isGrouped = groups.some((g) => g !== "—");
+          {/* Derecha: ☰ + botones de acción + status */}
+          <div className="flex items-center gap-2 shrink-0">
+            <Button
+              size="icon" variant="ghost" className="size-8"
+              title="Ver lista de combates"
+              onClick={() => setShowFightList(true)}
+            >
+              <List className="size-4" />
+            </Button>
 
-                  const mkRow = (f: FightEntry) => {
-                    const i = fights.indexOf(f);
-                    return (
-                      <FightListRow
-                        key={f.id} fight={f} index={i} active={i === currentFightIndex}
-                        onSelect={(idx) => { setCurrentFightIndex(idx); setShowFightList(false); }}
-                      />
-                    );
-                  };
+            {/* Postergar pelea — mueve la actual una posición hacia adelante */}
+            {currentFight && !currentFight.completed && (() => {
+              const canPostpone = fights.some((f, i) => i > currentFightIndex && !f.completed);
+              const isActive = loaded && phase !== "idle" && phase !== "finished";
+              let postponeTitle = "Postergar: llama a la siguiente pelea primero";
+              if (isActive) postponeTitle = "No se puede postergar con el combate en curso";
+              if (!canPostpone) postponeTitle = "No hay peleas pendientes a continuación";
+              return (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 text-yellow-400 border-yellow-700/60 hover:bg-yellow-900/20"
+                  disabled={!canPostpone || isActive}
+                  title={postponeTitle}
+                  onClick={() => { postponeFight(currentFight.id); setLoaded(false); emit("match:reset"); }}
+                >
+                  <SkipForward className="size-3.5" />
+                  Postergar
+                </Button>
+              );
+            })()}
 
-                  const regularSection = isGrouped
-                    ? groups.map((gid) => {
-                        const gFights = regular.filter((f) => (f.groupId ?? "—") === gid);
-                        return (
-                          <div key={gid}>
-                            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-1 pt-1 pb-0.5">
-                              Llave {gid}
-                            </p>
-                            {gFights.map(mkRow)}
-                          </div>
-                        );
-                      })
-                    : regular.map(mkRow);
+            {/* Reiniciar (solo cuando ya está cargado) */}
+            {loaded && (
+              <Button size="sm" variant="outline" className="shrink-0"
+                onClick={() => { emit("match:reset"); setLoaded(false); }}>
+                <RotateCcw className="size-3.5" />
+                Reiniciar
+              </Button>
+            )}
 
-                  return [
-                    ...regularSection,
-                    finals.length > 0 && (
-                      <div key="__finals__">
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-yellow-400/80 px-1 pt-2 pb-0.5">🏆 Final</p>
-                        {finals.map(mkRow)}
-                      </div>
-                    ),
-                    tiebreaks.length > 0 && (
-                      <div key="__tiebreaks__">
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-orange-400/70 px-1 pt-2 pb-0.5">⚡ Desempate</p>
-                        {tiebreaks.map(mkRow)}
-                      </div>
-                    ),
-                  ];
-                })()}
-              </div>
-            </div>
-          )}
+            {currentFight?.completed && (
+              <Badge variant="secondary" className="shrink-0 text-xs">Completado</Badge>
+            )}
+            {!connected && (
+              <Badge variant="outline" className="shrink-0 text-xs text-red-400 border-red-800">
+                <WifiOff className="size-3 mr-1" />Sin servidor
+              </Badge>
+            )}
+
+            <ServerStatus connected={connected} judgesCount={judges.length} />
+          </div>
         </div>
 
-        {/* Reiniciar (solo cuando ya está cargado) */}
-        {loaded && (
-          <Button size="sm" variant="outline" className="shrink-0"
-            onClick={() => { emit("match:reset"); setLoaded(false); }}>
-            <RotateCcw className="size-3.5" />
-            Reiniciar
-          </Button>
-        )}
-        {currentFight?.completed && (
-          <Badge variant="secondary" className="shrink-0 text-xs">Completado</Badge>
-        )}
-        {!connected && (
-          <Badge variant="outline" className="shrink-0 text-xs text-red-400 border-red-800">
-            <WifiOff className="size-3 mr-1" />Sin servidor
-          </Badge>
-        )}
-
-        <div className="flex-1" />
-
-        <ServerStatus connected={connected} judgesCount={judges.length} />
+        {/* Fila 2: barra de progreso de combates */}
+        <FightProgressStrip fights={fights} currentIndex={currentFightIndex} onSelect={setCurrentFightIndex} />
       </div>
 
       {/* ── BANNER PELEA REASIGNADA ───────────────────────────── */}
@@ -2224,18 +2313,28 @@ export function FightPage() {
                   <FlagCounterField
                     isMesa={bottomTab === "mesa"}
                     value={resultFlagsRed}
-                    onChange={setResultFlagsRed}
+                    onChange={(v) => {
+                      setResultFlagsRed(v);
+                      if (matchState?.result?.winner === "red" && resultFlagsBlue >= v) {
+                        setResultFlagsBlue(Math.max(0, v - 1));
+                      }
+                    }}
                     color="red"
                     name={currentFight?.red.name ?? "Rojo"}
-                    max={config.judgesCount}
+                    max={matchState?.result?.winner === "blue" ? Math.max(0, resultFlagsBlue - 1) : config.judgesCount}
                   />
                   <FlagCounterField
                     isMesa={bottomTab === "mesa"}
                     value={resultFlagsBlue}
-                    onChange={setResultFlagsBlue}
+                    onChange={(v) => {
+                      setResultFlagsBlue(v);
+                      if (matchState?.result?.winner === "blue" && resultFlagsRed >= v) {
+                        setResultFlagsRed(Math.max(0, v - 1));
+                      }
+                    }}
                     color="blue"
                     name={currentFight?.blue.name ?? "Azul"}
-                    max={config.judgesCount}
+                    max={matchState?.result?.winner === "red" ? Math.max(0, resultFlagsRed - 1) : config.judgesCount}
                   />
                 </div>
               </div>

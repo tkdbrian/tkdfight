@@ -3,7 +3,7 @@ import type { Server } from 'socket.io'
 import { getRingConfig, setRingConfig } from '../ring-config.js'
 import { getLocalIp } from '../helpers.js'
 import { state } from '../state.js'
-import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, insertFightIfNew } from '../db/index.js'
+import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, clearTournamentData, insertFightIfNew } from '../db/index.js'
 import db from '../db/index.js'
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)
@@ -151,14 +151,34 @@ export function registerRingRoute(app: Express, io: Server) {
 
     // Notify FightPage clients so they can add the new fights to their Zustand store
     // without requiring a full page reload.
-    const importedFights = typedFights.map((f) => ({
-      id: f.id,
-      red: competitorMap.get(f.red_id) ?? { id: f.red_id, name: f.red_id },
-      blue: competitorMap.get(f.blue_id) ?? { id: f.blue_id, name: f.blue_id },
-      completed: false,
-      groupId: f.group_id ?? categoryName ?? undefined,
-    }))
-    io.emit('fights:imported', { fights: importedFights, sourceRingLabel: sourceRingLabel ?? null })
+    // IMPORTANT: when newCategory=true the ring is setting up its own tournament and
+    // already has the fights locally via setFights(). Broadcasting to all rings would
+    // cause other rings to receive and append foreign fights, mixing competitors from
+    // different tournaments in the same group. Only broadcast when reassigning fights
+    // from Mesa Central (newCategory=false).
+    if (!newCategory) {
+      const importedFights = typedFights.map((f) => ({
+        id: f.id,
+        red: competitorMap.get(f.red_id) ?? { id: f.red_id, name: f.red_id },
+        blue: competitorMap.get(f.blue_id) ?? { id: f.blue_id, name: f.blue_id },
+        completed: false,
+        groupId: f.group_id ?? categoryName ?? undefined,
+      }))
+      io.emit('fights:imported', { fights: importedFights, sourceRingLabel: sourceRingLabel ?? null })
+    }
+  })
+
+  // ── POST /api/ring/full-reset ─────────────────────────────────────────────
+  // Limpia todos los combates y competidores de la DB y resetea el estado en
+  // memoria del servidor. Emite 'ring:full-reset' para que todos los clientes
+  // (tabs abiertas) limpien su Zustand store.
+  app.post('/api/ring/full-reset', (_req, res) => {
+    clearTournamentData(state.activeTournamentId)
+    state.fallos = []
+    state.match = null
+    state.matchState = null
+    res.json({ ok: true })
+    io.emit('ring:full-reset')
   })
 
   // ── POST /api/ring/sync-fights ────────────────────────────────────────────

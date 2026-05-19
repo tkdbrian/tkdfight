@@ -57,6 +57,7 @@ export interface BracketMatch {
 }
 
 export interface TournamentConfig {
+  tournamentName: string;
   categoryName: string;
   tableChief: string;
   ruleSet: RuleSet | null;
@@ -92,10 +93,14 @@ interface TournamentState {
   addImportedFights: (fights: FightEntry[]) => void;
   completeBracketMatch: (matchId: string, winnerId: string) => void;
   swapBracketSlots: (aMatchId: string, aSlot: "red" | "blue", bMatchId: string, bSlot: "red" | "blue") => void;
+  postponeFight: (fightId: string) => void;
+  setupStarted: boolean;
+  setSetupStarted: (v: boolean) => void;
   reset: () => void;
 }
 
 const initialConfig: TournamentConfig = {
+  tournamentName: "",
   categoryName: "",
   tableChief: "",
   ruleSet: null,
@@ -111,10 +116,12 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
   fights: [],
   groups: [],
   currentFightIndex: 0,
+  setupStarted: false,
   bracketMatches: [],
   bracketSeeds: [],
 
   setPhase: (phase) => set({ phase }),
+  setSetupStarted: (v) => set({ setupStarted: v }),
 
   setConfig: (config) =>
     set((s) => ({ config: { ...s.config, ...config } })),
@@ -237,14 +244,30 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
       };
     }),
 
+  // Mueve la pelea actual una posición hacia adelante intercambiándola
+  // con la siguiente pelea no completada. currentFightIndex no cambia:
+  // ahora apunta a la pelea que "subió" (la que era la siguiente).
+  postponeFight: (fightId) =>
+    set((s) => {
+      const idx = s.fights.findIndex((f) => f.id === fightId);
+      if (idx === -1) return {};
+      const nextIdx = s.fights.findIndex((f, i) => i > idx && !f.completed);
+      if (nextIdx === -1) return {};
+      const newFights = [...s.fights];
+      [newFights[idx], newFights[nextIdx]] = [newFights[nextIdx], newFights[idx]];
+      return { fights: newFights };
+    }),
+
   reset: () =>
     set({
       phase: "setup",
       config: initialConfig,
       competitors: [],
       fights: [],
+      groups: [],
       currentFightIndex: 0,
       bracketMatches: [],
       bracketSeeds: [],
+      setupStarted: false,
     }),
 }), { name: "tkd-tournament" }));
