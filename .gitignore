@@ -10,3 +10,6 @@ data-*/*.db
 data-*/*.db-shm
 data-*/*.db-wal
 data-*/*.sqlite3
+*.log
+playwright-report/
+test-results/
