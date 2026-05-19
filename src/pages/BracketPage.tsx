@@ -170,27 +170,13 @@ export function BracketPage() {
                 Regenerar
               </Button>
 
-              {/* Single bracket controls */}
-              {!isDoubleMode && phase !== "fighting" && completedMatches < totalMatches && (
+              {phase !== "fighting" && completedMatches < totalMatches && (
                 <Button size="sm" onClick={handleStartBracket}>
                   <Play className="size-3.5" />
                   Iniciar ronda actual
                 </Button>
               )}
-              {!isDoubleMode && phase === "results" && completedMatches < totalMatches && (
-                <Button size="sm" variant="secondary" onClick={handleLoadNextRound}>
-                  Cargar siguiente ronda
-                </Button>
-              )}
-
-              {/* Double bracket controls */}
-              {isDoubleMode && phase !== "fighting" && completedMatches < totalMatches && (
-                <Button size="sm" onClick={handleStartBracket}>
-                  <Play className="size-3.5" />
-                  Iniciar ronda actual
-                </Button>
-              )}
-              {isDoubleMode && phase === "results" && completedMatches < totalMatches && !isAComplete && !isBComplete && (
+              {phase === "results" && completedMatches < totalMatches && (!isDoubleMode || (!isAComplete && !isBComplete)) && (
                 <Button size="sm" variant="secondary" onClick={handleLoadNextRound}>
                   Cargar siguiente ronda
                 </Button>

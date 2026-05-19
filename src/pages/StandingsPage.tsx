@@ -532,17 +532,6 @@ export function StandingsPage() {
         </div>
         <div className="flex items-center gap-2">
           <Badge variant="secondary">{completed}/{total} combates</Badge>
-          {canStartFinal && (
-            <Button
-              size="sm"
-              className="border-yellow-600/60 bg-yellow-950/30 text-yellow-400 hover:bg-yellow-950/50"
-              variant="outline"
-              onClick={handleStartFinal}
-            >
-              <Trophy className="size-3.5" />
-              Iniciar Fase Final
-            </Button>
-          )}
           <Button
             variant="outline"
             size="sm"

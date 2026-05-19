@@ -86,6 +86,10 @@ copy "INICIAR.bat" "%DIST_DIR%\INICIAR.bat" >nul 2>&1
 copy "INSTRUCCIONES_TORNEO.txt" "%DIST_DIR%\INSTRUCCIONES_TORNEO.txt" >nul 2>&1
 copy "LEEME.txt" "%DIST_DIR%\LEEME.txt" >nul 2>&1
 
+:: Copiar scripts (watchdog y utilidades)
+if not exist "%DIST_DIR%\scripts" mkdir "%DIST_DIR%\scripts"
+xcopy /e /i /q "scripts" "%DIST_DIR%\scripts" >nul
+
 :: ── Descargar Node.js portable si no existe ───────────────────────────────────
 echo.
 echo [4/4] Verificando Node.js portable...
@@ -119,6 +123,7 @@ echo   - dist-server\       (servidor compilado)
 echo   - node_modules\      (solo better-sqlite3)
 echo   - data\              (base de datos SQLite)
 echo   - bin\node.exe       (Node.js portable)
+echo   - scripts\           (watchdog y utilidades)
 echo   - INICIAR.bat        (lanzador de produccion)
 echo.
 echo   Para distribuir: copiar la carpeta "%DIST_DIR%" completa

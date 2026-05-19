@@ -68,11 +68,12 @@ if not exist "%~dp0dist\index.html" (
 :: ── Crear carpeta data si no existe ──────────────────────────────────────────
 if not exist "%~dp0data" mkdir "%~dp0data"
 
-:: ── Iniciar servidor ─────────────────────────────────────────────────────────
-echo [INFO] Iniciando servidor en puerto 3001...
+:: ── Iniciar servidor (watchdog: reinicio automatico si cae) ──────────────────
+echo [INFO] Iniciando servidor en puerto 3001 (modo watchdog)...
 echo.
 
-start "TKD Server" /MIN "%NODE_EXE%" "%~dp0dist-server\index.mjs"
+if not defined DATA_DIR set DATA_DIR=%~dp0data
+start "" /B powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0scripts\server-watchdog.ps1" -Exe "%NODE_EXE%" -Args "%~dp0dist-server\index.mjs" -WorkDir "%~dp0" -DataDir "%DATA_DIR%"
 
 :: Esperar a que el servidor arranque (max 5 segundos)
 set /a WAIT=0
@@ -115,17 +116,53 @@ echo.
 echo ==============================================
 echo.
 
-start "" "http://localhost:3001"
+call :open_kiosk "http://localhost:3001"
 
 echo   [Presiona cualquier tecla para CERRAR el servidor]
 echo   [No cierres esta ventana mientras el torneo este activo]
 echo.
 pause >nul
 
-:: ── Cerrar servidor al salir ──────────────────────────────────────────────────
+:: ── Cerrar servidor y watchdog al salir ──────────────────────────────────────
 echo Cerrando servidor...
+:: Señalar al watchdog que se detenga (evita que reinicie el servidor)
+echo. > "%~dp0.server.stop"
+timeout /t 3 /nobreak >nul
+:: Por las dudas, matar cualquier proceso en puerto 3001
 for /f "tokens=5" %%a in ('netstat -aon 2^>nul ^| findstr ":3001 "') do (
     taskkill /PID %%a /F >nul 2>&1
 )
+del "%~dp0.server.stop" >nul 2>&1
 echo [OK] Servidor cerrado. Hasta la proxima!
 timeout /t 2 /nobreak >nul
+goto :eof
+
+:: ── Funcion: abrir navegador en modo kiosco ──────────────────────────────────
+:open_kiosk
+setlocal
+set KIOSK_URL=%~1
+:: Intentar Chrome en kiosco (sin barras, pantalla completa)
+for %%P in (
+    "%ProgramFiles%\Google\Chrome\Application\chrome.exe"
+    "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
+    "%LocalAppData%\Google\Chrome\Application\chrome.exe"
+) do (
+    if exist "%%~P" (
+        start "" "%%~P" --kiosk --no-first-run --disable-extensions --disable-translate "%KIOSK_URL%"
+        endlocal & exit /b 0
+    )
+)
+:: Intentar Edge en kiosco
+for %%P in (
+    "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
+    "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"
+) do (
+    if exist "%%~P" (
+        start "" "%%~P" --kiosk --no-first-run "%KIOSK_URL%"
+        endlocal & exit /b 0
+    )
+)
+:: Fallback: navegador predeterminado (sin kiosco)
+start "" "%KIOSK_URL%"
+endlocal
+exit /b 0
