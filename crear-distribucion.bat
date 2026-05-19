@@ -83,6 +83,7 @@ if exist "data\ring.json" copy "data\ring.json" "%DIST_DIR%\data\ring.json" >nul
 
 :: Copiar launchers de produccion
 copy "INICIAR.bat" "%DIST_DIR%\INICIAR.bat" >nul 2>&1
+copy "MENU.bat" "%DIST_DIR%\MENU.bat" >nul 2>&1
 copy "INSTRUCCIONES_TORNEO.txt" "%DIST_DIR%\INSTRUCCIONES_TORNEO.txt" >nul 2>&1
 copy "LEEME.txt" "%DIST_DIR%\LEEME.txt" >nul 2>&1
 

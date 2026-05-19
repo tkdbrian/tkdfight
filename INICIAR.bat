@@ -116,7 +116,8 @@ echo.
 echo ==============================================
 echo.
 
-call :open_kiosk "http://localhost:3001"
+if not defined OPEN_PATH set OPEN_PATH=
+call :open_kiosk "http://localhost:3001%OPEN_PATH%"
 
 echo   [Presiona cualquier tecla para CERRAR el servidor]
 echo   [No cierres esta ventana mientras el torneo este activo]
