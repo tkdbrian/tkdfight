@@ -55,7 +55,8 @@ echo.
 
 REM ── Iniciar servidor ─────────────────────────────────────────────────────────
 REM Esperar 2 segundos y abrir el navegador
-start /min "" cmd /c "timeout /t 2 >nul && start http://localhost:3001"
+if not defined OPEN_PATH set OPEN_PATH=/
+start /min "" cmd /c "timeout /t 2 >nul && start http://localhost:3001%OPEN_PATH%"
 
 REM Iniciar el servidor en primer plano
 call npx tsx --tsconfig tsconfig.server.json server/index.ts
