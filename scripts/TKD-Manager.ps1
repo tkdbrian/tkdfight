@@ -164,7 +164,7 @@ $null = $srPS.AddScript({
     $shared.Status = "stopped"; $shared.NeedIconUpdate = $true
     Log "Watchdog detenido."
 })
-$srHandle = $srPS.BeginInvoke()
+$null = $srPS.BeginInvoke()
 
 # Esperar a que el servidor arranque (máx 10s)
 $wait = 0
