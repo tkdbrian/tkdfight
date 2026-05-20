@@ -79,6 +79,7 @@ export function registerSocketHandlers(io: Server) {
       fallos: [...state.fallos],
       roundFlags: [...state.roundFlags],
       serverUrl,
+      ringToken: state.ringToken, // enviado solo en el connect inicial, no en cada broadcast
       ringAlias: ringConfig.alias,
       ringName: ringConfig.name,
     })

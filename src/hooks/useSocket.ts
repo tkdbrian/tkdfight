@@ -29,7 +29,7 @@ export function useSocket() {
 
     sock.on("connect", () => setConnected(true));
     sock.on("disconnect", () => setConnected(false));
-    sock.on("state:update", (data: ServerState) => setState(data));
+    sock.on("state:update", (data: ServerState) => setState((prev) => ({ ...prev, ...data })));
     sock.on("ring:config-updated", (data: { alias: string; name: string }) =>
       setState((prev) => ({ ...prev, ringAlias: data.alias, ringName: data.name }))
     );

@@ -35,7 +35,7 @@ const isDev = process.env.NODE_ENV !== 'production'
 function isOriginAllowed(origin: string | undefined): boolean {
   if (!origin) return true // same-origin / curl / server-to-server
   if (isDev) return true
-  if (allowedOrigins.length === 0) return true // no allowlist configured → open
+  if (allowedOrigins.length === 0) return false // prod sin allowlist → denegar cross-origin
   if (allowedOrigins.includes('*')) return true
   return allowedOrigins.includes(origin)
 }
