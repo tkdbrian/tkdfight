@@ -86,7 +86,15 @@ xcopy /e /i /q "dist" "%SISTEMA%\dist" >nul
 copy "dist-server\index.mjs" "%SISTEMA%\dist-server\index.mjs" >nul
 
 :: Copiar better-sqlite3 (modulo nativo - no se puede bundlear)
-xcopy /e /i /q "node_modules\better-sqlite3" "%SISTEMA%\node_modules\better-sqlite3" >nul
+:: /y sobrescribe sin preguntar; si fallo parcialmente la vez anterior, esto lo repara
+if exist "%SISTEMA%\node_modules\better-sqlite3" rmdir /s /q "%SISTEMA%\node_modules\better-sqlite3" >nul 2>&1
+xcopy /e /i /q /y "node_modules\better-sqlite3" "%SISTEMA%\node_modules\better-sqlite3" >nul
+if not exist "%SISTEMA%\node_modules\better-sqlite3\lib\index.js" (
+    echo [ERROR] better-sqlite3 no se copio correctamente. Cerrando procesos y reintentando...
+    taskkill /f /im node.exe >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    xcopy /e /i /q /y "node_modules\better-sqlite3" "%SISTEMA%\node_modules\better-sqlite3" >nul
+)
 
 :: Copiar ring config inicial a cada cuadrilatero
 for %%D in (data data-t1 data-t2 data-t3 data-central) do (
