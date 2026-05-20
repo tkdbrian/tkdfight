@@ -15,6 +15,10 @@ param(
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# Ocultar la ventana de consola PowerShell (funciona aunque -WindowStyle Hidden no lo haga)
+Add-Type -Name WinHide -Namespace "" -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);'
+$null = [WinHide]::ShowWindow((Get-Process -Id $PID).MainWindowHandle, 0)
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 if (-not $Role)      { $Role      = "cuadrilatero1" }
 if (-not $Port)      { $Port      = "3001" }
@@ -88,7 +92,7 @@ $EdgePaths = @(
 function Open-KioskBrowser ([string]$Url) {
     foreach ($p in $ChromePaths) {
         if (Test-Path $p) {
-            $proc = Start-Process -FilePath $p -ArgumentList @("--kiosk","--no-first-run","--disable-extensions","--disable-translate",$Url) -PassThru -ErrorAction SilentlyContinue
+            $proc = Start-Process -FilePath $p -ArgumentList @("--app=$Url","--no-first-run","--disable-extensions","--disable-translate") -PassThru -ErrorAction SilentlyContinue
             if ($proc) { Write-Log "Navegador Chrome PID=$($proc.Id)"; return $proc.Id }
         }
     }
@@ -198,9 +202,9 @@ $null = $brPS.AddScript({
                     if (Test-Path $p) {
                         $isChrome = $p -like "*chrome*"
                         $args = if ($isChrome) {
-                            @("--kiosk","--no-first-run","--disable-extensions","--disable-translate",$appUrl)
+                            @("--app=$appUrl","--no-first-run","--disable-extensions","--disable-translate")
                         } else {
-                            @("--kiosk","--no-first-run",$appUrl)
+                            @("--app=$appUrl","--no-first-run")
                         }
                         $np = Start-Process -FilePath $p -ArgumentList $args -PassThru -ErrorAction SilentlyContinue
                         if ($np) { $shared.BrowserPid = $np.Id; break }
