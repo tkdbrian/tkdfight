@@ -15,9 +15,10 @@ param(
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
-# Ocultar la ventana de consola PowerShell (funciona aunque -WindowStyle Hidden no lo haga)
-Add-Type -Name WinHide -Namespace "" -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);'
-$null = [WinHide]::ShowWindow((Get-Process -Id $PID).MainWindowHandle, 0)
+# Desconectar completamente del proceso de consola (más confiable que ShowWindow)
+# FreeConsole() elimina la ventana de consola — no queda nada que cerrar por error
+Add-Type -Name ConsoleFree -Namespace "" -MemberDefinition '[DllImport("kernel32.dll")] public static extern bool FreeConsole();'
+$null = [ConsoleFree]::FreeConsole()
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 if (-not $Role)      { $Role      = "cuadrilatero1" }
