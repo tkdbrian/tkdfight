@@ -58,76 +58,101 @@ echo [OK] Servidor compilado en dist-server\index.mjs
 echo.
 echo [3/4] Creando carpeta de distribucion...
 set DIST_DIR=dist-produccion
+set SISTEMA=%DIST_DIR%\sistema
 
 if exist "%DIST_DIR%" (
     echo [INFO] Limpiando distribucion anterior...
     rmdir /s /q "%DIST_DIR%"
 )
+
+:: ── Estructura: solo ABRIR_TKD.bat visible; todo lo tecnico en sistema\ ───────
 mkdir "%DIST_DIR%"
-mkdir "%DIST_DIR%\dist"
-mkdir "%DIST_DIR%\dist-server"
-mkdir "%DIST_DIR%\data"
-mkdir "%DIST_DIR%\node_modules"
+mkdir "%SISTEMA%"
+mkdir "%SISTEMA%\dist"
+mkdir "%SISTEMA%\dist-server"
+mkdir "%SISTEMA%\data"
+mkdir "%SISTEMA%\data-t1"
+mkdir "%SISTEMA%\data-t2"
+mkdir "%SISTEMA%\data-t3"
+mkdir "%SISTEMA%\data-central"
+mkdir "%SISTEMA%\node_modules"
+mkdir "%SISTEMA%\scripts"
+mkdir "%SISTEMA%\logs"
 
 :: Copiar app React compilada
-xcopy /e /i /q "dist" "%DIST_DIR%\dist" >nul
+xcopy /e /i /q "dist" "%SISTEMA%\dist" >nul
 
 :: Copiar servidor compilado
-copy "dist-server\index.mjs" "%DIST_DIR%\dist-server\index.mjs" >nul
+copy "dist-server\index.mjs" "%SISTEMA%\dist-server\index.mjs" >nul
 
 :: Copiar better-sqlite3 (modulo nativo - no se puede bundlear)
-xcopy /e /i /q "node_modules\better-sqlite3" "%DIST_DIR%\node_modules\better-sqlite3" >nul
+xcopy /e /i /q "node_modules\better-sqlite3" "%SISTEMA%\node_modules\better-sqlite3" >nul
 
-:: Copiar datos iniciales (ring config)
-if exist "data\ring.json" copy "data\ring.json" "%DIST_DIR%\data\ring.json" >nul
+:: Copiar ring config inicial a cada cuadrilatero
+for %%D in (data data-t1 data-t2 data-t3 data-central) do (
+    if exist "%%D\ring.json" copy "%%D\ring.json" "%SISTEMA%\%%D\ring.json" >nul
+)
 
-:: Copiar launchers de produccion
-copy "INICIAR.bat" "%DIST_DIR%\INICIAR.bat" >nul 2>&1
-copy "MENU.bat" "%DIST_DIR%\MENU.bat" >nul 2>&1
-copy "INSTRUCCIONES_TORNEO.txt" "%DIST_DIR%\INSTRUCCIONES_TORNEO.txt" >nul 2>&1
-copy "LEEME.txt" "%DIST_DIR%\LEEME.txt" >nul 2>&1
+:: Copiar scripts
+xcopy /e /i /q "scripts" "%SISTEMA%\scripts" >nul
 
-:: Copiar scripts (watchdog y utilidades)
-if not exist "%DIST_DIR%\scripts" mkdir "%DIST_DIR%\scripts"
-xcopy /e /i /q "scripts" "%DIST_DIR%\scripts" >nul
+:: Copiar launcher visible al nivel raiz
+copy "ABRIR_TKD.bat" "%DIST_DIR%\ABRIR_TKD.bat" >nul
+copy "INSTRUCCIONES_TORNEO.txt" "%DIST_DIR%\INSTRUCCIONES.txt" >nul 2>&1
 
-:: ── Descargar Node.js portable si no existe ───────────────────────────────────
+:: ── Node.js portable ──────────────────────────────────────────────────────────
 echo.
-echo [4/4] Verificando Node.js portable...
+echo [4/5] Verificando Node.js portable...
 
-if exist "%DIST_DIR%\bin\node.exe" (
-    echo [OK] Node.js portable ya presente
+if exist "bin\node.exe" (
+    echo [OK] Copiando node.exe ya descargado ^(offline^)...
+    mkdir "%SISTEMA%\bin"
+    copy "bin\node.exe" "%SISTEMA%\bin\node.exe" >nul
+) else if exist "%SISTEMA%\bin\node.exe" (
+    echo [OK] Node.js portable ya presente en sistema\bin\
 ) else (
     echo [INFO] Descargando Node.js portable ^(~30MB^)...
-    mkdir "%DIST_DIR%\bin"
-    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\descargar-node.ps1" -DestDir "%DIST_DIR%\bin"
+    mkdir "%SISTEMA%\bin"
+    powershell -NoProfile -ExecutionPolicy Bypass -File "scripts\descargar-node.ps1" -DestDir "%SISTEMA%\bin"
     if %ERRORLEVEL% NEQ 0 (
         echo.
         echo [ATENCION] No se pudo descargar Node.js automaticamente.
-        echo            Alternativa: copia manualmente node.exe a %DIST_DIR%\bin\
-        echo            Descarga desde: https://nodejs.org/dist/v22.15.0/node-v22.15.0-win-x64.zip
-        echo            ^(solo necesitas node.exe del zip^)
+        echo            Copia manualmente node.exe a bin\ en el workspace y vuelve a ejecutar.
+        echo            Descarga: https://nodejs.org/dist/v22.15.0/node-v22.15.0-win-x64.zip
     ) else (
-        echo [OK] Node.js portable instalado en %DIST_DIR%\bin\
+        echo [OK] Node.js portable instalado.
+        :: Guardar tambien en bin\ del workspace para futuras distribuciones
+        if not exist "bin" mkdir "bin"
+        copy "%SISTEMA%\bin\node.exe" "bin\node.exe" >nul
     )
 )
+
+:: ── Crear ZIP distribuible ────────────────────────────────────────────────────
+echo.
+echo [5/5] Creando ZIP distribuible...
+
+set ZIP_NAME=TKD_Torneo_2026.zip
+if exist "%ZIP_NAME%" del "%ZIP_NAME%"
+
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "Compress-Archive -Path '%DIST_DIR%\*' -DestinationPath '%ZIP_NAME%' -Force; Write-Host '[OK] ZIP creado: %ZIP_NAME%'"
 
 :: ── Resumen final ─────────────────────────────────────────────────────────────
 echo.
 echo =====================================================
-echo   DISTRIBUCION CREADA: %DIST_DIR%\
+echo   DISTRIBUCION CREADA
 echo =====================================================
 echo.
-echo   Contenido:
-echo   - dist\              (app React compilada)
-echo   - dist-server\       (servidor compilado)
-echo   - node_modules\      (solo better-sqlite3)
-echo   - data\              (base de datos SQLite)
-echo   - bin\node.exe       (Node.js portable)
-echo   - scripts\           (watchdog y utilidades)
-echo   - INICIAR.bat        (lanzador de produccion)
+echo   Carpeta:  %DIST_DIR%\
+echo   ZIP:      %ZIP_NAME%
 echo.
-echo   Para distribuir: copiar la carpeta "%DIST_DIR%" completa
-echo   Para probar: entrar a "%DIST_DIR%" y doble clic en INICIAR.bat
+echo   El usuario ve SOLO:
+echo     ABRIR_TKD.bat       (doble clic para arrancar)
+echo     INSTRUCCIONES.txt
+echo.
+echo   Todo lo tecnico esta en sistema\ (carpeta oculta)
+echo.
+echo   Para distribuir: compartir %ZIP_NAME% por USB o Drive
+echo   Para probar:     doble clic en %DIST_DIR%\ABRIR_TKD.bat
 echo.
 pause
