@@ -134,9 +134,10 @@ $null = $srPS.AddScript({
         $pi.WorkingDirectory = $shared.RootDir
         $pi.UseShellExecute  = $false
         $pi.CreateNoWindow   = $true
-        $pi.EnvironmentVariables["DATA_DIR"]  = $shared.DataDir
-        $pi.EnvironmentVariables["PORT"]      = $shared.Port
-        $pi.EnvironmentVariables["NODE_ENV"]  = "production"
+        $pi.EnvironmentVariables["DATA_DIR"]        = $shared.DataDir
+        $pi.EnvironmentVariables["PORT"]            = $shared.Port
+        $pi.EnvironmentVariables["NODE_ENV"]        = "production"
+        $pi.EnvironmentVariables["ALLOWED_ORIGINS"] = "*"  # permite conexiones WS desde localhost
 
         $p = New-Object System.Diagnostics.Process
         $p.StartInfo = $pi
@@ -166,12 +167,19 @@ $null = $srPS.AddScript({
 })
 $null = $srPS.BeginInvoke()
 
-# Esperar a que el servidor arranque (máx 10s)
-$wait = 0
-while ($shared.Status -eq "starting" -and $wait -lt 20) {
-    Start-Sleep -Milliseconds 500; $wait++
+# Esperar a que el puerto 3001 acepte conexiones TCP (máx 15s)
+$portOpen = $false
+for ($i = 0; $i -lt 30; $i++) {
+    Start-Sleep -Milliseconds 500
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $tcp.Connect("127.0.0.1", [int]$Port)
+        $tcp.Close()
+        $portOpen = $true
+        break
+    } catch { }
 }
-Start-Sleep -Milliseconds 800   # pausa extra para que el puerto esté listo
+if (-not $portOpen) { Write-Log "[WARN] Puerto $Port no respondió en 15s, abriendo browser de todas formas" }
 
 # ── Abrir navegador en modo kiosk ─────────────────────────────────────────────
 $appUrl = "http://localhost:${Port}${OpenPath}"
