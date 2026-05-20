@@ -177,46 +177,6 @@ Start-Sleep -Milliseconds 800   # pausa extra para que el puerto esté listo
 $appUrl = "http://localhost:${Port}${OpenPath}"
 $shared.BrowserPid = Open-KioskBrowser -Url $appUrl
 
-# ── Runspace 2: Browser watchdog ──────────────────────────────────────────────
-$brRS = [runspacefactory]::CreateRunspace()
-$brRS.Open()
-$brRS.SessionStateProxy.SetVariable("shared",  $shared)
-$brRS.SessionStateProxy.SetVariable("appUrl",  $appUrl)
-$brRS.SessionStateProxy.SetVariable("ChromePaths", $ChromePaths)
-$brRS.SessionStateProxy.SetVariable("EdgePaths",   $EdgePaths)
-
-$brPS = [powershell]::Create()
-$brPS.Runspace = $brRS
-$null = $brPS.AddScript({
-    Start-Sleep -Seconds 25   # grace period inicial para que el browser cargue
-
-    while (-not $shared.ShouldStop) {
-        if (Test-Path $shared.StopFile) { break }
-        Start-Sleep -Seconds 15
-
-        if ($shared.BrowserPid -and $shared.Status -eq "running") {
-            $proc = Get-Process -Id $shared.BrowserPid -ErrorAction SilentlyContinue
-            if (-not $proc) {
-                # Browser cerrado — reabrir
-                $allPaths = $ChromePaths + $EdgePaths
-                foreach ($p in $allPaths) {
-                    if (Test-Path $p) {
-                        $isChrome = $p -like "*chrome*"
-                        $args = if ($isChrome) {
-                            @("--app=$appUrl","--no-first-run","--disable-extensions","--disable-translate")
-                        } else {
-                            @("--app=$appUrl","--no-first-run")
-                        }
-                        $np = Start-Process -FilePath $p -ArgumentList $args -PassThru -ErrorAction SilentlyContinue
-                        if ($np) { $shared.BrowserPid = $np.Id; break }
-                    }
-                }
-            }
-        }
-    }
-})
-$brHandle = $brPS.BeginInvoke()
-
 # ── Íconos de tray (generados con GDI+, sin archivos externos) ───────────────
 function New-CircleIcon ([System.Drawing.Color]$color) {
     $bmp   = New-Object System.Drawing.Bitmap(16, 16)
@@ -325,5 +285,4 @@ $tray.Add_DoubleClick({ Start-Process $appUrl })
 $timer.Dispose()
 $iconGreen.Dispose(); $iconYellow.Dispose(); $iconRed.Dispose()
 $srPS.Dispose(); $srRS.Dispose()
-$brPS.Dispose(); $brRS.Dispose()
 Write-Log "TKD-Manager finalizado."
