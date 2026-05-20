@@ -1,4 +1,4 @@
-# =============================================================================
+﻿# =============================================================================
 # TKD-Manager.ps1
 # Gestor principal de TKD Tournament System:
 #   - System tray icon (verde=OK / amarillo=iniciando / rojo=caído)
@@ -231,19 +231,19 @@ $iconRed    = New-CircleIcon([System.Drawing.Color]::OrangeRed)
 # ── System Tray ───────────────────────────────────────────────────────────────
 $roleLabel = switch ($Role) {
     "central"       { "Mesa Central" }
-    "cuadrilatero1" { "Cuadrilátero 1" }
-    "cuadrilatero2" { "Cuadrilátero 2" }
-    "cuadrilatero3" { "Cuadrilátero 3" }
+    "cuadrilatero1" { "Cuadrilatero 1" }
+    "cuadrilatero2" { "Cuadrilatero 2" }
+    "cuadrilatero3" { "Cuadrilatero 3" }
     default         { $Role }
 }
 
 $tray          = New-Object System.Windows.Forms.NotifyIcon
 $tray.Icon     = $iconYellow
 $tray.Visible  = $true
-$tray.Text     = "TKD — $roleLabel  [Iniciando...]"
+$tray.Text     = "TKD - $roleLabel  [Iniciando...]"
 
 $ctxMenu = New-Object System.Windows.Forms.ContextMenuStrip
-$miAbrir   = $ctxMenu.Items.Add("Abrir aplicación")
+$miAbrir   = $ctxMenu.Items.Add("Abrir aplicacion")
 $miReinic  = $ctxMenu.Items.Add("Reiniciar servidor")
 $miIp      = $ctxMenu.Items.Add("Ver IP de la red")
 $null = $ctxMenu.Items.Add([System.Windows.Forms.ToolStripSeparator]::new())
@@ -252,7 +252,7 @@ $tray.ContextMenuStrip = $ctxMenu
 
 # Balloon de arranque
 $localIp = Get-LocalIp
-$tray.BalloonTipTitle = "TKD Tournament — $roleLabel"
+$tray.BalloonTipTitle = "TKD Tournament - $roleLabel"
 $tray.BalloonTipText  = "Sistema listo`nRed: http://${localIp}:${Port}"
 $tray.ShowBalloonTip(6000)
 
@@ -263,10 +263,10 @@ $timer.Add_Tick({
     if ($shared.NeedIconUpdate) {
         $shared.NeedIconUpdate = $false
         switch ($shared.Status) {
-            "running"    { $tray.Icon = $iconGreen;  $tray.Text = "TKD — $roleLabel  ✓ Activo" }
-            "restarting" { $tray.Icon = $iconYellow; $tray.Text = "TKD — $roleLabel  ↺ Reiniciando..." }
-            "starting"   { $tray.Icon = $iconYellow; $tray.Text = "TKD — $roleLabel  ↺ Iniciando..." }
-            "stopped"    { $tray.Icon = $iconRed;    $tray.Text = "TKD — $roleLabel  ✕ Detenido" }
+            "running"    { $tray.Icon = $iconGreen;  $tray.Text = "TKD - $roleLabel  [OK]" }
+            "restarting" { $tray.Icon = $iconYellow; $tray.Text = "TKD - $roleLabel  [Reiniciando...]" }
+            "starting"   { $tray.Icon = $iconYellow; $tray.Text = "TKD - $roleLabel  [Iniciando...]" }
+            "stopped"    { $tray.Icon = $iconRed;    $tray.Text = "TKD - $roleLabel  [Detenido]" }
         }
     }
 })
@@ -285,7 +285,7 @@ $miIp.Add_Click({
     $ip = Get-LocalIp
     [System.Windows.Forms.MessageBox]::Show(
         "Organizador / Mesa:`nhttp://localhost:$Port`n`nJueces (celular, misma WiFi):`nhttp://${ip}:${Port}/judge`n`nMesa Central:`nhttp://${ip}:${Port}/central`n`nTV:`nhttp://${ip}:${Port}/tv",
-        "TKD — Direcciones de red",
+        "TKD - Direcciones de red",
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Information
     ) | Out-Null
@@ -293,8 +293,8 @@ $miIp.Add_Click({
 
 $miCerrar.Add_Click({
     $r = [System.Windows.Forms.MessageBox]::Show(
-        "¿Cerrar TKD Tournament?`nSe detendrán el servidor y el navegador.",
-        "Cerrar TKD — $roleLabel",
+        "Cerrar TKD Tournament?`nSe detendran el servidor y el navegador.",
+        "Cerrar TKD - $roleLabel",
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Question
     )

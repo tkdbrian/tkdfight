@@ -104,7 +104,19 @@ copy "INSTRUCCIONES_TORNEO.txt" "%DIST_DIR%\INSTRUCCIONES.txt" >nul 2>&1
 echo.
 echo [4/5] Verificando Node.js portable...
 
-if exist "bin\node.exe" (
+:: Preferir el node.exe del sistema (mismo que compilo better-sqlite3)
+for /f "tokens=*" %%i in ('where node 2^>nul') do (
+    if not defined SYSTEM_NODE set SYSTEM_NODE=%%i
+)
+
+if defined SYSTEM_NODE (
+    echo [OK] Usando node.exe del sistema: %SYSTEM_NODE%
+    mkdir "%SISTEMA%\bin" 2>nul
+    copy "%SYSTEM_NODE%" "%SISTEMA%\bin\node.exe" >nul
+    :: Guardar tambien en bin\ del workspace para builds offline
+    if not exist "bin" mkdir "bin"
+    copy "%SYSTEM_NODE%" "bin\node.exe" >nul 2>&1
+) else if exist "bin\node.exe" (
     echo [OK] Copiando node.exe ya descargado ^(offline^)...
     mkdir "%SISTEMA%\bin"
     copy "bin\node.exe" "%SISTEMA%\bin\node.exe" >nul
@@ -121,11 +133,13 @@ if exist "bin\node.exe" (
         echo            Descarga: https://nodejs.org/dist/v22.15.0/node-v22.15.0-win-x64.zip
     ) else (
         echo [OK] Node.js portable instalado.
-        :: Guardar tambien en bin\ del workspace para futuras distribuciones
         if not exist "bin" mkdir "bin"
         copy "%SISTEMA%\bin\node.exe" "bin\node.exe" >nul
     )
 )
+
+:: Guardar con BOM el TKD-Manager.ps1 para compatibilidad con PowerShell 5.1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$p='%SISTEMA%\scripts\TKD-Manager.ps1'; $c=[System.IO.File]::ReadAllText($p,[System.Text.Encoding]::UTF8); [System.IO.File]::WriteAllText($p,$c,(New-Object System.Text.UTF8Encoding $true)); Write-Host '[OK] TKD-Manager.ps1 guardado con BOM'"
 
 :: ── Crear ZIP distribuible ────────────────────────────────────────────────────
 echo.
