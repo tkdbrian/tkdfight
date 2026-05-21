@@ -35,8 +35,12 @@ const isDev = process.env.NODE_ENV !== 'production'
 function isOriginAllowed(origin: string | undefined): boolean {
   if (!origin) return true // same-origin / curl / server-to-server
   if (isDev) return true
-  if (allowedOrigins.length === 0) return false // prod sin allowlist → denegar cross-origin
+  // In portable mode (no Render deployment), allow all origins — judges connect from LAN IPs
+  if (!process.env.RENDER_EXTERNAL_URL) return true
+  // Always allow the server's own Render origin (browser sends Origin on same-origin socket.io POSTs)
+  if (origin === process.env.RENDER_EXTERNAL_URL) return true
   if (allowedOrigins.includes('*')) return true
+  if (allowedOrigins.length === 0) return false // prod sin allowlist → denegar cross-origin
   return allowedOrigins.includes(origin)
 }
 
@@ -52,8 +56,8 @@ const io = new Server(server, {
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)
 const localIp = getLocalIp()
-// En producción (Render) usamos la URL pública; en LAN usamos la IP local.
-const publicUrl = process.env.RENDER_EXTERNAL_URL ?? (allowedOrigins.length === 1 ? allowedOrigins[0] : null)
+// En producción (Render) usamos la URL pública; en modo portable siempre la IP local.
+const publicUrl = process.env.RENDER_EXTERNAL_URL ?? null
 setServerUrl(publicUrl ?? `http://${localIp}:${PORT}`)
 
 // ── Init DB ───────────────────────────────────────────────────────────────────
