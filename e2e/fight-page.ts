@@ -9,11 +9,11 @@ export class FightPage {
   }
 
   /**
-   * Navigation button in the top bar showing "N/total RedName vs BlueName".
-   * This button always exists on /fight once competitors are loaded.
+   * The fight counter span "N/total" (e.g. "1/6") in the top navigation bar.
+   * Only present when fights are loaded from the store.
    */
   get fightInfo(): Locator {
-    return this.page.locator("button").filter({ hasText: /\d+\/\d+.*vs/ }).first();
+    return this.page.locator("span.tabular-nums").filter({ hasText: /^\d+\/\d+$/ }).first();
   }
 
   /** Button "Cargar combate" — shown when fight is not yet loaded */
@@ -86,8 +86,15 @@ export class FightPage {
     await this.endRoundButton.waitFor({ state: "visible", timeout: 5_000 });
   }
 
+  /** Switch the bottom panel to the "Por juez" tab so FlagVoteRow elements are in DOM */
+  async switchToPorJuez(): Promise<void> {
+    await this.page.getByRole("button", { name: "Por juez", exact: true }).click();
+  }
+
   /** Vote for a judge in the "Por juez" flag panel */
   async voteJudge(judgeNumber: number, color: "red" | "blue" | "draw"): Promise<void> {
+    // FlagVoteRow elements only exist in the "Por juez" tab (default is "Mesa decide")
+    await this.switchToPorJuez();
     await this.getJudgeVoteButton(judgeNumber, color).click();
     await this.page.waitForTimeout(200);
   }

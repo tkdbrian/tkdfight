@@ -74,7 +74,7 @@ test.describe("TKD Tournament - Smoke Tests", () => {
 
     await expect(page).toHaveURL(/\/fight$/);
     await expect(page.getByRole("button", { name: "Cargar combate" })).toBeVisible();
-    await expect(page.getByText("Listo", { exact: true })).toBeVisible();
+    await expect(page.getByText("Listo", { exact: true }).first()).toBeVisible();
 
     console.log("✅ Página de combate carga correctamente");
   });
@@ -137,7 +137,7 @@ test.describe("TKD Tournament - Smoke Tests", () => {
     const heading = await page.getByRole("heading", { name: "Configuración" }).isVisible();
     expect(heading).toBe(true);
 
-    const judgesLabel = await page.getByText("Número de jueces", { exact: true }).isVisible();
+    const judgesLabel = await page.getByText("Jueces", { exact: true }).isVisible();
     expect(judgesLabel).toBe(true);
 
     const judgeButton = await page.getByRole("button", { name: "3", exact: true }).isVisible();

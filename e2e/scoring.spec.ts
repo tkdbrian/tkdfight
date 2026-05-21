@@ -33,11 +33,11 @@ test.describe("Scoring — Puntaje y fases del combate", () => {
     await fightPage.loadFight();
 
     // Fase inicial: "Listo"
-    await expect(page.getByText("Listo")).toBeVisible();
+    await expect(page.getByText("Listo").first()).toBeVisible();
 
     // Iniciar: fase cambia a "Ronda" (badge puede decir "Ronda · R1")
     await fightPage.startFight();
-    await expect(page.getByText(/Ronda/)).toBeVisible();
+    await expect(page.getByText(/Ronda/).first()).toBeVisible();
   });
 
   test("Los marcadores empiezan en 0 y se actualizan tras los votos de jueces", async ({
@@ -89,6 +89,9 @@ test.describe("Scoring — Puntaje y fases del combate", () => {
     const fightPage = new FightPage(page);
     await fightPage.loadFight();
     await fightPage.startFight();
+
+    // Cambiar a tab "Por juez" para que los paneles FlagVoteRow estén en el DOM
+    await fightPage.switchToPorJuez();
 
     // Con judgesCount=4 (default), los 4 paneles Jn deben ser visibles
     for (const j of [1, 2, 3, 4]) {

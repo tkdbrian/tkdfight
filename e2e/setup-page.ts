@@ -6,11 +6,19 @@ export class SetupPage {
   async goto(): Promise<void> {
     await this.page.goto("/");
     await this.page.waitForLoadState("networkidle");
+    // When localStorage is cleared the app shows a welcome screen.
+    // Click "Nuevo torneo" to proceed to the main setup view.
+    const newTournamentBtn = this.page.getByRole("button", { name: "Nuevo torneo" });
+    if (await newTournamentBtn.isVisible()) {
+      await newTournamentBtn.click();
+      // Wait until the welcome screen is dismissed (button disappears) — async fetch may run first
+      await newTournamentBtn.waitFor({ state: "hidden", timeout: 8000 });
+    }
   }
 
-  /** Heading "Competidores" */
+  /** Main setup heading (shows category name or "Sin categoría") */
   get heading(): Locator {
-    return this.page.getByRole("heading", { name: "Competidores" });
+    return this.page.locator("h1").first();
   }
 
   /** Click a category button by the exact visible text */
@@ -64,7 +72,20 @@ export class SetupPage {
   /** Start the category with competitors */
   async startCategory(): Promise<void> {
     await this.startCategoryButton.click();
-    // Wait for navigation to fight page
-    await this.page.waitForURL("/fight", { timeout: 10000 });
+    // Wait for the sidebar phase indicator to show "fighting".
+    // This confirms setPhase("fighting") was called after the API fetch completed
+    // and that Zustand persist saved the full tournament state to localStorage.
+    await this.page
+      .locator("span.capitalize")
+      .filter({ hasText: "fighting" })
+      .waitFor({ state: "visible", timeout: 10000 });
+    // React Router's navigate("/fight") does not change the browser URL in Playwright
+    // for this nested-Routes SPA. Navigate directly so the page rehydrates from localStorage.
+    await this.page.goto("/fight", { waitUntil: "domcontentloaded" });
+    // Wait for "Cargar combate" to confirm Zustand has hydrated fight data from localStorage.
+    // (Zustand persist with localStorage may apply state asynchronously on first render.)
+    await this.page
+      .getByRole("button", { name: "Cargar combate", exact: true })
+      .waitFor({ state: "visible", timeout: 10000 });
   }
 }

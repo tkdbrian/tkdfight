@@ -406,6 +406,7 @@ export function SetupPage() {
       }
     }
     setPhase("fighting");
+    navigate("/fight");
   }
 
   const previewFights = computePreview(competitors, config.mode);

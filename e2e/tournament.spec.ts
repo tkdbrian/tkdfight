@@ -42,7 +42,7 @@ test.describe("TKD Tournament - Flujo Completo", () => {
 
     // Verificar controles de inicio y fase inicial
     await expect(fightPage.startFightButton).toBeVisible();
-    await expect(page.getByText("Listo")).toBeVisible();
+    await expect(page.getByText("Listo").first()).toBeVisible();
   });
 
   test("Fight: iniciar combate activa timer y votación de jueces", async ({ page }) => {
@@ -100,7 +100,7 @@ test.describe("TKD Tournament - Flujo Completo", () => {
     await page.goto("/settings", { waitUntil: "domcontentloaded" });
 
     await expect(page.getByRole("heading", { name: "Configuración" })).toBeVisible();
-    await expect(page.getByText("Número de jueces", { exact: true })).toBeVisible();
+    await expect(page.getByText("Jueces", { exact: true })).toBeVisible();
 
     // exact: true evita strict mode violation ("1" no debe coincidir con "1 min", "1 round", etc.)
     for (const count of ["1", "3", "4", "5"]) {
