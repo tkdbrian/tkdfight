@@ -40,5 +40,6 @@ if exist "%~dp0sistema\" attrib +H "%~dp0sistema" >nul 2>&1
 set TKD_DATA=%TKD_ROOT%\%TKD_SUB%
 
 :: Lanzar TKD-Manager.ps1 oculto y cerrar esta ventana
-start "" /B powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%TKD_ROOT%\scripts\TKD-Manager.ps1"
+:: Usar -Command "& 'ruta'" en lugar de -File para manejar rutas con espacios
+start "" /B powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "& '%TKD_ROOT%\scripts\TKD-Manager.ps1'"
 exit
