@@ -16,14 +16,294 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Pencil, Trash2, Swords, AlertCircle, Plus, Wifi, Smartphone, Zap, ArrowRight, Trophy, ChevronDown, ChevronUp } from "lucide-react";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import * as XLSX from "xlsx";
+import { Pencil, Trash2, Swords, AlertCircle, Plus, Wifi, Smartphone, Zap, ArrowRight, Trophy, FileSpreadsheet, X, ChevronDown } from "lucide-react";
 import { generateGroupsTournament, generateEliminationBracket, getGroupDistribution } from "@/lib/bracket";
 import { cn } from "@/lib/utils";
+import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
+import type { RuleSetSparring } from "@/engine/types";
+import { COPA_DANES_26, fetchPresets, type TimePreset } from "@/lib/tournament-presets";
+
+const BASE = itfRules as RuleSetSparring;
 
 type FormData = { name: string; team: string; weight: string };
 const EMPTY_FORM: FormData = { name: "", team: "", weight: "" };
 
+// ── Excel import ─────────────────────────────────────────────────────────────
+
+interface ParsedCategory {
+  name: string;
+  section: string;       // e.g. "PRE-JUNIOR", "JUNIOR"
+  discipline: "combate" | "formas";
+  competitors: string[];
+}
+
+function _normalizeAge(raw: string): string {
+  return raw.trim().replace(/^EDAD\s+/i, "").replace(/\s+/g, " ").trim();
+}
+
+function _normalizeGender(raw: string): string {
+  const s = raw.trim().toUpperCase();
+  if (s === "MASC") return "Masc";
+  if (s === "FEM") return "Fem";
+  return s;
+}
+
+function _normalizeWeight(raw: string): string {
+  return raw.trim().replace(/^PESO\s+/i, "").trim();
+}
+
+function parseTxtFile(text: string): ParsedCategory[] {
+  const categories: ParsedCategory[] = [];
+  let current: ParsedCategory | null = null;
+  let currentSection = "";
+  let currentDiscipline: "combate" | "formas" = "combate";
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || /^[=\-]{3,}/.test(line)) continue;
+
+    // Category header: "EDAD PRE-JUNIOR - MASC - PESO LIVIANO A"
+    const catMatch = line.match(
+      /^EDAD\s+(.+?)\s+-\s+(MASC|FEM|MASCULINO|FEMENINO)\s+-\s+PESO\s+(.+)$/i,
+    );
+    if (catMatch) {
+      if (current && current.competitors.length >= 2) categories.push(current);
+      const age = catMatch[1].trim();
+      const gender = _normalizeGender(catMatch[2]);
+      const weight = catMatch[3].trim();
+      const section = currentSection || age.toUpperCase();
+      current = {
+        name: `${age} \u00b7 ${gender} \u00b7 ${weight}`,
+        section,
+        discipline: currentDiscipline,
+        competitors: [],
+      };
+      continue;
+    }
+
+    // Section header: "COMBATE PRE-JUNIOR" / "FORMAS JUNIOR" etc.
+    const secMatch = line.match(/^(COMBATE|FORMAS?|POOMSAE|TUL|SPARRING)\s+(.+)/i);
+    if (secMatch) {
+      currentSection = secMatch[2].trim().toUpperCase();
+      const kw = secMatch[1].toUpperCase();
+      currentDiscipline =
+        kw === "FORMAS" || kw === "FORMA" || kw === "POOMSAE" || kw === "TUL"
+          ? "formas"
+          : "combate";
+      continue;
+    }
+
+    // Competitor line: "1. Name" or "1) Name"
+    if (current) {
+      const compMatch = line.match(/^\d+[.)\-]\s+(.+)/);
+      if (compMatch) {
+        const name = compMatch[1].trim();
+        if (name.length > 1) current.competitors.push(name);
+      }
+    }
+  }
+
+  if (current && current.competitors.length >= 2) categories.push(current);
+  return categories;
+}
+
+function parseExcelFile(buffer: ArrayBuffer): ParsedCategory[] {
+  // Layout (0-indexed columns):
+  //   COMBATE block 1 → col 1 (B): cats at cols 1 and 4
+  //   COMBATE block 2 → col 7 (H): cats at cols 7 and 10
+  // Each category column contains both the meta rows (EDAD, MASC/FEM, PESO)
+  // and the competitor names — the row-number col is always catCol-1.
+  // Row structure relative to COMBATE row i:
+  //   i+1: EDAD <age>
+  //   i+2: MASC | FEM
+  //   i+3: PESO <weight>
+  //   i+4: APELLIDO Y NOMBRE
+  //   i+5 … i+29: competitor names (up to 25 slots)
+
+  const wb = XLSX.read(new Uint8Array(buffer));
+  const categories: ParsedCategory[] = [];
+
+  for (const sheetName of wb.SheetNames) {
+    const ws = wb.Sheets[sheetName];
+    const rows = XLSX.utils.sheet_to_json<unknown[]>(ws, {
+      header: 1,
+      defval: "",
+    }) as unknown[][];
+
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i] as unknown[];
+
+      // Collect columns where "COMBATE" appears (handles merged cells → value in top-left)
+      const combateCols: number[] = [];
+      for (let c = 0; c < row.length; c++) {
+        if (String(row[c] ?? "").trim().toUpperCase() === "COMBATE") {
+          combateCols.push(c);
+        }
+      }
+      if (combateCols.length === 0) continue;
+
+      // Find the row after "APELLIDO Y NOMBRE" to know where names begin
+      let nameStartRow = i + 5; // fallback: COMBATE + 4 meta rows + 1
+      for (let s = i + 1; s <= i + 8; s++) {
+        const sRow = (rows[s] ?? []) as unknown[];
+        if (sRow.some((c) => String(c ?? "").toUpperCase().includes("APELLIDO"))) {
+          nameStartRow = s + 1;
+          break;
+        }
+      }
+
+      // Each COMBATE block contains 2 categories: at combateCol and combateCol+3
+      for (const combateCol of combateCols) {
+        for (const offset of [0, 3]) {
+          const col = combateCol + offset;
+
+          let age = "";
+          let gender = "";
+          let weight = "";
+
+          for (let m = i + 1; m < nameStartRow; m++) {
+            const cell = String(((rows[m] ?? []) as unknown[])[col] ?? "").trim();
+            if (!cell) continue;
+            const upper = cell.toUpperCase();
+            if (upper.startsWith("EDAD") || /^(INFANTIL|PRE.?JUNIOR|JUNIOR|ADULTO|SENIOR|VETERANO)/i.test(upper)) {
+              age = _normalizeAge(cell);
+            } else if (/^(MASC|FEM|MASCULINO|FEMENINO)$/i.test(upper)) {
+              gender = _normalizeGender(cell);
+            } else if (upper.startsWith("PESO") || /\d.*KG/i.test(upper)) {
+              weight = _normalizeWeight(cell);
+            }
+          }
+
+          if (!age && !gender && !weight) continue;
+
+          const competitors = rows
+            .slice(nameStartRow, nameStartRow + 25)
+            .map((r) => String((r as unknown[])[col] ?? "").trim())
+            .filter((n) => n.length > 2 && !/^\d+$/.test(n));
+
+          if (competitors.length >= 2) {
+            const catName = [age, gender, weight].filter(Boolean).join(" · ");
+            categories.push({ name: catName, competitors });
+          }
+        }
+      }
+    }
+  }
+  return categories;
+}
+
 type PreviewFight = { id: string; n: number; red: string; blue: string; round: number; group?: string };
+
+// ── Import panel components ──────────────────────────────────────────────────
+
+function _toTitleCase(s: string) {
+  return s.toLowerCase().replace(/(^|\s)\S/g, (c) => c.toUpperCase());
+}
+
+function SectionPills({
+  categories,
+  onSelect,
+}: {
+  categories: ParsedCategory[];
+  onSelect: (cat: ParsedCategory) => void;
+}) {
+  const sections = [...new Set(categories.map((c) => c.section))];
+  const [activeSection, setActiveSection] = useState(sections[0] ?? "");
+
+  if (categories.length === 0) {
+    return <p className="text-sm text-muted-foreground py-4 text-center">Sin categorías</p>;
+  }
+
+  const sectionCats = categories.filter((c) => c.section === activeSection);
+
+  return (
+    <div className="space-y-3">
+      {/* Section (age group) tabs */}
+      <div className="flex flex-wrap gap-1.5">
+        {sections.map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setActiveSection(s)}
+            className={cn(
+              "rounded-full px-3 py-1 text-xs font-semibold border transition-colors",
+              activeSection === s
+                ? "bg-primary text-primary-foreground border-primary"
+                : "border-border/60 text-muted-foreground hover:bg-secondary hover:text-foreground",
+            )}
+          >
+            {_toTitleCase(s)}
+            <span className="ml-1 opacity-60">({categories.filter((c) => c.section === s).length})</span>
+          </button>
+        ))}
+      </div>
+      {/* Category pills */}
+      <div className="flex flex-wrap gap-2 min-h-[48px]">
+        {sectionCats.map((cat) => {
+          const parts = cat.name.split(" \u00b7 ");
+          const displayName = parts.length > 1 ? parts.slice(1).join(" \u00b7 ") : cat.name;
+          return (
+            <button
+              key={cat.name}
+              type="button"
+              onClick={() => onSelect(cat)}
+              className="flex items-center gap-1.5 rounded-full border border-border/50 bg-secondary/50 hover:bg-primary hover:text-primary-foreground hover:border-primary px-3.5 py-1.5 text-sm font-medium transition-colors"
+            >
+              {displayName}
+              <span className="inline-flex items-center justify-center size-5 rounded-full bg-black/20 text-[11px] font-bold">
+                {cat.competitors.length}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ImportPanel({
+  categories,
+  onSelect,
+}: {
+  categories: ParsedCategory[];
+  onSelect: (cat: ParsedCategory) => void;
+}) {
+  const combateCats = categories.filter((c) => c.discipline === "combate");
+  const formasCats = categories.filter((c) => c.discipline === "formas");
+  const defaultTab = combateCats.length > 0 ? "combate" : "formas";
+
+  return (
+    <Tabs defaultValue={defaultTab}>
+      <TabsList className="mb-3">
+        <TabsTrigger value="combate">
+          Lucha / Combate
+          {combateCats.length > 0 && (
+            <Badge variant="secondary" className="ml-1.5 text-[10px]">
+              {combateCats.length}
+            </Badge>
+          )}
+        </TabsTrigger>
+        <TabsTrigger value="formas" disabled={formasCats.length === 0}>
+          Formas / Tul
+          {formasCats.length > 0 && (
+            <Badge variant="secondary" className="ml-1.5 text-[10px]">
+              {formasCats.length}
+            </Badge>
+          )}
+        </TabsTrigger>
+      </TabsList>
+      <TabsContent value="combate">
+        <SectionPills categories={combateCats} onSelect={onSelect} />
+      </TabsContent>
+      <TabsContent value="formas">
+        <SectionPills categories={formasCats} onSelect={onSelect} />
+      </TabsContent>
+    </Tabs>
+  );
+}
+
 
 function getRoundLabel(remaining: number, r: number): string {
   if (remaining === 0) return "Final";
@@ -186,6 +466,7 @@ export function SetupPage() {
     config,
     addCompetitor,
     removeCompetitor,
+    clearCompetitors,
     updateCompetitor,
     setConfig,
     setFights,
@@ -202,6 +483,7 @@ export function SetupPage() {
       config: s.config,
       addCompetitor: s.addCompetitor,
       removeCompetitor: s.removeCompetitor,
+      clearCompetitors: s.clearCompetitors,
       updateCompetitor: s.updateCompetitor,
       setConfig: s.setConfig,
       setFights: s.setFights,
@@ -329,10 +611,64 @@ export function SetupPage() {
   // Category card starts expanded when no category is set yet, collapsed otherwise
   const [catExpanded, setCatExpanded] = useState(config.categoryName === "");
 
+  // ── Presets ────────────────────────────────────────────────────────────────
+  const [serverPresets, setServerPresets] = useState<TimePreset[]>([]);
+
+  useEffect(() => {
+    fetchPresets().then(setServerPresets).catch(() => {});
+  }, []);
+
+  function applyPreset(p: TimePreset) {
+    const rules = config.ruleSet?.mode === "sparring" ? (config.ruleSet as RuleSetSparring) : BASE;
+    const judges = config.judgesCount ?? BASE.judgesCount;
+    const updated: RuleSetSparring = {
+      ...BASE,
+      ...rules,
+      judgesCount: judges,
+      rounds: { ...rules.rounds, count: p.roundCount, duration_seconds: p.durationSeconds },
+    };
+    setConfig({
+      ruleSet: updated,
+      judgesCount: updated.judgesCount,
+      finalRounds: p.finalRounds,
+      finalSeconds: p.finalSeconds,
+      tiebreakerSeconds: p.tiebreakerSeconds,
+      maxTiebreakers: p.maxTiebreakers,
+    });
+  }
+
+  function isPresetActive(p: TimePreset): boolean {
+    const rules = config.ruleSet?.mode === "sparring" ? (config.ruleSet as RuleSetSparring) : BASE;
+    return (
+      rules.rounds.count === p.roundCount &&
+      rules.rounds.duration_seconds === p.durationSeconds &&
+      config.finalRounds === p.finalRounds &&
+      config.finalSeconds === p.finalSeconds &&
+      config.tiebreakerSeconds === p.tiebreakerSeconds &&
+      config.maxTiebreakers === p.maxTiebreakers
+    );
+  }
+
+  // Resumen de la config actual para mostrar en el chip editor
+  const _ar = config.ruleSet?.mode === "sparring" ? (config.ruleSet as RuleSetSparring) : BASE;
+  const _rc = _ar.rounds.count;
+  const _rd = _ar.rounds.duration_seconds;
+  const _rest = _ar.rounds.rest_seconds;
+  const _fr = config.finalRounds ?? _rc;
+  const _fs = config.finalSeconds ?? _rd;
+  const _tb = config.tiebreakerSeconds ?? 30;
+  const _gp = _ar.rounds.golden_point ?? true;
+  function _fmt(s: number) { return s < 60 ? `${s} s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
+
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormData>(EMPTY_FORM);
   const [formError, setFormError] = useState("");
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [importPanelOpen, setImportPanelOpen] = useState(false);
+  const [importCategories, setImportCategories] = useState<ParsedCategory[]>([]);
+  const [importLoading, setImportLoading] = useState(false);
 
   function handleQuickAdd() {
     const name = quickName.trim();
@@ -341,6 +677,54 @@ export function SetupPage() {
     setQuickName("");
     setQuickTeam("");
     nameRef.current?.focus();
+  }
+
+  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setImportLoading(true);
+    const isTxt = file.name.toLowerCase().endsWith(".txt");
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      try {
+        let cats: ParsedCategory[];
+        if (isTxt) {
+          cats = parseTxtFile(ev.target?.result as string);
+        } else {
+          cats = parseExcelFile(ev.target?.result as ArrayBuffer);
+        }
+        if (cats.length === 0) {
+          toast.error("No se encontraron categor\u00edas en el archivo.");
+        } else {
+          setImportCategories(cats);
+          setImportPanelOpen(true);
+          toast.success(`${cats.length} categor\u00edas importadas`);
+        }
+      } catch {
+        toast.error("No se pudo leer el archivo.");
+      } finally {
+        setImportLoading(false);
+      }
+    };
+    reader.onerror = () => {
+      toast.error("Error al leer el archivo.");
+      setImportLoading(false);
+    };
+    if (isTxt) {
+      reader.readAsText(file, "utf-8");
+    } else {
+      reader.readAsArrayBuffer(file);
+    }
+    e.target.value = "";
+  }
+
+  function handleImportCategory(cat: ParsedCategory) {
+    clearCompetitors();
+    for (const name of cat.competitors) {
+      addCompetitor({ name });
+    }
+    setConfig({ categoryName: cat.name });
+    toast.success(`${cat.competitors.length} competidores cargados \u2014 ${cat.name}`);
   }
 
   function openEdit(c: CompetitorEntry) {
@@ -375,6 +759,7 @@ export function SetupPage() {
       const { matches, seeds } = generateEliminationBracket(competitors);
       setBracket(matches, seeds);
       setFights([]);
+      setGroups([]);
     } else {
       const { groups, fights } = generateGroupsTournament(competitors);
       setGroups(groups);
@@ -406,7 +791,7 @@ export function SetupPage() {
       }
     }
     setPhase("fighting");
-    navigate("/fight");
+    navigate(config.mode === "elimination" ? "/bracket" : "/fight");
   }
 
   const previewFights = computePreview(competitors, config.mode);
@@ -516,80 +901,95 @@ export function SetupPage() {
   return (
     <div className="flex-1 overflow-auto p-4 space-y-4">
       {/* ── HEADER ─────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          {config.tournamentName && (
-            <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-1">
-              {config.tournamentName}
-            </p>
-          )}
-          <h1 className={cn(
-            "font-black tracking-tight leading-tight transition-all",
-            config.categoryName ? "text-2xl text-foreground" : "text-xl text-muted-foreground",
-          )}>
-            {config.categoryName || "Sin categoría"}
-          </h1>
-          <p className="text-muted-foreground text-xs mt-1">
-            {competitors.length === 0
-              ? "Agrega competidores e iniciá el torneo"
-              : (() => {
-                  const modeLabel = config.mode === "round-robin" ? "Round Robin" : "Eliminación";
-                  const plural = competitors.length === 1 ? "competidor" : "competidores";
-                  return `${competitors.length} ${plural} · ${modeLabel}`;
-                })()}
-          </p>
-        </div>
-        <div className="flex flex-col items-end gap-1.5">
-          <Button
-            onClick={() => void handleStart()}
-            disabled={!canStart}
-            size="xl"
-            className={cn(
-              "transition-all",
-              canStart
-                ? "bg-green-600 hover:bg-green-500 text-white border-green-600 shadow-lg shadow-green-900/40 ring-2 ring-green-600/25"
-                : "",
+      <div className="space-y-2">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div className="min-w-0">
+            {config.tournamentName && (
+              <p className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50 mb-1">
+                {config.tournamentName}
+              </p>
             )}
-          >
-            <Swords className="size-5" />
-            Iniciar Categoría
-          </Button>
-          {canStart ? null : <p className="text-xs text-muted-foreground/60">{canStartHint}</p>}
-        </div>
-      </div>
-
-      {/* ── CATEGORÍA (colapsable) ──────────────────────────────── */}
-      <Card>
-        <button
-          type="button"
-          className="w-full flex items-center justify-between px-4 sm:px-5 py-3 hover:bg-secondary/30 transition-colors rounded-t-xl"
-          onClick={() => setCatExpanded((v) => !v)}
-        >
-          <div className="flex items-center gap-3">
-            <span className="text-xs font-bold uppercase tracking-widest text-muted-foreground/50">
-              Categoría
-            </span>
-            {config.categoryName && (
-              <span className="text-sm font-semibold text-primary">{config.categoryName}</span>
-            )}
-            {!config.categoryName && (
-              <span className="text-xs text-muted-foreground/50">Sin definir</span>
-            )}
+            <h1 className={cn(
+              "font-black tracking-tight leading-tight",
+              config.categoryName ? "text-2xl text-foreground" : "text-xl text-muted-foreground",
+            )}>
+              {config.categoryName || "Sin categoría"}
+            </h1>
+            <div className="mt-2">
+              <button
+                type="button"
+                onClick={() => setCatExpanded((v) => !v)}
+                className={cn(
+                  "rounded-lg px-4 py-2 text-sm font-semibold border transition-colors flex items-center gap-2",
+                  catExpanded
+                    ? "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
+                    : "border-primary/60 bg-primary/5 text-primary hover:bg-primary/10",
+                )}
+              >
+                <ChevronDown className={cn("size-4 transition-transform", catExpanded && "rotate-180")} />
+                {catExpanded ? "Cerrar configuración" : "⚙ Configurar categoría"}
+              </button>
+              <p className="text-muted-foreground text-xs mt-1">
+                {competitors.length === 0
+                  ? "Sin competidores"
+                  : `${competitors.length} ${competitors.length === 1 ? "competidor" : "competidores"}`}
+              </p>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            {config.categoryName && !catExpanded && (
-              <span className="text-xs text-muted-foreground/60 font-medium">Editar</span>
-            )}
-            {catExpanded ? (
-              <ChevronUp className="size-4 text-muted-foreground/50" />
-            ) : (
-              <ChevronDown className="size-4 text-muted-foreground/50" />
-            )}
+          <div className="flex flex-col items-end gap-1.5 shrink-0">
+            <Button
+              onClick={() => void handleStart()}
+              disabled={!canStart}
+              size="xl"
+              className={cn(
+                "transition-all",
+                canStart
+                  ? "bg-green-600 hover:bg-green-500 text-white border-green-600 shadow-lg shadow-green-900/40 ring-2 ring-green-600/25"
+                  : "",
+              )}
+            >
+              <Swords className="size-5" />
+              Iniciar Categoría
+            </Button>
+            {canStart ? null : <p className="text-xs text-muted-foreground/60">{canStartHint}</p>}
           </div>
-        </button>
+        </div>
 
+        {/* Inline chip editor — abre al hacer click en el nombre de categoría */}
         {catExpanded && (
-          <CardContent className="px-3 sm:px-5 pb-5 pt-1 space-y-4 border-t border-border/40">
+          <div className="rounded-xl border border-border/40 bg-secondary/20 px-4 py-4 space-y-4">
+
+            {/* Presets rápidos */}
+            <div className="space-y-2">
+              <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">⚡ Preset</span>
+              <div className="flex gap-2 flex-wrap">
+                {[...COPA_DANES_26, ...serverPresets].map((p) => (
+                  <button
+                    key={p.id ?? p.name}
+                    type="button"
+                    onClick={() => applyPreset(p)}
+                    className={cn(
+                      "px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors",
+                      isPresetActive(p)
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border/50 bg-background/50 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                    )}
+                  >
+                    {p.name}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Resumen de la config activa */}
+            <p className="text-xs text-muted-foreground/70 leading-relaxed">
+              {_rc} round{_rc > 1 ? "s" : ""} × {_fmt(_rd)}
+              {_rest > 0 ? ` · Descanso: ${_fmt(_rest)}` : " · Sin descanso"}
+              {config.mode !== "round-robin" && (_fr !== _rc || _fs !== _rd) ? ` · Final: ${_fr} × ${_fmt(_fs)}` : ""}
+              {` · Desempate: ${_fmt(_tb)}`}
+              {_gp ? " · Golden Point" : ""}
+            </p>
+
             <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
             <ChipGroup label="Grado" options={GRADO_OPTIONS} value={cat.belt} onChange={(v) => updateCat({ belt: v })} />
             <div className="flex flex-wrap gap-4 items-end">
@@ -635,7 +1035,7 @@ export function SetupPage() {
                 </div>
               </div>
               <div className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Modo</span>
+                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Formato</span>
                 <div className="flex gap-2">
                   {(["round-robin", "elimination"] as TournamentMode[]).map((m) => (
                     <button
@@ -655,18 +1055,51 @@ export function SetupPage() {
                 </div>
               </div>
             </div>
-            <div className="space-y-2">
-              <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Jefe de mesa</span>
-              <Input
-                placeholder="Nombre del jefe de mesa"
-                value={config.tableChief}
-                onChange={(e) => setConfig({ tableChief: e.target.value })}
-                className="max-w-xs h-9 text-sm"
-              />
+            <div className="flex flex-wrap gap-4 items-end">
+              <div className="space-y-2">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Jefe de mesa</span>
+                <Input
+                  placeholder="Nombre del jefe de mesa"
+                  value={config.tableChief ?? ""}
+                  onChange={(e) => setConfig({ tableChief: e.target.value })}
+                  className="w-52 h-9 text-sm"
+                />
+              </div>
             </div>
-          </CardContent>
+
+            <button
+              type="button"
+              onClick={() => setCatExpanded(false)}
+              className="text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2"
+            >
+              Listo
+            </button>
+          </div>
         )}
-      </Card>
+      </div>
+
+      {/* ── Import panel (aparece después de importar un archivo) ── */}
+      {importPanelOpen && importCategories.length > 0 && (
+        <Card className="border-primary/20 bg-primary/5">
+          <CardHeader className="pb-2 pt-3 px-4">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <FileSpreadsheet className="size-4 text-primary" />
+              Planilla importada
+              <Badge variant="secondary" className="ml-0.5">{importCategories.length} categorías</Badge>
+              <button
+                type="button"
+                onClick={() => setImportPanelOpen(false)}
+                className="ml-auto rounded-md p-1 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
+              >
+                <X className="size-3.5" />
+              </button>
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="px-4 pb-4">
+            <ImportPanel categories={importCategories} onSelect={handleImportCategory} />
+          </CardContent>
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <Card>
@@ -674,6 +1107,22 @@ export function SetupPage() {
             <CardTitle className="text-sm flex items-center gap-2">
               Lista
               <Badge variant="secondary">{competitors.length}</Badge>
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importLoading}
+                className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium border border-border/60 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
+              >
+                <FileSpreadsheet className="size-3.5" />
+                {importLoading ? "Cargando..." : "Importar Excel"}
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".xlsx,.xls,.txt"
+                className="hidden"
+                onChange={handleFileChange}
+              />
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4 space-y-3">

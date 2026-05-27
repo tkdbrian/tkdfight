@@ -30,7 +30,9 @@ export interface FightEntry {
   flagsRed?: number;
   flagsBlue?: number;
   isTiebreakExtra?: boolean;
+  tiebreakerSeconds?: number;
   isFinalFight?: boolean;
+  isGoldenPointFight?: boolean;
   // Peleas reasignadas desde otro cuadrilátero (Mesa Central)
   importedFrom?: string;
   // Bracket fields
@@ -65,6 +67,14 @@ export interface TournamentConfig {
   mode: TournamentMode;
   /** Disciplina: sparring convencional o Tul (formas, voto rojo/azul) */
   matchType: 'sparring' | 'tul';
+  /** Rounds para la pelea final (si difiere de los rounds regulares) */
+  finalRounds?: number;
+  /** Duración en segundos del round final (si difiere del round regular) */
+  finalSeconds?: number;
+  /** Duración en segundos de cada combate de desempate */
+  tiebreakerSeconds?: number;
+  /** Cuántos combates de desempate se permiten antes del Punto de Oro */
+  maxTiebreakers?: number;
 }
 
 interface TournamentState {
@@ -81,11 +91,13 @@ interface TournamentState {
   setConfig: (config: Partial<TournamentConfig>) => void;
   addCompetitor: (competitor: Omit<CompetitorEntry, "id">) => void;
   removeCompetitor: (id: string) => void;
+  clearCompetitors: () => void;
   updateCompetitor: (id: string, data: Partial<Omit<CompetitorEntry, "id">>) => void;
   setFights: (fights: FightEntry[]) => void;
   setGroups: (groups: TournamentGroup[]) => void;
   setCurrentFightIndex: (index: number) => void;
   completeFight: (fightId: string, winner: "red" | "blue" | "draw", reason: string, flagsRed?: number, flagsBlue?: number) => void;
+  resetFight: (fightId: string) => void;
   setBracket: (matches: BracketMatch[], seeds: (string | null)[]) => void;
   updateBracketSeed: (position: number, competitorId: string | null) => void;
   addTiebreakFights: (fights: FightEntry[]) => void;
@@ -139,6 +151,8 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
       competitors: s.competitors.filter((c) => c.id !== id),
     })),
 
+  clearCompetitors: () => set({ competitors: [] }),
+
   updateCompetitor: (id, data) =>
     set((s) => ({
       competitors: s.competitors.map((c) =>
@@ -156,6 +170,15 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
     set((s) => ({
       fights: s.fights.map((f) =>
         f.id === fightId ? { ...f, winner, winReason, completed: true, flagsRed, flagsBlue } : f
+      ),
+    })),
+
+  resetFight: (fightId) =>
+    set((s) => ({
+      fights: s.fights.map((f) =>
+        f.id === fightId
+          ? { ...f, completed: false, winner: undefined, winReason: undefined, flagsRed: undefined, flagsBlue: undefined }
+          : f
       ),
     })),
 

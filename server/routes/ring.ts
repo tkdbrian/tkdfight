@@ -3,7 +3,7 @@ import type { Server } from 'socket.io'
 import { getRingConfig, setRingConfig } from '../ring-config.js'
 import { getLocalIp } from '../helpers.js'
 import { state } from '../state.js'
-import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, clearTournamentData, insertFightIfNew } from '../db/index.js'
+import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, clearTournamentData, insertFightIfNew, createTournament, renameTournament, getCompetitorCount } from '../db/index.js'
 import db from '../db/index.js'
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)
@@ -97,8 +97,19 @@ export function registerRingRoute(app: Express, io: Server) {
       return
     }
 
-    // Nueva categoría: limpiar peleas pendientes del torneo actual y resetear estado
+    // Nueva categoría: asignar o crear un torneo con ese nombre, luego limpiar pendientes
     if (newCategory) {
+      const catName = typeof categoryName === 'string' && categoryName.trim()
+        ? categoryName.trim()
+        : 'Categoría'
+      const existingCount = getCompetitorCount(state.activeTournamentId)
+      if (existingCount === 0) {
+        // Torneo actual vacío → renombrarlo en lugar de crear uno nuevo
+        renameTournament(state.activeTournamentId, catName, catName)
+      } else {
+        // Ya tiene datos → crear torneo nuevo para esta categoría
+        state.activeTournamentId = createTournament(catName, catName)
+      }
       deletePendingFights(state.activeTournamentId)
       state.fallos = []
       state.match = null

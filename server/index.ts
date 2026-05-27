@@ -9,12 +9,15 @@ import { existsSync } from 'node:fs'
 import { getLocalIp } from './helpers.js'
 import { setServerUrl } from './broadcast.js'
 import { registerSocketHandlers } from './socket/handlers.js'
-import { createTournament, getLatestTournament } from './db/index.js'
+import { createTournament, getLatestTournament, loadMatchSnapshot, isFightPending } from './db/index.js'
 import { state } from './state.js'
+import { createMatch } from '../src/engine/match-machine.js'
 import { registerJudgeRoute } from './routes/judge.js'
 import { registerTvRoute } from './routes/tv.js'
 import { registerQrRoute } from './routes/qr.js'
 import { registerRingRoute } from './routes/ring.js'
+import { registerHistoryRoute } from './routes/history.js'
+import { registerPresetsRoute } from './routes/presets.js'
 import { logger } from './logger.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -69,6 +72,31 @@ if (!latestTournament) {
   state.activeTournamentId = latestTournament.id
 }
 
+// ── Restore emergency snapshot (si el servidor se reinició en medio de un combate) ─
+
+try {
+  const snapshot = loadMatchSnapshot()
+  if (snapshot && snapshot.tournamentId === state.activeTournamentId && isFightPending(snapshot.fightId)) {
+    const { match, rules, roundFlags } = snapshot.data
+    const completedRounds = roundFlags.length
+    const totalRounds = (rules as { rounds?: { count?: number } }).rounds?.count ?? 2
+    const restSeconds = (rules as { rounds?: { rest_seconds?: number } }).rounds?.rest_seconds ?? 30
+    state.match = match as typeof state.match
+    state.rules = rules as typeof state.rules
+    state.roundFlags = roundFlags
+    state.matchState = {
+      ...createMatch(rules as typeof state.rules),
+      phase: completedRounds > 0 ? 'rest' : 'idle',
+      currentRound: Math.min(completedRounds + 1, totalRounds),
+      timeLeft: completedRounds > 0 ? restSeconds : 0,
+    }
+    state.matchPaused = true
+    logger.info({ fightId: snapshot.fightId, completedRounds }, '[startup] Combate restaurado desde snapshot de emergencia')
+  }
+} catch (err) {
+  logger.warn({ err }, '[startup] No se pudo restaurar snapshot — arrancando limpio')
+}
+
 // ── Security headers ─────────────────────────────────────────────────────────
 // `contentSecurityPolicy: false` so the SPA bundle and inline runtime work;
 // SPA already serves only its own assets.
@@ -119,6 +147,8 @@ registerJudgeRoute(app)
 registerTvRoute(app)
 registerQrRoute(app)
 registerRingRoute(app, io)
+registerHistoryRoute(app)
+registerPresetsRoute(app)
 
 // ── Socket ───────────────────────────────────────────────────────────────────
 
@@ -128,8 +158,17 @@ registerSocketHandlers(io)
 
 const distPath = path.join(__dirname, '..', 'dist')
 if (existsSync(distPath)) {
-  app.use(express.static(distPath))
+  // Assets con hash: cache largo (1 año). index.html: nunca cachear (el browser siempre pide la última versión).
+  app.use(express.static(distPath, {
+    index: false,
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('index.html')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
+      }
+    },
+  }))
   app.get('/{*path}', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate')
     res.sendFile(path.join(distPath, 'index.html'))
   })
 }

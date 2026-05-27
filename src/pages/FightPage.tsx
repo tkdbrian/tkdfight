@@ -33,6 +33,7 @@ import {
   Users,
   Check,
   List,
+  Zap,
 } from "lucide-react";
 import {
   PHASE_LABELS,
@@ -258,10 +259,38 @@ function JefeMesaPanel({
     <div className="space-y-3">
       {/* Historial de rounds */}
       {!tulMode && roundFlags.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {roundFlags.map((r, i) => (
-            <RoundHistoryBadge key={`r${i + 1}-${r.red}-${r.blue}`} round={r} idx={i} />
-          ))}
+        <div className="space-y-1.5">
+          {/* Resumen: rounds ganados */}
+          {(() => {
+            const rw = countRoundsWon(roundFlags);
+            return (
+              <div className="flex items-center gap-2 text-sm font-black">
+                <span className={rw.red > rw.blue ? "text-red-300" : "text-muted-foreground/40"}>
+                  🔴 {rw.red} round{rw.red !== 1 ? "s" : ""}
+                </span>
+                <span className="text-muted-foreground/25">|</span>
+                <span className={rw.blue > rw.red ? "text-blue-300" : "text-muted-foreground/40"}>
+                  🔵 {rw.blue} round{rw.blue !== 1 ? "s" : ""}
+                </span>
+              </div>
+            );
+          })()}
+          {/* Badges por round + botón deshacer */}
+          <div className="flex flex-wrap items-center gap-2">
+            {roundFlags.map((r, i) => (
+              <RoundHistoryBadge key={`r${i + 1}-${r.red}-${r.blue}`} round={r} idx={i} />
+            ))}
+            {!roundActive && (
+              <button
+                type="button"
+                onClick={() => onEmit("mesa:undoRound")}
+                className="text-xs font-medium px-2 py-1 rounded border border-red-900/50 text-red-400/60 hover:bg-red-950/40 hover:text-red-300 transition-colors"
+                title="Deshacer el último round confirmado"
+              >
+                ↩ Deshacer R{roundFlags.length}
+              </button>
+            )}
+          </div>
         </div>
       )}
 
@@ -315,6 +344,24 @@ function JefeMesaPanel({
       ) : (
         /* ── POR JUEZ: filas individuales ── */
         <>
+          {/* Banner de estado de fase */}
+          {canVote && !tulMode && (
+            <div className={cn(
+              "flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium",
+              roundActive
+                ? "bg-secondary/30 text-muted-foreground/60"
+                : "bg-amber-950/40 border border-amber-700/40 text-amber-200"
+            )}>
+              <span className={roundActive ? "" : "animate-pulse"}>
+                {roundActive ? "⏱" : "🏁"}
+              </span>
+              <span>
+                {roundActive
+                  ? "Round en curso — podés pre-votar mientras mirás las banderas"
+                  : `Round ${roundNum} terminado — registrá las banderas de los ${judgesCount} jueces`}
+              </span>
+            </div>
+          )}
           {canVote && (
             <div className="flex items-center gap-3 py-1">
               <span className={cn("text-3xl font-black tabular-nums", roundWinner === "red" ? "text-red-400" : "text-muted-foreground")}>
@@ -851,21 +898,41 @@ function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
   return (
     <div className="flex gap-1.5 overflow-x-auto px-4 pb-2.5 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       {fights.map((fight, i) => {
+        const isCurrent = i === currentIndex;
+        const isDone = fight.completed;
+        const winner = fight.winner;
+
         let btnCls: string;
-        if (i === currentIndex) {
+        if (isCurrent) {
           btnCls = "size-8 bg-primary text-primary-foreground ring-2 ring-primary/30";
-        } else if (fight.completed) {
-          btnCls = "size-6 bg-muted/20 text-muted-foreground/30";
+        } else if (isDone) {
+          if (winner === "red") {
+            btnCls = "size-7 bg-red-950/60 border border-red-700/60 text-red-300 hover:bg-red-900/60";
+          } else if (winner === "blue") {
+            btnCls = "size-7 bg-blue-950/60 border border-blue-700/60 text-blue-300 hover:bg-blue-900/60";
+          } else {
+            btnCls = "size-7 bg-yellow-950/70 border border-yellow-600/60 text-yellow-300 hover:bg-yellow-900/60";
+          }
         } else {
           btnCls = "size-6 border border-border/50 text-muted-foreground/60 hover:bg-secondary";
         }
+
+        const tooltipParts = [`${i + 1}. ${fight.red.name} vs ${fight.blue.name}`];
+        if (isDone && winner) {
+          const winName = winner === "red" ? fight.red.name : winner === "blue" ? fight.blue.name : "Empate";
+          const flags = (fight.flagsRed != null && fight.flagsBlue != null)
+            ? ` (${fight.flagsRed}-${fight.flagsBlue})`
+            : "";
+          tooltipParts.push(`✓ ${winName}${flags}`);
+        }
+
         return (
           <button
             key={fight.id}
             ref={(el) => { refs.current[i] = el; }}
             type="button"
             onClick={() => onSelect(i)}
-            title={`${i + 1}. ${fight.red.name} vs ${fight.blue.name}`}
+            title={tooltipParts.join(" — ")}
             className={cn(
               "shrink-0 rounded-full font-bold tabular-nums transition-all text-xs flex items-center justify-center",
               btnCls,
@@ -902,6 +969,8 @@ function FightPicker({
   onSelectIndex: (i: number) => void;
 }>) {
   const current = fights[currentIndex];
+  const [confirmRedo, setConfirmRedo] = React.useState(false);
+  React.useEffect(() => { setConfirmRedo(false); }, [currentIndex]);
   return (
     <Card>
       <CardHeader className="py-3 px-4">
@@ -933,14 +1002,51 @@ function FightPicker({
                 {current.blue.team && <p className="text-xs text-muted-foreground">{current.blue.team}</p>}
               </div>
             </div>
-            {current.completed && (
-              <Badge variant="secondary" className="w-full justify-center">Completado</Badge>
-            )}
+            {current.completed && !loaded && (() => {
+              const winnerName = current.winner === "red" ? current.red.name
+                : current.winner === "blue" ? current.blue.name
+                : null;
+              const winnerColor = current.winner === "red" ? "text-red-400" : "text-blue-400";
+              const flagsText = (current.flagsRed != null && current.flagsBlue != null)
+                ? `🔴 ${current.flagsRed} — ${current.flagsBlue} 🔵`
+                : null;
+              return (
+                <div className="rounded-lg bg-secondary/30 border border-border px-3 py-2 space-y-1">
+                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Resultado</p>
+                  {winnerName ? (
+                    <p className={cn("font-bold text-sm", winnerColor)}>
+                      {current.winner === "red" ? "🔴" : "🔵"} {winnerName}
+                    </p>
+                  ) : (
+                    <p className="font-bold text-sm text-yellow-400">⚖ Empate</p>
+                  )}
+                  {flagsText && <p className="text-xs text-muted-foreground">{flagsText}</p>}
+                </div>
+              );
+            })()}
             {loaded ? (
               <Button size="lg" variant="outline" className="w-full" onClick={onReset}>
                 <RotateCcw className="size-4" />
                 Reiniciar
               </Button>
+            ) : current.completed ? (
+              confirmRedo ? (
+                <div className="space-y-2">
+                  <p className="text-xs text-amber-400 text-center font-medium">¿Borrar resultado y rehacer la pelea?</p>
+                  <div className="flex gap-2">
+                    <Button size="sm" variant="destructive" className="flex-1" onClick={() => { setConfirmRedo(false); onLoad(); }}>
+                      Sí, resetear
+                    </Button>
+                    <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
+                      Cancelar
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <Button size="lg" variant="outline" className="w-full border-amber-700/50 text-amber-400 hover:bg-amber-950/40 hover:text-amber-300" onClick={() => setConfirmRedo(true)}>
+                  ⚠ Rehacer combate
+                </Button>
+              )
             ) : (
               <Button size="lg" className="w-full" onClick={onLoad}>
                 Cargar combate
@@ -1346,7 +1452,7 @@ function FlagCounterField({
 export function FightPage() {
   const { connected, state, emit, socket } = useSocket();
   const navigate = useNavigate();
-  const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights, postponeFight } =
+  const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights, addTiebreakFights, postponeFight, resetFight, reset } =
     useTournamentStore(
       useShallow((s) => ({
         fights: s.fights,
@@ -1356,18 +1462,30 @@ export function FightPage() {
         completeBracketMatch: s.completeBracketMatch,
         setPhase: s.setPhase,
         config: s.config,
+        bracketMatches: s.bracketMatches,
         addImportedFights: s.addImportedFights,
+        addTiebreakFights: s.addTiebreakFights,
         postponeFight: s.postponeFight,
+        resetFight: s.resetFight,
+        reset: s.reset,
       }))
     );
 
   const [loaded, setLoaded] = React.useState(false);
-  const [bottomTab, setBottomTab] = React.useState<"mesa" | "porjuez" | "remotos">("mesa");
+  const [confirmRedo, setConfirmRedo] = React.useState(false);
+  const [bottomTab, setBottomTab] = React.useState<"mesa" | "porjuez" | "remotos">("porjuez");
   const [showFightList, setShowFightList] = React.useState(false);
   const [resultDialogOpen, setResultDialogOpen] = React.useState(false);
   const [resultFlagsRed, setResultFlagsRed] = React.useState(0);
   const [resultFlagsBlue, setResultFlagsBlue] = React.useState(0);
   const [showImportedPanel, setShowImportedPanel] = React.useState(true);
+  const [winnerOverlayOpen, setWinnerOverlayOpen] = React.useState(false);
+  // Default: tiebreakerSeconds del config (configurado en Settings), luego overtime_seconds de las reglas, luego 30s
+  const [tiebreakerDuration, setTiebreakerDuration] = React.useState(() => {
+    const cfg = useTournamentStore.getState().config;
+    return cfg.tiebreakerSeconds ?? (cfg.ruleSet as RuleSetSparring)?.rounds?.overtime_seconds ?? 30;
+  });
+  const prevIsFinishedRef = React.useRef<boolean | null>(null);
 
   const currentFight = fights[currentFightIndex];
   const { matchState, matchPaused, judges } = state;
@@ -1401,17 +1519,47 @@ export function FightPage() {
   );
   const _judgesCount = config.judgesCount ?? 4;
   const scoreDisplay = hasMobileData ? judgeLeadCount : flagCount;
+  // Si el combate ya está completado y no está cargado, mostrar el resultado guardado en los paneles
+  const displayScore = (currentFight?.completed && !loaded)
+    ? { red: currentFight.flagsRed ?? 0, blue: currentFight.flagsBlue ?? 0 }
+    : scoreDisplay;
   const timeLeft = matchState?.timeLeft ?? 0;
   const currentRound = matchState?.currentRound ?? 1;
+  const totalRounds = state.rules?.rounds.count ?? 2;
+  const isLastRound = currentRound >= totalRounds;
   const isRunning = phase === "round" || phase === "overtime" || phase === "golden_point";
+  // Última pelea pendiente de su llave (solo si tiene groupId y no está completada)
+  const isLastInGroup = (() => {
+    if (!currentFight || currentFight.completed) return false;
+    const gid = currentFight.groupId;
+    if (!gid) return false;
+    const groupFights = fights.filter(
+      (f) => f.groupId === gid && !f.importedFrom && !f.isTiebreakExtra && !f.isFinalFight
+    );
+    return groupFights.filter((f) => f.id !== currentFight.id && !f.completed).length === 0;
+  })();
   /** Modo Tul: los competidores ejecutan formas, los jueces votan rojo/azul */
   const isTul = config.matchType === 'tul';
   const tulPhase = state.tulPhase ?? "idle";
 
-  // biome-ignore lint/correctness/useExhaustiveDependencies: setLoaded is a stable state setter — no need in deps
+  // biome-ignore lint/correctness/useExhaustiveDependencies: setLoaded/setConfirmRedo are stable state setters — no need in deps
   React.useEffect(() => {
     setLoaded(false);
+    setConfirmRedo(false);
   }, [currentFightIndex]);
+
+  // Mostrar overlay de ganador cuando el combate termina (solo en la transición false→true Y si el combate está cargado)
+  React.useEffect(() => {
+    const prev = prevIsFinishedRef.current;
+    prevIsFinishedRef.current = isFinished;
+    if (prev === false && isFinished && matchState?.result != null && loaded) {
+      setWinnerOverlayOpen(true);
+    }
+    if (!isFinished) {
+      setWinnerOverlayOpen(false);
+    }
+  // biome-ignore lint/correctness/useExhaustiveDependencies: matchState.result identity changes on every broadcast — use isFinished as proxy
+  }, [isFinished, matchState?.result, loaded]);
 
   // Listen for fights imported by Mesa Central from another tatami.
   // The server emits 'fights:imported' after a successful import-fights call.
@@ -1519,10 +1667,25 @@ export function FightPage() {
     if (!currentFight) return;
     const baseRules = (config.ruleSet as RuleSetSparring) ?? DEFAULT_RULES;
     // judgingMode must match the UI mode: mobile judges score points, mesa judges vote flags
-    const rules: RuleSetSparring = {
+    let rules: RuleSetSparring = {
       ...baseRules,
       judgingMode: bottomTab === "remotos" ? "points" : "flags",
     };
+    // Desempate: sobreescribir a 1 round con duración personalizada
+    if (currentFight.tiebreakerSeconds != null) {
+      rules = { ...rules, rounds: { ...rules.rounds, count: 1, duration_seconds: currentFight.tiebreakerSeconds } };
+    }
+    // Final: aplicar cantidad de rounds y/o duración configurada para la final
+    if (currentFight.isFinalFight && config.finalRounds != null) {
+      rules = { ...rules, rounds: { ...rules.rounds, count: config.finalRounds } };
+    }
+    if (currentFight.isFinalFight && config.finalSeconds != null) {
+      rules = { ...rules, rounds: { ...rules.rounds, duration_seconds: config.finalSeconds } };
+    }
+    // Punto de Oro: round de 1 segundo + golden_point → entra inmediatamente en muerte súdita
+    if (currentFight.isGoldenPointFight) {
+      rules = { ...rules, rounds: { ...rules.rounds, count: 1, duration_seconds: 1, golden_point: true, overtime_seconds: 0 } };
+    }
     emit("match:load", {
       rules,
       match: {
@@ -1536,6 +1699,14 @@ export function FightPage() {
     });
     setLoaded(true);
   }
+
+  // Auto-cargar combates de desempate y Punto de Oro cuando se convierten en el combate activo
+  // biome-ignore lint/correctness/useExhaustiveDependencies: currentFight.id change is the signal; handleLoad uses latest closure
+  React.useEffect(() => {
+    if ((currentFight?.isTiebreakExtra || currentFight?.isGoldenPointFight) && !loaded && !currentFight.completed && connected) {
+      handleLoad();
+    }
+  }, [currentFight?.id, connected]);
 
   // When judge mode changes while a fight is loaded in "idle", reload so judgingMode matches.
   // If mid-fight, just warn — change takes effect on next fight.
@@ -1552,6 +1723,33 @@ export function FightPage() {
       toast.info("Cambiar modo tiene efecto en la próxima pelea");
     }
   });
+
+  function handleStartTiebreaker() {
+    if (!currentFight) return;
+    const reason = matchState?.result?.reason ?? "points";
+    completeFight(currentFight.id, "draw", reason, resultFlagsRed, resultFlagsBlue);
+    // Contar desempates completados (ya incluyendo el actual, marcado arriba)
+    const matchId = currentFight.bracketMatchId;
+    const freshFights = useTournamentStore.getState().fights;
+    const completedTbs = freshFights.filter(
+      (f) => f.isTiebreakExtra && f.completed && f.bracketMatchId === matchId
+    ).length;
+    const isGoldenPoint = completedTbs >= (config.maxTiebreakers ?? 1);
+
+    const nextFight: FightEntry = {
+      id: crypto.randomUUID(),
+      red: currentFight.red,
+      blue: currentFight.blue,
+      completed: false,
+      isTiebreakExtra: !isGoldenPoint,
+      isGoldenPointFight: isGoldenPoint || undefined,
+      bracketMatchId: currentFight.bracketMatchId,
+      tiebreakerSeconds: isGoldenPoint ? undefined : tiebreakerDuration,
+    };
+    addTiebreakFights([nextFight]);
+    setResultDialogOpen(false);
+    setLoaded(false);
+  }
 
   function handleOpenResultDialog() {
     if (!matchState?.result) return;
@@ -1579,34 +1777,157 @@ export function FightPage() {
     const winner = matchState?.result?.winner;
     const reason = matchState?.result?.reason ?? "points";
     if (!winner) return;
+    // En eliminación, los empates deben ir a desempate — nunca confirmar el resultado directamente
+    // Excepción: Punto de Oro (si termina en empate, dejar que el árbitro confirme)
+    if (winner === "draw" && config.mode === "elimination" && !currentFight.isGoldenPointFight) return;
     completeFight(currentFight.id, winner, reason, resultFlagsRed, resultFlagsBlue);
     if (currentFight.bracketMatchId && winner !== "draw") {
       completeBracketMatch(currentFight.bracketMatchId, winner === "red" ? currentFight.red.id : currentFight.blue.id);
     }
     setResultDialogOpen(false);
-    const next = currentFightIndex + 1;
-    if (next >= fights.length) {
-      setPhase("results");
-      navigate("/standings");
+    // Quedan peleas incompletas (sin contar la que se acaba de completar)?
+    const remainingIncomplete = fights.some((f, i) => i !== currentFightIndex && !f.completed);
+    if (!remainingIncomplete) {
+      // En modo eliminación, leer el estado actualizado del store para ver si quedan rondas del bracket
+      const latestBracketMatches = useTournamentStore.getState().bracketMatches;
+      const bracketStillPending = config.mode === "elimination" && latestBracketMatches.some((m) => !m.completed);
+      if (bracketStillPending) {
+        // Quedan rondas por jugar — volver al bracket para que el árbitro inicie la siguiente
+        navigate("/bracket");
+      } else {
+        setPhase("results");
+        navigate("/standings");
+      }
     } else {
-      setCurrentFightIndex(next);
+      // Siguiente incompleta después de la actual, o la primera incompleta si no hay más adelante
+      const nextIdx = fights.findIndex((f, i) => i > currentFightIndex && !f.completed);
+      setCurrentFightIndex(nextIdx !== -1 ? nextIdx : fights.findIndex((f, i) => i !== currentFightIndex && !f.completed));
     }
     setLoaded(false);
   }
 
   if (fights.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center text-muted-foreground">
+      <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground">
         <p>No hay combates. Configura la categoría primero.</p>
+        <button
+          type="button"
+          onClick={async () => {
+            try { await fetch("/api/ring/full-reset", { method: "POST" }); } catch { reset(); }
+          }}
+          className="text-xs text-destructive underline underline-offset-2 hover:opacity-80"
+        >
+          Limpiar estado anterior y empezar de cero
+        </button>
       </div>
     );
   }
 
-  const redName = state.match?.red.name ?? currentFight?.red.name ?? "Rojo";
-  const blueName = state.match?.blue.name ?? currentFight?.blue.name ?? "Azul";
+  // Solo usar los nombres del servidor cuando el combate está cargado — si no, usar los locales
+  const redName = (loaded ? state.match?.red.name : undefined) ?? currentFight?.red.name ?? "Rojo";
+  const blueName = (loaded ? state.match?.blue.name : undefined) ?? currentFight?.blue.name ?? "Azul";
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+
+      {/* ── WINNER OVERLAY ──────────────────────────────────── */}
+      <Dialog open={winnerOverlayOpen} onOpenChange={setWinnerOverlayOpen}>
+        <DialogContent className="max-w-sm p-0 overflow-hidden border-0 [&>button:last-child]:hidden">
+          <DialogHeader className="sr-only">
+            <DialogTitle>Resultado del combate</DialogTitle>
+          </DialogHeader>
+          {matchState?.result && (() => {
+            const { winner, reason } = matchState.result;
+            const label = winner === "draw" ? "Empate" : winner === "red" ? redName : blueName;
+            const lastRound = state.roundFlags[state.roundFlags.length - 1];
+            const votes = lastRound?.votes ?? state.judgeVotes ?? {};
+            const hasIndividualVotes = Object.keys(votes).length > 0;
+            const judgeIds = Array.from({ length: config.judgesCount ?? 4 }, (_, i) => `J${i + 1}`);
+            return (
+              <div className={cn(
+                "flex flex-col items-center gap-6 py-10 px-8 text-center",
+                winner === "red" ? "bg-red-950" : winner === "blue" ? "bg-blue-950" : "bg-secondary"
+              )}>
+                {/* Trofeo */}
+                <div className="text-7xl leading-none">🏆</div>
+
+                {/* Nombre ganador */}
+                <div className={cn(
+                  "text-5xl font-black uppercase tracking-widest leading-none",
+                  winner === "red" ? "text-red-100" : winner === "blue" ? "text-blue-100" : "text-foreground"
+                )}>
+                  {label}
+                </div>
+
+                {/* Razón */}
+                <p className="text-base text-white/50 -mt-2">
+                  {WIN_REASON_LABELS[reason] ?? reason}
+                </p>
+
+                {/* Banderas */}
+                {lastRound && reason === "points" && (
+                  <div className={cn(
+                    "flex items-center gap-5 rounded-2xl px-8 py-4 text-3xl font-black",
+                    winner === "red" ? "bg-red-900/60" : winner === "blue" ? "bg-blue-900/60" : "bg-white/10"
+                  )}>
+                    <span className={lastRound.red > lastRound.blue ? "text-red-200" : "text-white/30"}>
+                      🔴 {lastRound.red}
+                    </span>
+                    <span className="text-white/20 text-lg font-normal">—</span>
+                    <span className={lastRound.blue > lastRound.red ? "text-blue-200" : "text-white/30"}>
+                      {lastRound.blue} 🔵
+                    </span>
+                  </div>
+                )}
+
+                {/* Votos individuales — solo si están registrados */}
+                {hasIndividualVotes && (
+                  <div className="flex justify-center gap-2 flex-wrap">
+                    {judgeIds.map((jid) => {
+                      const vote = votes[jid];
+                      return (
+                        <div key={jid} className={cn(
+                          "rounded-xl px-3 py-2 border text-sm font-bold min-w-[56px]",
+                          vote === "red" ? "bg-red-800/60 border-red-500 text-red-200" :
+                          vote === "blue" ? "bg-blue-800/60 border-blue-500 text-blue-200" :
+                          "bg-white/10 border-white/20 text-white/50"
+                        )}>
+                          <p className="text-[10px] text-white/40 mb-0.5">{jid}</p>
+                          <p>{vote === "red" ? "🔴" : vote === "blue" ? "🔵" : vote === "draw" ? "🤝" : "—"}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Acciones */}
+                <div className="flex flex-col gap-2 w-full pt-2">
+                  <Button
+                    size="lg"
+                    className={cn(
+                      "w-full text-base font-bold",
+                      winner === "red" ? "bg-red-600 hover:bg-red-500 text-white" :
+                      winner === "blue" ? "bg-blue-600 hover:bg-blue-500 text-white" :
+                      "bg-primary hover:bg-primary/90"
+                    )}
+                    onClick={() => { setWinnerOverlayOpen(false); handleOpenResultDialog(); }}
+                  >
+                    Confirmar resultado →
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="lg"
+                    className="w-full text-white/60 hover:text-white hover:bg-white/10"
+                    onClick={() => { emit("mesa:undoRound"); setWinnerOverlayOpen(false); }}
+                  >
+                    ↩ Corregir banderas
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
 
       {/* ── FIGHT LIST DIALOG ──────────────────────────────────── */}
       <Dialog open={showFightList} onOpenChange={setShowFightList}>
@@ -1771,6 +2092,13 @@ export function FightPage() {
         </div>
       )}
 
+      {/* ── BANNER ÚLTIMA PELEA DE LA LLAVE ──────────────────── */}
+      {isLastInGroup && (
+        <div className="shrink-0 flex items-center justify-center gap-2 py-1.5 bg-amber-500/15 border-b border-amber-500/30 text-amber-300 text-xs font-semibold tracking-wide">
+          🏁 ÚLTIMA PELEA · Llave {currentFight?.groupId}
+        </div>
+      )}
+
       {/* ── ARENA ────────────────────────────────────────────────── */}
       <div className="flex-1 min-h-0 overflow-hidden">
 
@@ -1778,12 +2106,12 @@ export function FightPage() {
         <div className="hidden md:grid h-full grid-cols-[1fr_auto_1fr]">
 
           {/* ROJO */}
-          <div className="flex flex-col items-center justify-center gap-5 px-8 py-6 bg-red-950/50 border-r border-red-900/40">
-            <p className="text-3xl font-black text-red-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
+          <div className="flex flex-col items-center justify-center gap-5 px-4 py-3 lg:px-8 lg:py-6 bg-red-950/50 border-r border-red-900/40">
+            <p className="text-xl lg:text-3xl font-black text-red-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
               {redName}
             </p>
-            <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-red-950/30 text-red-400 ring-card-red tabular-nums">
-              {scoreDisplay.red}
+            <div className="text-[clamp(4rem,11vh,10rem)] font-black leading-none rounded-2xl px-[clamp(1.5rem,3vw,3.5rem)] py-[clamp(1rem,2vh,2rem)] bg-red-950/30 text-red-400 ring-card-red tabular-nums">
+              {displayScore.red}
             </div>
             {(penaltyCounts.warnings.red > 0 || penaltyCounts.fouls.red > 0) && (
               <div className="flex items-center gap-1.5 text-sm font-bold">
@@ -1852,14 +2180,22 @@ export function FightPage() {
                 phase === "penalties" && "bg-red-800",
                 phase === "idle" && "bg-secondary"
               )}>
-                {PHASE_LABELS[phase]}{roundSuffix(phase, currentRound)}
+                {phase === "rest" && isLastRound
+                  ? "Votación"
+                  : `${PHASE_LABELS[phase]}${roundSuffix(phase, currentRound)}`}
               </Badge>
+              {currentFight?.isTiebreakExtra && (
+                <Badge variant="outline" className="text-orange-400 border-orange-600">⚡ Desempate</Badge>
+              )}
+              {currentFight?.isGoldenPointFight && (
+                <Badge variant="outline" className="text-yellow-300 border-yellow-500">⚡ Punto de Oro</Badge>
+              )}
               {showPauseBadge(matchPaused, phase) && (
                 <Badge variant="outline" className="text-yellow-400 border-yellow-600">PAUSA</Badge>
               )}
             </div>
             <div className={cn(
-              "font-mono font-black leading-none text-9xl",
+              "font-mono font-black leading-none",
               timerClass(timeLeft, isRunning, matchPaused),
               isTul && "hidden",
             )}>
@@ -1878,6 +2214,44 @@ export function FightPage() {
                 onEmit={emit}
                 onFinishAndNext={handleOpenResultDialog}
               />
+            ) : currentFight?.completed ? (
+              <div className="flex flex-col items-center gap-3 w-full px-4">
+                <div className="rounded-lg bg-secondary/30 border border-border px-4 py-3 text-center space-y-1 w-full">
+                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Resultado</p>
+                  {currentFight.winner === "red" ? (
+                    <p className="font-black text-lg text-red-400">🔴 {currentFight.red.name}</p>
+                  ) : currentFight.winner === "blue" ? (
+                    <p className="font-black text-lg text-blue-400">🔵 {currentFight.blue.name}</p>
+                  ) : (
+                    <p className="font-black text-lg text-yellow-400">⚖ Empate</p>
+                  )}
+                  {(currentFight.flagsRed != null && currentFight.flagsBlue != null) && (
+                    <p className="text-sm text-muted-foreground">🔴 {currentFight.flagsRed} — {currentFight.flagsBlue} 🔵</p>
+                  )}
+                </div>
+                {confirmRedo ? (
+                  <div className="space-y-2 w-full">
+                    <p className="text-xs text-amber-400 text-center font-medium">¿Borrar resultado y rehacer la pelea?</p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="destructive" className="flex-1" onClick={() => {
+                        resetFight(currentFight.id);
+                        emit("match:reset");
+                        setConfirmRedo(false);
+                        handleLoad();
+                      }}>
+                        Sí, resetear
+                      </Button>
+                      <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
+                        Cancelar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button size="lg" variant="outline" className="w-full border-amber-700/50 text-amber-400 hover:bg-amber-950/40 hover:text-amber-300" onClick={() => setConfirmRedo(true)}>
+                    ⚠ Rehacer combate
+                  </Button>
+                )}
+              </div>
             ) : (
               <div className="flex flex-col items-center gap-3">
                 <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
@@ -1889,12 +2263,12 @@ export function FightPage() {
           </div>
 
           {/* AZUL */}
-          <div className="flex flex-col items-center justify-center gap-5 px-8 py-6 bg-blue-950/50 border-l border-blue-900/40">
-            <p className="text-3xl font-black text-blue-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
+          <div className="flex flex-col items-center justify-center gap-5 px-4 py-3 lg:px-8 lg:py-6 bg-blue-950/50 border-l border-blue-900/40">
+            <p className="text-xl lg:text-3xl font-black text-blue-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
               {blueName}
             </p>
-            <div className="text-[10rem] font-black leading-none rounded-2xl px-14 py-8 bg-blue-950/30 text-blue-400 ring-card-blue tabular-nums">
-              {scoreDisplay.blue}
+            <div className="text-[clamp(4rem,11vh,10rem)] font-black leading-none rounded-2xl px-[clamp(1.5rem,3vw,3.5rem)] py-[clamp(1rem,2vh,2rem)] bg-blue-950/30 text-blue-400 ring-card-blue tabular-nums">
+              {displayScore.blue}
             </div>
             {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && (
               <div className="flex items-center gap-1.5 text-sm font-bold">
@@ -1965,8 +2339,16 @@ export function FightPage() {
               phase === "penalties" && "bg-red-800",
               phase === "idle" && "bg-secondary"
             )}>
-              {PHASE_LABELS[phase]}{roundSuffix(phase, currentRound)}
+              {phase === "rest" && isLastRound
+                ? "Votación"
+                : `${PHASE_LABELS[phase]}${roundSuffix(phase, currentRound)}`}
             </Badge>
+            {currentFight?.isTiebreakExtra && (
+              <Badge variant="outline" className="text-orange-400 border-orange-600 text-xs">⚡ Desempate</Badge>
+            )}
+            {currentFight?.isGoldenPointFight && (
+              <Badge variant="outline" className="text-yellow-300 border-yellow-500 text-xs">⚡ Punto de Oro</Badge>
+            )}
             {showPauseBadge(matchPaused, phase) && (
               <Badge variant="outline" className="text-yellow-400 border-yellow-600 text-xs">PAUSA</Badge>
             )}
@@ -1987,7 +2369,7 @@ export function FightPage() {
                 {redName}
               </p>
               <div className="text-7xl font-black leading-none text-red-400 tabular-nums">
-                {scoreDisplay.red}
+                {displayScore.red}
               </div>
               {(penaltyCounts.warnings.red > 0 || penaltyCounts.fouls.red > 0) && (
                 <div className="flex items-center gap-1 text-xs font-bold">
@@ -2039,7 +2421,7 @@ export function FightPage() {
                 {blueName}
               </p>
               <div className="text-7xl font-black leading-none text-blue-400 tabular-nums">
-                {scoreDisplay.blue}
+                {displayScore.blue}
               </div>
               {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && (
                 <div className="flex items-center gap-1 text-xs font-bold">
@@ -2102,6 +2484,44 @@ export function FightPage() {
                 onEmit={emit}
                 onFinishAndNext={handleOpenResultDialog}
               />
+            ) : currentFight?.completed ? (
+              <div className="flex flex-col items-center gap-3 w-full">
+                <div className="rounded-lg bg-secondary/30 border border-border px-4 py-3 text-center space-y-1 w-full">
+                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Resultado</p>
+                  {currentFight.winner === "red" ? (
+                    <p className="font-black text-base text-red-400">🔴 {currentFight.red.name}</p>
+                  ) : currentFight.winner === "blue" ? (
+                    <p className="font-black text-base text-blue-400">🔵 {currentFight.blue.name}</p>
+                  ) : (
+                    <p className="font-black text-base text-yellow-400">⚖ Empate</p>
+                  )}
+                  {(currentFight.flagsRed != null && currentFight.flagsBlue != null) && (
+                    <p className="text-sm text-muted-foreground">🔴 {currentFight.flagsRed} — {currentFight.flagsBlue} 🔵</p>
+                  )}
+                </div>
+                {confirmRedo ? (
+                  <div className="space-y-2 w-full">
+                    <p className="text-xs text-amber-400 text-center font-medium">¿Borrar resultado y rehacer la pelea?</p>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="destructive" className="flex-1" onClick={() => {
+                        resetFight(currentFight.id);
+                        emit("match:reset");
+                        setConfirmRedo(false);
+                        handleLoad();
+                      }}>
+                        Sí, resetear
+                      </Button>
+                      <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
+                        Cancelar
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <Button size="lg" variant="outline" className="w-full border-amber-700/50 text-amber-400 hover:bg-amber-950/40 hover:text-amber-300" onClick={() => setConfirmRedo(true)}>
+                    ⚠ Rehacer combate
+                  </Button>
+                )}
+              </div>
             ) : (
               <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
                 <Play />
@@ -2289,17 +2709,18 @@ export function FightPage() {
       {/* ── DIALOG RESULTADO ─────────────────────────────────────── */}
       {matchState?.result != null && (
         <Dialog open={resultDialogOpen} onOpenChange={setResultDialogOpen}>
-          <DialogContent className="max-w-md">
-            <DialogHeader>
+          <DialogContent className="max-w-sm p-0 overflow-hidden">
+            <DialogHeader className="sr-only">
               <DialogTitle>Registrar resultado del combate</DialogTitle>
             </DialogHeader>
-            <div className="space-y-4">
-              <div className={cn("rounded-xl p-3 text-center", resultBannerClass(matchState?.result?.winner ?? "draw"))}>
-                <div className="text-xl font-black flex items-center justify-center gap-2">
-                  <Trophy className="size-5" />
+            <div className="flex flex-col gap-0">
+              {/* Banner ganador */}
+              <div className={cn("py-6 px-6 text-center space-y-1", resultBannerClass(matchState?.result?.winner ?? "draw"))}>
+                <div className="text-3xl font-black uppercase tracking-wider flex items-center justify-center gap-2">
+                  <Trophy className="size-6" />
                   {winnerName(matchState?.result?.winner ?? "draw", state, currentFight)}
                 </div>
-                <p className="text-sm text-muted-foreground">
+                <p className="text-sm opacity-70">
                   {matchState?.result?.winner === "draw"
                     ? "1 punto para cada uno (Empate)"
                     : matchState?.result?.winner
@@ -2307,59 +2728,198 @@ export function FightPage() {
                       : "Resultado manual"}
                 </p>
               </div>
-              <div className="space-y-2">
-                <p className="text-sm font-medium">Banderines totales</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <FlagCounterField
-                    isMesa={bottomTab === "mesa"}
-                    value={resultFlagsRed}
-                    onChange={(v) => {
-                      setResultFlagsRed(v);
-                      if (matchState?.result?.winner === "red" && resultFlagsBlue >= v) {
-                        setResultFlagsBlue(Math.max(0, v - 1));
-                      }
-                    }}
-                    color="red"
-                    name={currentFight?.red.name ?? "Rojo"}
-                    max={matchState?.result?.winner === "blue" ? Math.max(0, resultFlagsBlue - 1) : config.judgesCount}
-                  />
-                  <FlagCounterField
-                    isMesa={bottomTab === "mesa"}
-                    value={resultFlagsBlue}
-                    onChange={(v) => {
-                      setResultFlagsBlue(v);
-                      if (matchState?.result?.winner === "blue" && resultFlagsRed >= v) {
-                        setResultFlagsRed(Math.max(0, v - 1));
-                      }
-                    }}
-                    color="blue"
-                    name={currentFight?.blue.name ?? "Azul"}
-                    max={matchState?.result?.winner === "red" ? Math.max(0, resultFlagsRed - 1) : config.judgesCount}
-                  />
-                </div>
-              </div>
-              <div className="space-y-1.5">
-                <p className="text-sm font-medium">Penalizaciones registradas</p>
-                <div className="grid grid-cols-2 gap-3 text-xs">
-                  <div className="rounded-lg border border-border p-2 space-y-0.5">
-                    <p className="text-red-400 font-semibold">{currentFight?.red.name ?? "Rojo"}</p>
-                    <p className="text-muted-foreground">Advertencias: <span className="font-medium text-foreground">{penaltyCounts.warnings.red}</span></p>
-                    <p className="text-muted-foreground">Faltas: <span className="font-medium text-foreground">{penaltyCounts.fouls.red}</span></p>
-                  </div>
-                  <div className="rounded-lg border border-border p-2 space-y-0.5">
-                    <p className="text-blue-400 font-semibold">{currentFight?.blue.name ?? "Azul"}</p>
-                    <p className="text-muted-foreground">Advertencias: <span className="font-medium text-foreground">{penaltyCounts.warnings.blue}</span></p>
-                    <p className="text-muted-foreground">Faltas: <span className="font-medium text-foreground">{penaltyCounts.fouls.blue}</span></p>
+
+              <div className="p-5 space-y-5">
+                {/* Banderines */}
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Banderines</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <FlagCounterField
+                      isMesa={bottomTab === "mesa"}
+                      value={resultFlagsRed}
+                      onChange={(v) => {
+                        setResultFlagsRed(v);
+                        if (matchState?.result?.winner === "red" && resultFlagsBlue >= v) {
+                          setResultFlagsBlue(Math.max(0, v - 1));
+                        }
+                      }}
+                      color="red"
+                      name={currentFight?.red.name ?? "Rojo"}
+                      max={matchState?.result?.winner === "blue" ? Math.max(0, resultFlagsBlue - 1) : config.judgesCount}
+                    />
+                    <FlagCounterField
+                      isMesa={bottomTab === "mesa"}
+                      value={resultFlagsBlue}
+                      onChange={(v) => {
+                        setResultFlagsBlue(v);
+                        if (matchState?.result?.winner === "blue" && resultFlagsRed >= v) {
+                          setResultFlagsRed(Math.max(0, v - 1));
+                        }
+                      }}
+                      color="blue"
+                      name={currentFight?.blue.name ?? "Azul"}
+                      max={matchState?.result?.winner === "red" ? Math.max(0, resultFlagsRed - 1) : config.judgesCount}
+                    />
                   </div>
                 </div>
+
+                {/* Penalizaciones */}
+                <div className="space-y-2">
+                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Penalizaciones</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="rounded-xl border border-red-900/40 bg-red-950/30 p-3 space-y-2">
+                      <p className="text-red-300 font-bold text-sm">{currentFight?.red.name ?? "Rojo"}</p>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-muted-foreground">Advertencias</span>
+                        <span className={cn("text-lg font-black", penaltyCounts.warnings.red > 0 ? "text-yellow-300" : "text-muted-foreground/40")}>
+                          {penaltyCounts.warnings.red}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-muted-foreground">Faltas</span>
+                        <span className={cn("text-lg font-black", penaltyCounts.fouls.red > 0 ? "text-red-300" : "text-muted-foreground/40")}>
+                          {penaltyCounts.fouls.red}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="rounded-xl border border-blue-900/40 bg-blue-950/30 p-3 space-y-2">
+                      <p className="text-blue-300 font-bold text-sm">{currentFight?.blue.name ?? "Azul"}</p>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-muted-foreground">Advertencias</span>
+                        <span className={cn("text-lg font-black", penaltyCounts.warnings.blue > 0 ? "text-yellow-300" : "text-muted-foreground/40")}>
+                          {penaltyCounts.warnings.blue}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center">
+                        <span className="text-xs text-muted-foreground">Faltas</span>
+                        <span className={cn("text-lg font-black", penaltyCounts.fouls.blue > 0 ? "text-red-300" : "text-muted-foreground/40")}>
+                          {penaltyCounts.fouls.blue}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Por juez */}
+                {(() => {
+                  const jTotals = state.judgeTotals ?? {};
+                  const jVotes = state.judgeVotes ?? {};
+                  const hasMobileTotals = Object.values(jTotals).some((t) => t.red > 0 || t.blue > 0);
+                  const hasVotes = Object.keys(jVotes).length > 0;
+                  if (!hasMobileTotals && !hasVotes) return null;
+                  const judgeIds = hasMobileTotals
+                    ? Object.keys(jTotals).sort()
+                    : Object.keys(jVotes).sort();
+                  return (
+                    <div className="space-y-2">
+                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Por juez</p>
+                      <div className="flex flex-wrap gap-2">
+                        {judgeIds.map((jid) => {
+                          if (hasMobileTotals) {
+                            const t = jTotals[jid] ?? { red: 0, blue: 0 };
+                            const leader = t.red > t.blue ? "red" : t.blue > t.red ? "blue" : "draw";
+                            return (
+                              <div key={jid} className={cn(
+                                "rounded-lg border px-3 py-2 text-center min-w-[68px]",
+                                leader === "red" ? "border-red-800/50 bg-red-950/30" :
+                                leader === "blue" ? "border-blue-800/50 bg-blue-950/30" :
+                                "border-border bg-secondary/30"
+                              )}>
+                                <p className="text-[10px] text-muted-foreground mb-1">{jid}</p>
+                                <p className="text-sm font-black">
+                                  <span className={cn(leader === "red" ? "text-red-300" : "text-muted-foreground/50")}>{t.red}</span>
+                                  <span className="text-muted-foreground/30 mx-1">-</span>
+                                  <span className={cn(leader === "blue" ? "text-blue-300" : "text-muted-foreground/50")}>{t.blue}</span>
+                                </p>
+                              </div>
+                            );
+                          }
+                          const vote = jVotes[jid];
+                          return (
+                            <div key={jid} className={cn(
+                              "rounded-lg border px-3 py-2 text-center min-w-[56px]",
+                              vote === "red" ? "border-red-800/50 bg-red-950/30" :
+                              vote === "blue" ? "border-blue-800/50 bg-blue-950/30" :
+                              "border-border bg-secondary/30"
+                            )}>
+                              <p className="text-[10px] text-muted-foreground mb-1">{jid}</p>
+                              <p className="text-base">{vote === "red" ? "🔴" : vote === "blue" ? "🔵" : vote === "draw" ? "🤝" : "—"}</p>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {/* Confirmar / Desempate / Punto de Oro */}
+                {(() => {
+                  const isDraw = matchState?.result?.winner === "draw";
+                  const isElim = config.mode === "elimination";
+                  const isGPFight = currentFight?.isGoldenPointFight;
+                  // Calcular si el próximo será Punto de Oro
+                  const tbMatchId = currentFight?.bracketMatchId;
+                  const completedTbs = fights.filter(
+                    (f) => f.isTiebreakExtra && f.completed && f.bracketMatchId === tbMatchId
+                  ).length;
+                  const afterThisCount = completedTbs + (currentFight?.isTiebreakExtra ? 1 : 0);
+                  const nextIsGoldenPoint = afterThisCount >= (config.maxTiebreakers ?? 1);
+
+                  if (isDraw && isElim && !isGPFight) {
+                    return (
+                      <>
+                        {nextIsGoldenPoint ? (
+                          <div className="rounded-xl border border-yellow-700/50 bg-yellow-950/20 p-4">
+                            <p className="text-sm font-bold text-yellow-300 flex items-center gap-2">
+                              <Zap className="size-4" />
+                              Punto de Oro
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">
+                              Sin tiempo — el primer punto gana.
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="rounded-xl border border-orange-800/50 bg-orange-950/20 p-4 space-y-3">
+                            <p className="text-sm font-bold text-orange-300 flex items-center gap-2">
+                              <Zap className="size-4" />
+                              Desempate requerido
+                            </p>
+                            <div className="flex items-center gap-3">
+                              <label className="text-xs text-muted-foreground whitespace-nowrap">Duración (seg)</label>
+                              <input
+                                type="number"
+                                min={10}
+                                max={600}
+                                step={5}
+                                value={tiebreakerDuration}
+                                onChange={(e) => setTiebreakerDuration(Math.max(10, Math.min(600, Number(e.target.value))))}
+                                className="w-full rounded-md bg-background border border-input px-3 py-1.5 text-sm text-center font-bold tabular-nums"
+                              />
+                            </div>
+                          </div>
+                        )}
+                        <Button
+                          className={nextIsGoldenPoint
+                            ? "w-full bg-yellow-600 hover:bg-yellow-500 text-white"
+                            : "w-full bg-orange-700 hover:bg-orange-600 text-white"}
+                          size="lg"
+                          onClick={handleStartTiebreaker}
+                        >
+                          <Zap className="size-4" />
+                          {nextIsGoldenPoint ? "Iniciar Punto de Oro" : "Iniciar desempate"}
+                        </Button>
+                      </>
+                    );
+                  }
+                  return (
+                    <Button className="w-full" size="lg" onClick={handleConfirmResult}>
+                      <ChevronRight className="size-4" />
+                      Confirmar y continuar
+                    </Button>
+                  );
+                })()}
               </div>
             </div>
-            <DialogFooter>
-              <Button className="w-full" onClick={handleConfirmResult}>
-                <ChevronRight className="size-4" />
-                Confirmar y continuar
-              </Button>
-            </DialogFooter>
           </DialogContent>
         </Dialog>
       )}

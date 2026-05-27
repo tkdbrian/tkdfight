@@ -12,17 +12,37 @@ import {
   ExternalLink,
   GitBranch,
   ListOrdered,
+  History,
 } from "lucide-react";
 import { NavLink } from "react-router-dom";
 
-const NAV_ITEMS = [
-  { to: "/", icon: Users, label: "Competidores", short: "Inicio" },
-  { to: "/fight", icon: Swords, label: "Combate", short: "Combate" },
-  { to: "/bracket", icon: GitBranch, label: "Bracket", short: "Bracket" },
-  { to: "/standings", icon: ListOrdered, label: "Clasificación", short: "Tabla" },
-  { to: "/results", icon: BarChart3, label: "Resultados", short: "Resultados" },
-  { to: "/settings", icon: Settings, label: "Configuración", short: "Config" },
-];
+const NAV_GROUPS = [
+  {
+    label: "Preparación",
+    items: [
+      { to: "/settings", icon: Settings, label: "Reglas", short: "Reglas" },
+      { to: "/", icon: Users, label: "Competidores", short: "Compet." },
+    ],
+  },
+  {
+    label: "Torneo",
+    items: [
+      { to: "/fight", icon: Swords, label: "Combate", short: "Combate" },
+      { to: "/bracket", icon: GitBranch, label: "Bracket", short: "Bracket" },
+      { to: "/standings", icon: ListOrdered, label: "Clasificación", short: "Tabla" },
+    ],
+  },
+  {
+    label: "Análisis",
+    items: [
+      { to: "/results", icon: BarChart3, label: "Resultados", short: "Stats" },
+      { to: "/history", icon: History, label: "Historial", short: "Hist." },
+    ],
+  },
+] as const;
+
+// Flat list for mobile bottom nav (same order as sidebar)
+const NAV_ITEMS_FLAT = NAV_GROUPS.flatMap((g) => g.items);
 
 export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const phase = useTournamentStore((s) => s.phase);
@@ -56,62 +76,74 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
         )}
 
         {/* Nav */}
-        <nav className="flex-1 px-2 py-3 space-y-0.5">
-          {NAV_ITEMS.map(({ to, icon: Icon, label }) => {
-            const disabled =
-              (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
-              phase === "setup";
-            return (
-              <NavLink
-                key={to}
-                to={to}
-                end={to === "/"}
-                aria-disabled={disabled}
-                tabIndex={disabled ? -1 : undefined}
-                className={({ isActive }) =>
-                  cn(
-                    "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
-                    isActive
-                      ? "bg-accent text-accent-foreground"
-                      : "text-muted-foreground hover:bg-secondary hover:text-foreground",
-                    disabled && "pointer-events-none opacity-40"
-                  )
-                }
-              >
-                <Icon className="size-5 shrink-0" />
-                {label}
-                {to === "/fight" && importedPending > 0 && (
-                  <span className="ml-auto text-[10px] font-bold bg-yellow-500 text-yellow-950 px-1.5 py-0.5 rounded-full animate-pulse min-w-[18px] text-center leading-none">
-                    {importedPending}
-                  </span>
-                )}
-              </NavLink>
-            );
-          })}
+        <nav className="flex-1 px-2 py-3 overflow-y-auto">
+          {NAV_GROUPS.map((group, gi) => (
+            <div key={group.label}>
+              {/* Separator + group label (not before the first group) */}
+              {gi > 0 && <div className="border-t border-border mx-1 my-2" />}
+              <p className="px-3 pt-1 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 select-none">
+                {group.label}
+              </p>
+              <div className="space-y-0.5">
+                {group.items.map(({ to, icon: Icon, label }) => {
+                  const disabled =
+                    (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
+                    phase === "setup";
+                  return (
+                    <NavLink
+                      key={to}
+                      to={to}
+                      end={to === "/"}
+                      aria-disabled={disabled}
+                      tabIndex={disabled ? -1 : undefined}
+                      className={({ isActive }) =>
+                        cn(
+                          "flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors",
+                          isActive
+                            ? "bg-accent text-accent-foreground"
+                            : "text-muted-foreground hover:bg-secondary hover:text-foreground",
+                          disabled && "pointer-events-none opacity-40"
+                        )
+                      }
+                    >
+                      <Icon className="size-5 shrink-0" />
+                      {label}
+                      {to === "/fight" && importedPending > 0 && (
+                        <span className="ml-auto text-[10px] font-bold bg-yellow-500 text-yellow-950 px-1.5 py-0.5 rounded-full animate-pulse min-w-[18px] text-center leading-none">
+                          {importedPending}
+                        </span>
+                      )}
+                    </NavLink>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
 
-          {/* TV link — opens in new tab */}
-          <a
-            href="/tv"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
-          >
-            <Tv className="size-5 shrink-0" />
-            Pantalla TV
-            <ExternalLink className="size-4 ml-auto opacity-50" />
-          </a>
-
-          {/* Central link — opens in new tab */}
-          <a
-            href="/central"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
-          >
-            <LayoutDashboard className="size-5 shrink-0" />
-            Mesa Central
-            <ExternalLink className="size-4 ml-auto opacity-50" />
-          </a>
+          {/* External links — separated, no group label */}
+          <div className="border-t border-border mx-1 my-2" />
+          <div className="space-y-0.5">
+            <a
+              href="/tv"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
+            >
+              <Tv className="size-5 shrink-0" />
+              Pantalla TV
+              <ExternalLink className="size-4 ml-auto opacity-50" />
+            </a>
+            <a
+              href="/central"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
+            >
+              <LayoutDashboard className="size-5 shrink-0" />
+              Mesa Central
+              <ExternalLink className="size-4 ml-auto opacity-50" />
+            </a>
+          </div>
         </nav>
 
         {/* Phase indicator */}
@@ -155,7 +187,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
 
         {/* Mobile bottom navigation — hidden md+ */}
         <nav className="md:hidden shrink-0 border-t border-border bg-background flex items-stretch h-14">
-          {NAV_ITEMS.map(({ to, icon: Icon, short }) => {
+          {NAV_ITEMS_FLAT.map(({ to, icon: Icon, short }) => {
             const disabled =
               (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
               phase === "setup";

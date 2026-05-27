@@ -13,7 +13,7 @@ import { state, MAX_FALLOS_IN_MEMORY } from '../state.js'
 import { broadcast, serverUrl } from '../broadcast.js'
 import { startTicker, stopTicker } from '../timer.js'
 import { computeJudgeTotals, computePenaltyCounts, nowTimeStr } from '../helpers.js'
-import { completeFight, insertFightIfNew, upsertCompetitor, getSourceRing } from '../db/index.js'
+import { completeFight, insertFightIfNew, upsertCompetitor, getSourceRing, saveMatchSnapshot, clearMatchSnapshot } from '../db/index.js'
 import { getRingConfig } from '../ring-config.js'
 import { logger } from '../logger.js'
 import {
@@ -134,6 +134,8 @@ export function registerSocketHandlers(io: Server) {
         upsertCompetitor({ id: data.match.red.id, tournament_id: tid, name: data.match.red.name, team: data.match.red.club })
         upsertCompetitor({ id: data.match.blue.id, tournament_id: tid, name: data.match.blue.name, team: data.match.blue.club })
         insertFightIfNew({ id: data.match.id, tournament_id: tid, red_id: data.match.red.id, blue_id: data.match.blue.id })
+        // Emergency save: snapshot inicial (sin rounds completados todavía)
+        saveMatchSnapshot(data.match.id, tid, { match: data.match, rules: data.rules, roundFlags: [] })
       } catch (err) {
         logger.error({ err }, '[match:load] DB persist error')
       }
@@ -219,6 +221,7 @@ export function registerSocketHandlers(io: Server) {
       state.roundFlags = []
       state.tulPhase = 'idle'
       stopTicker()
+      try { clearMatchSnapshot() } catch { /* non-critical */ }
       broadcast(io)
     })
 
@@ -346,7 +349,8 @@ export function registerSocketHandlers(io: Server) {
       const msPhase = state.matchState.phase
       if (msPhase !== 'rest' && !(msPhase === 'finished' && state.matchState.pendingJuryDecision)) return
       const { red, blue, winner } = tallyFlagWinner(state.judgeVotes, state.rules.judgesCount)
-      state.roundFlags.push({ red, blue, winner })
+      const votes = Object.fromEntries(state.judgeVotes)
+      state.roundFlags.push({ red, blue, winner, votes })
       state.judgeVotes.clear()
       const totalRounds = state.rules.rounds.count
       if (state.roundFlags.length >= totalRounds) {
@@ -360,6 +364,36 @@ export function registerSocketHandlers(io: Server) {
         }
         stopTicker()
         saveFallo(overall)
+      } else {
+        // Actualizar snapshot con el round recién completado (guardado intermedio)
+        if (state.match?.id) {
+          try {
+            saveMatchSnapshot(state.match.id, state.activeTournamentId, {
+              match: state.match,
+              rules: state.rules,
+              roundFlags: [...state.roundFlags],
+            })
+          } catch { /* non-critical */ }
+        }
+      }
+      broadcast(io)
+    })
+
+    socket.on('mesa:undoRound', () => {
+      if (!state.roundFlags.length || !state.matchState || !state.rules) return
+      // No deshacer mientras hay un round activo
+      const msPhase = state.matchState.phase
+      if (msPhase === 'round' || msPhase === 'overtime' || msPhase === 'golden_point') return
+      state.roundFlags.pop()
+      state.judgeVotes.clear()
+      // Si el combate ya terminó por conteo de rounds, volver a fase de descanso
+      if (msPhase === 'finished' && state.matchState.result?.reason === 'points') {
+        state.matchState = {
+          ...state.matchState,
+          phase: 'rest',
+          result: null,
+          pendingJuryDecision: false,
+        }
       }
       broadcast(io)
     })
@@ -448,6 +482,8 @@ function saveFallo(winnerOverride?: 'red' | 'blue' | 'draw') {
           signal: AbortSignal.timeout(5000),
         }).catch(() => { /* best-effort: si el tatami origen no está online, se pierde */ })
       }
+      // Pelea completada — eliminar snapshot de emergencia
+      clearMatchSnapshot()
     } catch {
       // Not critical — in-memory state is source of truth
     }

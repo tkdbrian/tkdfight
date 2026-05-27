@@ -1,4 +1,5 @@
 import * as React from "react";
+import { useNavigate } from "react-router-dom";
 import { useTournamentStore } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
 import { generateEliminationBracket, generateDoubleBracket, getActiveBracketFights } from "@/lib/bracket";
@@ -51,6 +52,7 @@ export function BracketPage() {
   );
 
   const [selectedMatchId, setSelectedMatchId] = React.useState<string | null>(null);
+  const navigate = useNavigate();
 
   const isElimination = config.mode === "elimination";
   const isDouble = competitors.length > DOUBLE_BRACKET_THRESHOLD;
@@ -80,6 +82,7 @@ export function BracketPage() {
     setFights(allFights);
     setCurrentFightIndex(fights.length);
     setPhase("fighting");
+    navigate("/fight");
   }
 
   function handleLoadNextRound() {
@@ -111,6 +114,7 @@ export function BracketPage() {
     addFinalFights([finalFight]);
     setCurrentFightIndex(fights.length);
     setPhase("fighting");
+    navigate("/fight");
   }
 
   // ── Single bracket stats ──────────────────────────────────────────────────
@@ -170,7 +174,7 @@ export function BracketPage() {
                 Regenerar
               </Button>
 
-              {phase !== "fighting" && completedMatches < totalMatches && (
+              {(fights.length === 0 || phase !== "fighting") && completedMatches < totalMatches && (
                 <Button size="sm" onClick={handleStartBracket}>
                   <Play className="size-3.5" />
                   Iniciar ronda actual

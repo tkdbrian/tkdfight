@@ -10,6 +10,7 @@ const StandingsPage = lazy(() => import("@/pages/StandingsPage").then((m) => ({ 
 const TVPage = lazy(() => import("@/pages/TVPage").then((m) => ({ default: m.TVPage })));
 const SettingsPage = lazy(() => import("@/pages/SettingsPage").then((m) => ({ default: m.SettingsPage })));
 const CentralPage = lazy(() => import("@/pages/CentralPage").then((m) => ({ default: m.CentralPage })));
+const HistoryPage = lazy(() => import("@/pages/HistoryPage").then((m) => ({ default: m.HistoryPage })));
 
 function RouteFallback() {
   return (
@@ -42,6 +43,7 @@ export function App() {
                   <Route path="/bracket" element={<BracketPage />} />
                   <Route path="/standings" element={<StandingsPage />} />
                   <Route path="/results" element={<ResultsPage />} />
+                  <Route path="/history" element={<HistoryPage />} />
                   <Route path="/settings" element={<SettingsPage />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>

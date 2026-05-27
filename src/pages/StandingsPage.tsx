@@ -437,10 +437,11 @@ function isFinalReady(
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export function StandingsPage() {
-  const { fights, config, addTiebreakFights, addFinalFights } = useTournamentStore(
-    useShallow((s) => ({ fights: s.fights, config: s.config, addTiebreakFights: s.addTiebreakFights, addFinalFights: s.addFinalFights }))
+  const { fights, config, addTiebreakFights, addFinalFights, reset } = useTournamentStore(
+    useShallow((s) => ({ fights: s.fights, config: s.config, addTiebreakFights: s.addTiebreakFights, addFinalFights: s.addFinalFights, reset: s.reset }))
   );
   const navigate = useNavigate();
+  const [confirmReset, setConfirmReset] = React.useState(false);
 
   const byGroup = computeGroupStandings(fights);
   const regularGroupIds = [...byGroup.keys()].filter((id) => id !== "FINAL");
@@ -544,13 +545,41 @@ export function StandingsPage() {
       </div>
 
       {champion && (
-        <div className="rounded-2xl bg-yellow-950/40 border-2 border-yellow-600/50 p-6 flex items-center gap-4 shadow-lg">
+        <div className="rounded-2xl bg-yellow-950/40 border-2 border-yellow-600/50 p-6 flex items-center gap-4 shadow-lg flex-wrap">
           <Trophy className="size-12 text-yellow-400 shrink-0 animate-pulse" />
-          <div>
+          <div className="flex-1">
             <p className="text-sm text-yellow-600 uppercase tracking-widest font-semibold">Campeón</p>
             <p className="text-4xl font-black text-yellow-300 leading-tight">{champion.name}</p>
             {champion.team && (
               <p className="text-base text-yellow-500/70 mt-0.5">{champion.team}</p>
+            )}
+          </div>
+          <div className="shrink-0">
+            {confirmReset ? (
+              <div className="flex flex-col items-end gap-2">
+                <p className="text-xs text-amber-300 font-medium">¿Borrar todo y arrancar nueva categoría?</p>
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    onClick={() => { reset(); navigate("/"); }}
+                  >
+                    Sí, nueva categoría
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={() => setConfirmReset(false)}>
+                    Cancelar
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <Button
+                size="sm"
+                variant="outline"
+                className="border-yellow-700/50 text-yellow-400 hover:bg-yellow-950/60 hover:text-yellow-300"
+                onClick={() => setConfirmReset(true)}
+              >
+                → Nueva categoría
+              </Button>
             )}
           </div>
         </div>
