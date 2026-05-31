@@ -1,4 +1,4 @@
-import type { FightEntry, CompetitorEntry, TournamentConfig } from "@/store/tournament";
+import type { FightEntry, CompetitorEntry, TournamentConfig, BracketMatch } from "@/store/tournament";
 
 interface Standing {
   id: string;
@@ -30,10 +30,64 @@ function computeStandings(fights: FightEntry[], competitors: CompetitorEntry[]):
   return [...map.values()].sort((a, b) => b.points - a.points || b.wins - a.wins || a.losses - b.losses);
 }
 
+function roundLabel(round: number, maxRound: number, position: number): string {
+  const fromEnd = maxRound - round;
+  if (fromEnd === 0) return "Final";
+  if (fromEnd === 1) return "Semifinal";
+  if (fromEnd === 2) return "Cuartos";
+  if (fromEnd === 3) return "Octavos";
+  return `Ronda ${round + 1}`;
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || c));
+}
+
+function renderBracketHTML(matches: BracketMatch[]): string {
+  if (matches.length === 0) return "";
+  const groupedByRound = new Map<number, BracketMatch[]>();
+  for (const m of matches) {
+    if (!groupedByRound.has(m.round)) groupedByRound.set(m.round, []);
+    groupedByRound.get(m.round)!.push(m);
+  }
+  const rounds = [...groupedByRound.entries()].sort(([a], [b]) => a - b);
+  const maxRound = Math.max(...rounds.map(([r]) => r));
+
+  const columns = rounds.map(([round, ms]) => {
+    const sorted = [...ms].sort((a, b) => a.position - b.position);
+    const matchesHtml = sorted.map((m, i) => {
+      const redName = m.red.competitor?.name ?? (m.red.fromMatchId ? "—" : "BYE");
+      const blueName = m.blue.competitor?.name ?? (m.blue.fromMatchId ? "—" : "BYE");
+      const redIsWinner = m.completed && m.winnerId === m.red.competitor?.id;
+      const blueIsWinner = m.completed && m.winnerId === m.blue.competitor?.id;
+      const matchNum = matches.findIndex((x) => x.id === m.id) + 1;
+      return `
+        <div class="br-match">
+          <div class="br-match-num">${matchNum}</div>
+          <div class="br-slot ${redIsWinner ? "br-winner" : ""}">${escapeHtml(redName)}</div>
+          <div class="br-slot ${blueIsWinner ? "br-winner" : ""}">${escapeHtml(blueName)}</div>
+        </div>
+      `;
+    }).join("\n");
+    return `
+      <div class="br-column">
+        <div class="br-col-title">${roundLabel(round, maxRound, 0)}</div>
+        <div class="br-matches">${matchesHtml}</div>
+      </div>
+    `;
+  }).join("\n");
+
+  return `
+    <h2>🏗️ Bracket de Eliminación</h2>
+    <div class="bracket-wrap">${columns}</div>
+  `;
+}
+
 export function exportTournamentHTML(
   fights: FightEntry[],
   competitors: CompetitorEntry[],
-  config: TournamentConfig
+  config: TournamentConfig,
+  bracketMatches: BracketMatch[] = []
 ): void {
   const standings = computeStandings(fights, competitors);
   const completed = fights.filter((f) => f.completed);
@@ -56,6 +110,9 @@ export function exportTournamentHTML(
     return `<tr><td>${i + 1}</td><td>${f.red.name}</td><td>${f.blue.name}</td><td>${winner}</td><td>${f.winReason ?? "—"}</td></tr>`;
   }).join("\n");
 
+  const isElimination = config.mode === "elimination" && bracketMatches.length > 0;
+  const bracketHtml = isElimination ? renderBracketHTML(bracketMatches) : "";
+
   const html = `<!DOCTYPE html>
 <html lang="es">
 <head>
@@ -75,7 +132,25 @@ export function exportTournamentHTML(
   .podium-1 td { color: var(--gold); font-size: 1rem; }
   .podium-2 td { color: var(--silver); }
   .podium-3 td { color: var(--bronze); }
-  @media print { body { background: white; color: black; } th { background: #f1f5f9; color: #334155; } }
+  /* Bracket */
+  .bracket-wrap { display: flex; gap: 1.5rem; overflow-x: auto; padding: 1rem 0.25rem; }
+  .br-column { flex-shrink: 0; min-width: 170px; display: flex; flex-direction: column; }
+  .br-col-title { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.1em; color: #94a3b8; text-align: center; margin-bottom: 0.5rem; font-weight: 600; }
+  .br-matches { display: flex; flex-direction: column; justify-content: space-around; flex: 1; gap: 0.75rem; }
+  .br-match { position: relative; border: 1px solid #334155; border-radius: 6px; overflow: hidden; background: #1e293b; }
+  .br-match-num { position: absolute; top: 50%; left: -20px; transform: translateY(-50%); font-size: 0.625rem; color: #64748b; font-family: monospace; }
+  .br-slot { padding: 0.5rem 0.75rem; font-size: 0.8125rem; border-bottom: 1px solid #334155; color: #cbd5e1; }
+  .br-slot:last-child { border-bottom: none; }
+  .br-winner { color: #4ade80; font-weight: 700; background: rgba(34, 197, 94, 0.08); }
+  @media print {
+    body { background: white; color: black; }
+    th { background: #f1f5f9; color: #334155; }
+    .br-match { background: #f8fafc; border-color: #cbd5e1; }
+    .br-slot { color: #1e293b; border-color: #e2e8f0; }
+    .br-winner { color: #15803d; background: #dcfce7; }
+    .br-col-title { color: #475569; }
+    .bracket-wrap { overflow-x: visible; flex-wrap: wrap; }
+  }
 </style>
 </head>
 <body>
@@ -87,6 +162,8 @@ export function exportTournamentHTML(
   <thead><tr><th>#</th><th>Nombre</th><th>Equipo</th><th>Balance</th></tr></thead>
   <tbody>${podiumRows}</tbody>
 </table>
+
+${bracketHtml}
 
 <h2>📊 Clasificación completa</h2>
 <table>

@@ -156,16 +156,26 @@ export function BracketPage() {
 
   // Champion resolution
   let championName: string | undefined;
+  let runnerUpName: string | undefined;
   if (isDoubleMode) {
     if (abFinalFight?.completed && abFinalFight.winner) {
       const winnerId = abFinalFight.winner === "red" ? abFinalFight.red.id : abFinalFight.blue.id;
+      const loserId = abFinalFight.winner === "red" ? abFinalFight.blue.id : abFinalFight.red.id;
       championName = competitors.find((c) => c.id === winnerId)?.name;
+      runnerUpName = competitors.find((c) => c.id === loserId)?.name;
     }
   } else {
     const isBracketComplete = totalMatches > 0 && completedMatches === totalMatches;
     if (isBracketComplete) {
-      const winnerId = bracketMatches.at(-1)?.winnerId;
+      const finalMatch = bracketMatches.at(-1);
+      const winnerId = finalMatch?.winnerId;
       championName = winnerId ? competitors.find((c) => c.id === winnerId)?.name : undefined;
+      if (finalMatch && winnerId) {
+        const loserComp = finalMatch.red.competitor?.id === winnerId
+          ? finalMatch.blue.competitor
+          : finalMatch.red.competitor;
+        runnerUpName = loserComp?.name;
+      }
     }
   }
 
@@ -228,12 +238,35 @@ export function BracketPage() {
 
       {/* Champion banner */}
       {championName && (
-        <div className="rounded-xl bg-yellow-950/30 border border-yellow-700/40 p-4 flex items-center gap-3">
-          <Trophy className="size-7 text-yellow-400 shrink-0" />
-          <div>
-            <p className="text-xs text-yellow-600 uppercase tracking-wider">Campeón</p>
-            <p className="text-2xl font-black text-yellow-300">{championName}</p>
+        <div className="rounded-xl bg-gradient-to-r from-yellow-950/40 via-yellow-900/20 to-slate-900/40 border border-yellow-700/40 p-4 flex items-center gap-4 flex-wrap">
+          {/* Oro */}
+          <div className="flex items-center gap-3 flex-1 min-w-[200px]">
+            <div className="relative shrink-0">
+              <Trophy className="size-10 text-yellow-400 drop-shadow-[0_0_8px_rgba(250,204,21,0.5)]" />
+              <span className="absolute -bottom-1 -right-1 bg-yellow-500 text-yellow-950 text-[10px] font-black rounded-full size-5 flex items-center justify-center border-2 border-background">
+                1°
+              </span>
+            </div>
+            <div>
+              <p className="text-[10px] text-yellow-600 uppercase tracking-widest font-semibold">🥇 Oro · Campeón</p>
+              <p className="text-2xl font-black text-yellow-300 leading-tight">{championName}</p>
+            </div>
           </div>
+          {/* Plata */}
+          {runnerUpName && (
+            <div className="flex items-center gap-3 flex-1 min-w-[200px] border-l border-yellow-700/30 pl-4">
+              <div className="relative shrink-0">
+                <Trophy className="size-8 text-slate-300 drop-shadow-[0_0_6px_rgba(203,213,225,0.4)]" />
+                <span className="absolute -bottom-1 -right-1 bg-slate-300 text-slate-900 text-[10px] font-black rounded-full size-5 flex items-center justify-center border-2 border-background">
+                  2°
+                </span>
+              </div>
+              <div>
+                <p className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">🥈 Plata · Subcampeón</p>
+                <p className="text-xl font-bold text-slate-200 leading-tight">{runnerUpName}</p>
+              </div>
+            </div>
+          )}
         </div>
       )}
 

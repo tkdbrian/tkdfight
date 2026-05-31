@@ -1934,6 +1934,18 @@ export function FightPage() {
     }
   }, [currentFight?.id, connected]);
 
+  // Rehidratar `loaded` desde el servidor: si el server ya tiene este combate cargado
+  // (porque el usuario navegó a otra página y volvió mientras el match estaba en curso),
+  // sincronizar el estado local en vez de mostrar "Cargar combate" — lo cual borraría el match.
+  React.useEffect(() => {
+    if (loaded) return;
+    if (!connected) return;
+    if (!currentFight || currentFight.completed) return;
+    if (state.match?.id === currentFight.id && state.matchState != null) {
+      setLoaded(true);
+    }
+  }, [connected, currentFight?.id, currentFight?.completed, state.match?.id, state.matchState, loaded]);
+
   // When judge mode changes while a fight is loaded in "idle", reload so judgingMode matches.
   // If mid-fight, just warn — change takes effect on next fight.
   // In Tul mode, skip: tab changes don't affect judgingMode (always flags), and reloading would reset tulPhase.
@@ -2147,7 +2159,10 @@ export function FightPage() {
                     variant="ghost"
                     size="lg"
                     className="w-full text-white/60 hover:text-white hover:bg-white/10"
-                    onClick={() => { emit("mesa:undoRound"); setWinnerOverlayOpen(false); }}
+                    onClick={() => {
+                      emit(isTul ? "tul:undoFinish" : "mesa:undoRound");
+                      setWinnerOverlayOpen(false);
+                    }}
                   >
                     ↩ Corregir banderas
                   </Button>

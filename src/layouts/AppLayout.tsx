@@ -14,9 +14,11 @@ import {
   ListOrdered,
   History,
   HelpCircle,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { startGlobalTour, continueTourIfPending } from "@/lib/tour";
 
 const NAV_GROUPS = [
@@ -58,6 +60,17 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
   const ringAlias = serverState.ringAlias;
   const location = useLocation();
   const navigate = useNavigate();
+
+  const [externalOpen, setExternalOpen] = useState(() => {
+    try { return localStorage.getItem("tkd-sidebar-external-open") === "1"; } catch { return false; }
+  });
+  const toggleExternal = () => {
+    setExternalOpen((v) => {
+      const next = !v;
+      try { localStorage.setItem("tkd-sidebar-external-open", next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  };
 
   useEffect(() => {
     continueTourIfPending(navigate, location.pathname);
@@ -131,30 +144,42 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
             </div>
           ))}
 
-          {/* External links — separated, no group label */}
+          {/* External links — colapsable, oculto por defecto */}
           <div className="border-t border-border mx-1 my-2" />
-          <div className="space-y-0.5">
-            <a
-              href="/tv"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
-            >
-              <Tv className="size-5 shrink-0" />
-              Pantalla TV
-              <ExternalLink className="size-4 ml-auto opacity-50" />
-            </a>
-            <a
-              href="/central"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
-            >
-              <LayoutDashboard className="size-5 shrink-0" />
-              Mesa Central
-              <ExternalLink className="size-4 ml-auto opacity-50" />
-            </a>
-          </div>
+          <button
+            type="button"
+            onClick={toggleExternal}
+            className="w-full flex items-center gap-1.5 px-3 pt-1 pb-1.5 text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/60 hover:text-muted-foreground select-none transition-colors"
+          >
+            {externalOpen
+              ? <ChevronDown className="size-3" />
+              : <ChevronRight className="size-3" />}
+            <span>Pantallas externas</span>
+          </button>
+          {externalOpen && (
+            <div className="space-y-0.5">
+              <a
+                href="/tv"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
+              >
+                <Tv className="size-5 shrink-0" />
+                Pantalla TV
+                <ExternalLink className="size-4 ml-auto opacity-50" />
+              </a>
+              <a
+                href="/central"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
+              >
+                <LayoutDashboard className="size-5 shrink-0" />
+                Mesa Central
+                <ExternalLink className="size-4 ml-auto opacity-50" />
+              </a>
+            </div>
+          )}
         </nav>
 
         {/* Tour button */}

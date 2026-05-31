@@ -424,6 +424,18 @@ export function registerSocketHandlers(io: Server) {
       state.judgeVotes.clear()
       broadcast(io)
     })
+
+    // Deshacer el "Confirmar ganador" en tul — vuelve a fase de votación conservando los votos
+    socket.on('tul:undoFinish', () => {
+      if (state.match?.matchMode !== 'tul') return
+      if (state.tulPhase !== 'finished') return
+      state.tulPhase = 'voting'
+      if (state.matchState) {
+        // biome-ignore lint/suspicious/noExplicitAny: tul bypass
+        state.matchState = { ...state.matchState, phase: 'rest', result: null } as any
+      }
+      broadcast(io)
+    })
   })
 }
 

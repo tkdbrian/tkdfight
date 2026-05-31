@@ -21,7 +21,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Trophy, ChevronDown, ChevronRight, CalendarDays, Swords,
-  Loader2, AlertCircle, Users, BarChart3, Circle, WifiOff, Trash2,
+  Loader2, AlertCircle, Users, BarChart3, Circle, WifiOff, Trash2, Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -508,6 +508,28 @@ export function HistoryPage() {
     }
   };
 
+  // ── Descargar estadísticas JSON ──────────────────────────────────────────
+  const downloadStats = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/history");
+      if (!res.ok) throw new Error("No se pudo descargar el archivo");
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `estadisticas-torneo.json`;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(() => {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+    } catch (err) {
+      toast.error("No se pudo descargar el archivo de estadísticas");
+    }
+  }, []);
+
   return (
     <div className="flex-1 overflow-y-auto p-4 max-w-3xl mx-auto w-full">
       <Tabs defaultValue="categories">
@@ -515,6 +537,17 @@ export function HistoryPage() {
         <div className="flex items-center gap-2 mb-4 flex-wrap">
           <Trophy className="size-5 text-primary shrink-0" />
           <h1 className="text-lg font-bold flex-1">Historial</h1>
+          {/* Botón de descarga de estadísticas JSON */}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={downloadStats}
+            className="h-8 text-xs"
+            title="Descargar estadísticas JSON"
+          >
+            <Download className="size-3.5 mr-1" />
+            Descargar datos
+          </Button>
           {data && data.filter((t) => !t.isActive).length > 0 && !fromCache && (
             <Button
               size="sm"

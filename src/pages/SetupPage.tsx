@@ -415,16 +415,15 @@ function FixturePreview({ fights, mode, roundLabels }: Readonly<{
 }
 
 const PESO_OPTIONS = ["Liviano A", "Liviano B", "Mediano A", "Mediano B", "Pesado A", "Pesado B"];
-const GRADO_OPTIONS = ["Blanco-P.Amarilla", "Amarillo-P.Azul", "Azul-P.Negra", "Danes"];
 const GENERO_OPTIONS = ["M", "F"];
 
-type CatState = { weight: string; belt: string; gender: string; ageFrom: string; ageTo: string };
-const EMPTY_CAT: CatState = { weight: "", belt: "", gender: "", ageFrom: "", ageTo: "" };
+type CatState = { weight: string; beltFrom: string; beltTo: string; gender: string; ageFrom: string; ageTo: string };
+const EMPTY_CAT: CatState = { weight: "", beltFrom: "", beltTo: "", gender: "", ageFrom: "", ageTo: "" };
 
 function buildCategoryName(c: CatState): string {
   const parts: string[] = [];
   if (c.weight) parts.push(c.weight);
-  if (c.belt) parts.push(c.belt);
+  if (c.beltFrom || c.beltTo) parts.push(`${c.beltFrom || "?"}-${c.beltTo || "?"} Dan`);
   if (c.gender) parts.push(c.gender);
   if (c.ageFrom || c.ageTo) parts.push(`${c.ageFrom || "?"}-${c.ageTo || "?"} a\u00f1os`);
   return parts.join(" \u00b7 ");
@@ -590,7 +589,7 @@ export function SetupPage() {
 
   function loadDemo() {
     setWelcomeDismissed(true);
-    updateCat({ weight: "Mediano A", belt: "Danes", gender: "M" });
+    updateCat({ weight: "Mediano A", beltFrom: "1", beltTo: "3", gender: "M" });
     DEMO_COMPETITORS.forEach((c) => { addCompetitor(c); });
   }
 
@@ -1073,8 +1072,27 @@ export function SetupPage() {
             </p>
 
             <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
-            <ChipGroup label="Grado" options={GRADO_OPTIONS} value={cat.belt} onChange={(v) => updateCat({ belt: v })} />
             <div className="flex flex-wrap gap-4 items-end">
+              <div className="space-y-2">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Grado (Dan)</span>
+                <div className="flex items-center gap-1.5">
+                  <Input
+                    type="number"
+                    placeholder="Desde"
+                    value={cat.beltFrom}
+                    onChange={(e) => updateCat({ beltFrom: e.target.value })}
+                    className="w-24 h-9 text-sm"
+                  />
+                  <span className="text-xs text-muted-foreground/50">—</span>
+                  <Input
+                    type="number"
+                    placeholder="Hasta"
+                    value={cat.beltTo}
+                    onChange={(e) => updateCat({ beltTo: e.target.value })}
+                    className="w-24 h-9 text-sm"
+                  />
+                </div>
+              </div>
               <ChipGroup label="Género" options={GENERO_OPTIONS} value={cat.gender} onChange={(v) => updateCat({ gender: v })} />
               <div className="space-y-2">
                 <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Edad</span>

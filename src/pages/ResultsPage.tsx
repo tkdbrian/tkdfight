@@ -208,8 +208,8 @@ function getFightPhaseLabel(f: ReturnType<typeof useTournamentStore.getState>["f
 }
 
 export function ResultsPage() {
-  const { fights, competitors, config, reset } = useTournamentStore(
-    useShallow((s) => ({ fights: s.fights, competitors: s.competitors, config: s.config, reset: s.reset }))
+  const { fights, competitors, config, reset, bracketMatches } = useTournamentStore(
+    useShallow((s) => ({ fights: s.fights, competitors: s.competitors, config: s.config, reset: s.reset, bracketMatches: s.bracketMatches }))
   );
   const isTul = config.matchType === 'tul';
 
@@ -278,7 +278,7 @@ export function ResultsPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => exportTournamentHTML(fights, competitors, config)}
+            onClick={() => exportTournamentHTML(fights, competitors, config, bracketMatches)}
             disabled={completed === 0}
           >
             <Download className="size-3.5" />
