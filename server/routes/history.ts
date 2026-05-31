@@ -131,4 +131,27 @@ export function registerHistoryRoute(app: Express) {
 
     res.json({ overview, topCompetitors })
   })
+
+  // Eliminar una categoría/torneo del historial (cascade borra competidores y combates)
+  app.delete('/api/history/:id', (req, res) => {
+    const id = Number(req.params.id)
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'id inválido' })
+    }
+    const exists = db.prepare('SELECT id FROM tournaments WHERE id = ?').get(id)
+    if (!exists) return res.status(404).json({ error: 'no encontrado' })
+    if (id === state.activeTournamentId) {
+      return res.status(409).json({ error: 'No se puede borrar la categoría activa. Empezá una nueva primero.' })
+    }
+    db.prepare('DELETE FROM tournaments WHERE id = ?').run(id)
+    res.json({ ok: true, deletedId: id })
+  })
+
+  // Borrar TODO el historial salvo la categoría activa (botón "limpiar pruebas")
+  app.delete('/api/history', (_req, res) => {
+    const result = db
+      .prepare('DELETE FROM tournaments WHERE id != ?')
+      .run(state.activeTournamentId)
+    res.json({ ok: true, deleted: result.changes })
+  })
 }

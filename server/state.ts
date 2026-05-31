@@ -48,7 +48,7 @@ export const state = {
   ringToken: randomUUID(),
   fallos: [] as FalloEntry[],
   falloSeq: 1,
-  roundFlags: [] as Array<{ red: number; blue: number; winner: 'red' | 'blue' | 'draw'; votes: Record<string, string> }>,
+  roundFlags: [] as Array<{ red: number; blue: number; draw: number; winner: 'red' | 'blue' | 'draw'; votes: Record<string, string> }>,
   tickInterval: null as ReturnType<typeof setInterval> | null,
   activeTournamentId: 1 as number,
   /** Fase de votación para modo Tul (no usa el engine de sparring) */

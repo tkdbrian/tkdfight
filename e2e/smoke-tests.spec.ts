@@ -140,11 +140,11 @@ test.describe("TKD Tournament - Smoke Tests", () => {
     const judgesLabel = await page.getByText("Jueces", { exact: true }).isVisible();
     expect(judgesLabel).toBe(true);
 
-    const judgeButton = await page.getByRole("button", { name: "3", exact: true }).isVisible();
+    const judgeButton = await page.getByRole("button", { name: "3", exact: true }).first().isVisible();
     expect(judgeButton).toBe(true);
 
     // Debe tener opciones de duración
-    const durationExists = await page.getByRole("button", { name: "1:30 min", exact: true }).isVisible();
+    const durationExists = await page.getByRole("button", { name: "1:30", exact: true }).isVisible();
     expect(durationExists).toBe(true);
 
     console.log("✅ Página de Configuración muestra opciones correctamente");

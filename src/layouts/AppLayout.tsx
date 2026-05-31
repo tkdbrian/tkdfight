@@ -13,8 +13,11 @@ import {
   GitBranch,
   ListOrdered,
   History,
+  HelpCircle,
 } from "lucide-react";
-import { NavLink } from "react-router-dom";
+import { NavLink, useLocation, useNavigate } from "react-router-dom";
+import { useEffect } from "react";
+import { startGlobalTour, continueTourIfPending } from "@/lib/tour";
 
 const NAV_GROUPS = [
   {
@@ -47,11 +50,18 @@ const NAV_ITEMS_FLAT = NAV_GROUPS.flatMap((g) => g.items);
 export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const phase = useTournamentStore((s) => s.phase);
   const categoryName = useTournamentStore((s) => s.config.categoryName);
+  const matchType = useTournamentStore((s) => s.config.matchType);
   const importedPending = useTournamentStore((s) =>
     s.fights.filter((f) => f.importedFrom && !f.completed).length
   );
   const { state: serverState } = useSocket();
   const ringAlias = serverState.ringAlias;
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    continueTourIfPending(navigate, location.pathname);
+  }, [location.pathname, navigate]);
 
   return (
     <div className="flex h-screen bg-background text-foreground overflow-hidden">
@@ -89,6 +99,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
                   const disabled =
                     (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
                     phase === "setup";
+                  const displayLabel = to === "/fight" ? (matchType === "tul" ? "Formas" : "Combate") : label;
                   return (
                     <NavLink
                       key={to}
@@ -107,7 +118,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
                       }
                     >
                       <Icon className="size-5 shrink-0" />
-                      {label}
+                      {displayLabel}
                       {to === "/fight" && importedPending > 0 && (
                         <span className="ml-auto text-[10px] font-bold bg-yellow-500 text-yellow-950 px-1.5 py-0.5 rounded-full animate-pulse min-w-[18px] text-center leading-none">
                           {importedPending}
@@ -146,8 +157,20 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
           </div>
         </nav>
 
-        {/* Phase indicator */}
-        <div className="px-4 py-3 border-t border-border">
+        {/* Tour button */}
+        <div className="px-2 pb-1">
+          <button
+            type="button"
+            onClick={() => startGlobalTour(navigate, location.pathname)}
+            className="flex items-center gap-3 w-full px-3 py-2.5 rounded-lg text-sm font-medium transition-colors text-muted-foreground hover:bg-secondary hover:text-foreground"
+          >
+            <HelpCircle className="size-5 shrink-0" />
+            ¿Cómo funciona?
+          </button>
+        </div>
+
+        {/* Phase indicator + branding */}
+        <div className="px-4 py-3 border-t border-border space-y-2">
           <div className="flex items-center gap-2 text-xs text-muted-foreground">
             <span
               className={cn(
@@ -158,6 +181,10 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
               )}
             />
             <span className="capitalize">{phase}</span>
+          </div>
+          <div className="text-[10px] text-muted-foreground/70 leading-tight">
+            <div className="font-semibold text-primary/80 tracking-wide">BL System v{__APP_VERSION__}</div>
+            <div>Creado por Master Brian Lipnjak</div>
           </div>
         </div>
       </aside>
@@ -173,11 +200,21 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
               {categoryName}
             </span>
           )}
-          {ringAlias && (
-            <span className="ml-auto text-[10px] font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded shrink-0">
-              {ringAlias}
-            </span>
-          )}
+          <div className="ml-auto flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => startGlobalTour(navigate, location.pathname)}
+              className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
+              aria-label="Cómo funciona"
+            >
+              <HelpCircle className="size-4" />
+            </button>
+            {ringAlias && (
+              <span className="text-[10px] font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">
+                {ringAlias}
+              </span>
+            )}
+          </div>
         </header>
 
         {/* Page content */}
@@ -191,6 +228,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
             const disabled =
               (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
               phase === "setup";
+            const displayShort = to === "/fight" ? (matchType === "tul" ? "Formas" : "Combate") : short;
             return (
               <NavLink
                 key={to}
@@ -212,7 +250,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
                   <>
                     <Icon className={cn("size-5 shrink-0", isActive && "stroke-[2.5]")} />
                     <span className="text-[9px] leading-none font-medium truncate w-full px-0.5 text-center">
-                      {short}
+                      {displayShort}
                     </span>
                     {to === "/fight" && importedPending > 0 && (
                       <span className="absolute top-1.5 right-[calc(50%-18px)] text-[8px] font-bold bg-yellow-500 text-yellow-950 px-1 py-0.5 rounded-full animate-pulse leading-none">

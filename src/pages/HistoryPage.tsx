@@ -1,5 +1,14 @@
 import * as React from "react";
+import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -12,7 +21,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Trophy, ChevronDown, ChevronRight, CalendarDays, Swords,
-  Loader2, AlertCircle, Users, BarChart3, Circle, WifiOff,
+  Loader2, AlertCircle, Users, BarChart3, Circle, WifiOff, Trash2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -426,49 +435,98 @@ export function HistoryPage() {
   const [error, setError] = React.useState<string | null>(null);
   const [fromCache, setFromCache] = React.useState(false);
   const [openId, setOpenId] = React.useState<number | null>(null);
+  const [deleteTarget, setDeleteTarget] = React.useState<HistoryTournament | null>(null);
+  const [clearAllOpen, setClearAllOpen] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
 
-  React.useEffect(() => {
-    let cancelled = false;
+  const loadHistory = React.useCallback(() => {
     setLoading(true);
-    fetch("/api/history")
+    return fetch("/api/history")
       .then((r) => {
         if (!r.ok) throw new Error(`HTTP ${r.status}`);
         return r.json() as Promise<HistoryTournament[]>;
       })
       .then((d) => {
-        if (cancelled) return;
-        // Guardar en caché para uso offline
         try { localStorage.setItem(HISTORY_CACHE_KEY, JSON.stringify(d)); } catch { /* quota */ }
         setData(d);
         setFromCache(false);
+        setError(null);
         const active = d.find((t) => t.isActive);
         if (active) setOpenId(active.id);
       })
       .catch((e: Error) => {
-        if (cancelled) return;
-        // Servidor offline — intentar mostrar datos guardados
         const cached = loadCachedHistory();
         if (cached) {
           setData(cached);
           setFromCache(true);
           setError(null);
-          const active = cached.find((t) => t.isActive);
-          if (active) setOpenId(active.id);
         } else {
           setError(e.message);
         }
       })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+      .finally(() => setLoading(false));
   }, []);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    loadHistory().then(() => { if (cancelled) return; });
+    return () => { cancelled = true; };
+  }, [loadHistory]);
+
+  const handleDeleteOne = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/history/${deleteTarget.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      toast.success(`Categoría "${deleteTarget.category || deleteTarget.name || `#${deleteTarget.id}`}" eliminada`);
+      setDeleteTarget(null);
+      await loadHistory();
+    } catch (e) {
+      toast.error(`No se pudo eliminar: ${(e as Error).message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleClearAll = async () => {
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/history`, { method: "DELETE" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = await res.json() as { deleted: number };
+      toast.success(`Historial limpiado — ${body.deleted} categoría${body.deleted !== 1 ? "s" : ""} eliminada${body.deleted !== 1 ? "s" : ""}`);
+      setClearAllOpen(false);
+      await loadHistory();
+    } catch (e) {
+      toast.error(`No se pudo limpiar: ${(e as Error).message}`);
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <div className="flex-1 overflow-y-auto p-4 max-w-3xl mx-auto w-full">
       <Tabs defaultValue="categories">
         {/* Header + tab switcher */}
-        <div className="flex items-center gap-3 mb-4">
+        <div className="flex items-center gap-2 mb-4 flex-wrap">
           <Trophy className="size-5 text-primary shrink-0" />
           <h1 className="text-lg font-bold flex-1">Historial</h1>
+          {data && data.filter((t) => !t.isActive).length > 0 && !fromCache && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setClearAllOpen(true)}
+              className="text-destructive border-destructive/40 hover:bg-destructive/10 hover:text-destructive h-8 text-xs"
+              title="Borrar todas las categorías excepto la activa"
+            >
+              <Trash2 className="size-3.5 mr-1" />
+              Limpiar pruebas
+            </Button>
+          )}
           <TabsList>
             <TabsTrigger value="categories" className="gap-1.5">
               <Swords className="size-3.5" />
@@ -542,6 +600,17 @@ export function HistoryPage() {
                         ✓ Finalizada
                       </Badge>
                     )}
+                    {!t.isActive && !fromCache && (
+                      <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setDeleteTarget(t); }}
+                        className="shrink-0 ml-1 p-1 rounded text-muted-foreground/60 hover:text-destructive hover:bg-destructive/10 transition-colors"
+                        title="Eliminar esta categoría"
+                        aria-label={`Eliminar categoría ${t.category || t.name || `#${t.id}`}`}
+                      >
+                        <Trash2 className="size-3.5" />
+                      </button>
+                    )}
                   </CardTitle>
                   <div className="flex items-center gap-3 mt-1 ml-6 text-xs text-muted-foreground">
                     {t.name && t.name !== t.category && (
@@ -573,6 +642,64 @@ export function HistoryPage() {
           <StatsTab />
         </TabsContent>
       </Tabs>
+
+      {/* Diálogo: eliminar una categoría */}
+      <Dialog open={deleteTarget !== null} onOpenChange={(o) => !o && setDeleteTarget(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="size-5 text-destructive" />
+              Eliminar categoría
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-2 space-y-2 text-sm">
+            <p>
+              ¿Borrar <strong>{deleteTarget?.category || deleteTarget?.name || `#${deleteTarget?.id}`}</strong> del historial?
+            </p>
+            <p className="text-xs text-muted-foreground">
+              Se eliminarán {deleteTarget?.fightsTotal ?? 0} combates y {deleteTarget?.competitors.length ?? 0} competidores asociados. Esta acción no se puede deshacer.
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={handleDeleteOne} disabled={deleting}>
+              <Trash2 className="size-4 mr-1" />
+              {deleting ? "Eliminando..." : "Eliminar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo: limpiar todas las pruebas */}
+      <Dialog open={clearAllOpen} onOpenChange={setClearAllOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="size-5 text-destructive" />
+              Limpiar historial de pruebas
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-2 space-y-2 text-sm">
+            <p>
+              Se eliminarán <strong>todas las categorías del historial</strong> excepto la que está en curso.
+            </p>
+            <p className="text-xs text-amber-400/80">
+              ⚠ Acción ideal para borrar pruebas antes del torneo real. No se puede deshacer.
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setClearAllOpen(false)} disabled={deleting}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={handleClearAll} disabled={deleting}>
+              <Trash2 className="size-4 mr-1" />
+              {deleting ? "Limpiando..." : "Limpiar todo"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

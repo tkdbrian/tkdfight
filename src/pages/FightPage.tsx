@@ -74,6 +74,61 @@ function flagLabel(side: FlagSide): string {
   return "⚖️ Empate";
 }
 
+function FlagIcon({ side, size = 28 }: Readonly<{ side: "red" | "blue"; size?: number }>) {
+  const fill = side === "red" ? "#ef4444" : "#3b82f6";
+  const stroke = side === "red" ? "#7f1d1d" : "#1e3a8a";
+  return (
+    <svg width={size} height={size} viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      {/* Palito */}
+      <line x1="8" y1="2" x2="8" y2="30" stroke="#d4d4d8" strokeWidth="2" strokeLinecap="round" />
+      {/* Pomo */}
+      <circle cx="8" cy="3" r="1.6" fill="#e4e4e7" />
+      {/* Bandera ondulada */}
+      <path
+        d="M8 5 H26 Q22 9 26 13 H8 Z"
+        fill={fill}
+        stroke={stroke}
+        strokeWidth="1"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+// Chicharra de campana — genera un sonido de "bell" usando Web Audio API
+let bellAudioCtx: AudioContext | null = null;
+function playBell() {
+  try {
+    if (typeof window === "undefined") return;
+    bellAudioCtx ??= new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    const ctx = bellAudioCtx;
+    if (ctx.state === "suspended") void ctx.resume();
+    const now = ctx.currentTime;
+    // Dos golpes rápidos para simular una campana de ring
+    const strikes = [0, 0.18];
+    strikes.forEach((offset) => {
+      const t = now + offset;
+      // Tono fundamental + armónicos para sonar a campana metálica
+      const freqs = [880, 1320, 1760];
+      freqs.forEach((f, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = "sine";
+        osc.frequency.value = f;
+        const peak = i === 0 ? 0.35 : 0.15 / (i + 1);
+        gain.gain.setValueAtTime(0.0001, t);
+        gain.gain.exponentialRampToValueAtTime(peak, t + 0.01);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.9);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t);
+        osc.stop(t + 1);
+      });
+    });
+  } catch {
+    // Si el navegador bloquea el audio (sin gesto del usuario), simplemente ignoramos
+  }
+}
+
 function resultBannerClass(winner: string): string {
   if (winner === "red") return "bg-red-950/60 border border-red-700";
   if (winner === "blue") return "bg-blue-950/60 border border-blue-700";
@@ -176,19 +231,20 @@ function FlagButton({
 }
 
 function FlagVoteRow({
-  judgeId, vote, disabled, onVote,
+  judgeId, vote, disabled, onVote, hideDraw,
 }: Readonly<{
   judgeId: string;
   vote: string | undefined;
   disabled: boolean;
   onVote: (jid: string, v: FlagSide) => void;
+  hideDraw?: boolean;
 }>) {
   return (
     <div className="flex flex-col gap-1 rounded-lg bg-secondary/20 px-2 py-2">
       <span className="text-xs font-bold text-muted-foreground text-center">{judgeId}</span>
       <div className="flex gap-1">
         <FlagButton side="red" active={vote === "red"} disabled={disabled} onClick={() => onVote(judgeId, "red")} />
-        <FlagButton side="draw" active={vote === "draw"} disabled={disabled} onClick={() => onVote(judgeId, "draw")} />
+        {!hideDraw && <FlagButton side="draw" active={vote === "draw"} disabled={disabled} onClick={() => onVote(judgeId, "draw")} />}
         <FlagButton side="blue" active={vote === "blue"} disabled={disabled} onClick={() => onVote(judgeId, "blue")} />
       </div>
     </div>
@@ -311,6 +367,7 @@ function JefeMesaPanel({
             >
               🔴 Rojo
             </button>
+            {!tulMode && (
             <button
               type="button"
               disabled={!canConfirm}
@@ -324,6 +381,7 @@ function JefeMesaPanel({
             >
               🤝 Empate
             </button>
+            )}
             <button
               type="button"
               disabled={!canConfirm}
@@ -380,6 +438,7 @@ function JefeMesaPanel({
                 judgeId={jid}
                 vote={judgeVotes[jid]}
                 disabled={!canVote}
+                hideDraw={tulMode}
                 onVote={(jid, v) => onEmit("mesa:flagVote", { judgeId: jid, vote: v })}
               />
             ))}
@@ -864,11 +923,9 @@ function FightListRow({ fight, index, active, onSelect }: Readonly<{
         active
           ? "bg-accent text-accent-foreground"
           : "hover:bg-secondary text-muted-foreground",
-        fight.importedFrom && !fight.completed && "border-l-2 border-yellow-500/60 pl-2.5",
       )}
     >
       <span className={cn(fight.completed && "line-through opacity-50")}>
-        {fight.importedFrom && !fight.completed && <span className="mr-1 text-yellow-400">🔀</span>}
         {index + 1}. {fight.red.name} vs {fight.blue.name}
       </span>
       {fight.completed && (
@@ -895,9 +952,57 @@ function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
     refs.current[currentIndex]?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }, [currentIndex]);
 
+  const groupIds = [...new Set(fights.map((f) => f.groupId))];
+  const hasMultipleGroups = groupIds.length > 1;
+
+  function groupLabel(groupId: string | undefined): string {
+    if (!groupId) return "";
+    if (groupId === "FINAL") return "Final";
+    if (groupId.startsWith("EXT:")) {
+      const name = groupId.slice(4).replace(/-/g, " ");
+      return `🏁 ${name}`;
+    }
+    // "G1" → "Llave 1", "G2" → "Llave 2", etc.
+    const num = groupId.replace(/\D/g, "");
+    return num ? `Llave ${num}` : groupId;
+  }
+
+  type StripItem =
+    | { type: "fight"; fight: FightEntry; index: number }
+    | { type: "label"; groupId: string; first: boolean };
+
+  const items: StripItem[] = [];
+  let lastGroupId: string | null = null;
+  for (let i = 0; i < fights.length; i++) {
+    const fight = fights[i];
+    if (hasMultipleGroups && fight.groupId !== lastGroupId) {
+      items.push({ type: "label", groupId: fight.groupId, first: lastGroupId === null });
+      lastGroupId = fight.groupId;
+    }
+    items.push({ type: "fight", fight, index: i });
+  }
+
   return (
     <div className="flex gap-1.5 overflow-x-auto px-4 pb-2.5 pt-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-      {fights.map((fight, i) => {
+      {items.map((item) => {
+        if (item.type === "label") {
+          return (
+            <span
+              key={`label-${item.groupId}`}
+              className={cn(
+                "shrink-0 flex items-center gap-1 self-center",
+                !item.first && "ml-1",
+              )}
+            >
+              {!item.first && <span className="w-px h-3.5 bg-border/50" />}
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60">
+                {groupLabel(item.groupId)}
+              </span>
+            </span>
+          );
+        }
+
+        const { fight, index: i } = item;
         const isCurrent = i === currentIndex;
         const isDone = fight.completed;
         const winner = fight.winner;
@@ -970,6 +1075,7 @@ function FightPicker({
 }>) {
   const current = fights[currentIndex];
   const [confirmRedo, setConfirmRedo] = React.useState(false);
+  const isTulMode = useTournamentStore((s) => s.config.matchType) === 'tul';
   React.useEffect(() => { setConfirmRedo(false); }, [currentIndex]);
   return (
     <Card>
@@ -1003,24 +1109,54 @@ function FightPicker({
               </div>
             </div>
             {current.completed && !loaded && (() => {
+              const isDraw = current.winner === "draw";
               const winnerName = current.winner === "red" ? current.red.name
                 : current.winner === "blue" ? current.blue.name
                 : null;
-              const winnerColor = current.winner === "red" ? "text-red-400" : "text-blue-400";
               const flagsText = (current.flagsRed != null && current.flagsBlue != null)
-                ? `🔴 ${current.flagsRed} — ${current.flagsBlue} 🔵`
+                ? `${current.flagsRed} — ${current.flagsBlue}`
                 : null;
               return (
-                <div className="rounded-lg bg-secondary/30 border border-border px-3 py-2 space-y-1">
-                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Resultado</p>
-                  {winnerName ? (
-                    <p className={cn("font-bold text-sm", winnerColor)}>
-                      {current.winner === "red" ? "🔴" : "🔵"} {winnerName}
-                    </p>
+                <div className={cn(
+                  "rounded-xl border-2 px-4 py-4 flex flex-col items-center gap-2 text-center",
+                  isDraw
+                    ? "border-yellow-500/60 bg-yellow-950/30"
+                    : current.winner === "red"
+                    ? "border-red-600/60 bg-red-950/30"
+                    : "border-blue-600/60 bg-blue-950/30"
+                )}>
+                  <p className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground">Resultado</p>
+                  {isDraw ? (
+                    <>
+                      <p className="text-3xl font-black text-yellow-400 leading-none">⚖ Empate</p>
+                      {flagsText && (
+                        <p className="text-sm font-bold text-muted-foreground">
+                          <span className="text-red-400">{current.flagsRed}</span>
+                          {" — "}
+                          <span className="text-blue-400">{current.flagsBlue}</span>
+                          <span className="text-xs font-normal text-muted-foreground/60 ml-1">banderas</span>
+                        </p>
+                      )}
+                    </>
                   ) : (
-                    <p className="font-bold text-sm text-yellow-400">⚖ Empate</p>
+                    <>
+                      <p className={cn(
+                        "text-2xl font-black leading-none",
+                        current.winner === "red" ? "text-red-400" : "text-blue-400"
+                      )}>
+                        {current.winner === "red" ? "🔴" : "🔵"} {winnerName}
+                      </p>
+                      <p className="text-xs text-muted-foreground">ganó el combate</p>
+                      {flagsText && (
+                        <p className="text-sm font-bold">
+                          <span className="text-red-400">{current.flagsRed}</span>
+                          {" — "}
+                          <span className="text-blue-400">{current.flagsBlue}</span>
+                          <span className="text-xs font-normal text-muted-foreground/60 ml-1">banderas</span>
+                        </p>
+                      )}
+                    </>
                   )}
-                  {flagsText && <p className="text-xs text-muted-foreground">{flagsText}</p>}
                 </div>
               );
             })()}
@@ -1031,8 +1167,16 @@ function FightPicker({
               </Button>
             ) : current.completed ? (
               confirmRedo ? (
-                <div className="space-y-2">
-                  <p className="text-xs text-amber-400 text-center font-medium">¿Borrar resultado y rehacer la pelea?</p>
+                <div className="rounded-xl border border-destructive/50 bg-destructive/10 px-4 py-3 space-y-3">
+                  <div className="flex items-start gap-2">
+                    <span className="text-destructive text-lg leading-none mt-0.5">⚠</span>
+                    <div className="space-y-1">
+                      <p className="text-sm font-bold text-destructive">Acción irreversible</p>
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        Borrar este resultado puede alterar la clasificación, desempates y la Fase Final. Solo hacelo si el resultado fue cargado por error.
+                      </p>
+                    </div>
+                  </div>
                   <div className="flex gap-2">
                     <Button size="sm" variant="destructive" className="flex-1" onClick={() => { setConfirmRedo(false); onLoad(); }}>
                       Sí, resetear
@@ -1049,7 +1193,7 @@ function FightPicker({
               )
             ) : (
               <Button size="lg" className="w-full" onClick={onLoad}>
-                Cargar combate
+                {isTulMode ? 'Iniciar competencia' : 'Cargar combate'}
               </Button>
             )}
           </>
@@ -1058,7 +1202,6 @@ function FightPicker({
         <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
           {(() => {
             const localFights = fights.filter((f) => !f.importedFrom);
-            const imported = fights.filter((f) => f.importedFrom);
             const regular = localFights.filter((f) => !f.isTiebreakExtra && !f.isFinalFight);
             const finals = localFights.filter((f) => f.isFinalFight);
             const tiebreaks = localFights.filter((f) => f.isTiebreakExtra);
@@ -1112,21 +1255,7 @@ function FightPicker({
               )
               : null;
 
-            const importedSection = imported.length > 0
-              ? (
-                <div key="__imported__">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-yellow-400/90 px-1 pt-2 pb-0.5">
-                    🔀 Reasignadas ({imported.filter((f) => !f.completed).length} pendientes)
-                  </p>
-                  {imported.map((f) => {
-                    const i = fights.indexOf(f);
-                    return <FightListRow key={f.id} fight={f} index={i} active={i === currentIndex} onSelect={onSelectIndex} />;
-                  })}
-                </div>
-              )
-              : null;
-
-            return [...regularSection, finalSection, tbSection, importedSection];
+            return [...regularSection, finalSection, tbSection];
           })()}
         </div>
       </CardContent>
@@ -1273,7 +1402,13 @@ function MatchControls({
             {totalVoted} / {judgesCount} jueces votaron
           </p>
           <div className="flex flex-wrap gap-2 justify-center">
-            <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={() => onEmit("tul:finish")}>
+            <Button
+              size="xl"
+              className="bg-green-700 hover:bg-green-600"
+              disabled={totalVoted === 0 || redVotes === blueVotes}
+              title={totalVoted === 0 ? "Cargá al menos un voto" : redVotes === blueVotes ? "En formas no puede haber empate — desempatá antes de confirmar" : undefined}
+              onClick={() => onEmit("tul:finish")}
+            >
               <Check />
               Confirmar resultado
             </Button>
@@ -1281,6 +1416,11 @@ function MatchControls({
               ↺ Nueva votación
             </Button>
           </div>
+          {redVotes === blueVotes && totalVoted > 0 && (
+            <p className="text-xs text-amber-400 text-center">
+              ⚠ Empate {redVotes}-{blueVotes} — en formas no se permite empate. Agregá o cambiá votos antes de confirmar.
+            </p>
+          )}
           {/* Zona de peligro */}
           <div className="flex items-center gap-2 w-full max-w-xs">
             <div className="h-px flex-1 bg-border/30" />
@@ -1323,6 +1463,9 @@ function MatchControls({
   const canResume = isRunning && matchPaused;
   const canFinish =
     (isRunning || matchPaused) && (phase === "round" || phase === "overtime" || phase === "golden_point");
+
+  // eslint-disable-next-line react-hooks/rules-of-hooks
+  const [dqConfirm, setDqConfirm] = React.useState<"red" | "blue" | null>(null);
 
   if (isFinished && state.matchState?.result) {
     const { winner, reason } = state.matchState.result;
@@ -1371,22 +1514,33 @@ function MatchControls({
           </Button>
         )}
       </div>
-      {/* +15s — solo cuando el combate está pausado */}
+      {/* Ajuste fino de tiempo — solo cuando el combate está pausado */}
       {canResume && (
-        <div className="flex items-center gap-1.5">
-          <Button
-            size="sm" variant="outline"
-            className="text-xs h-7 px-2.5 border-dashed"
-            onClick={() => onEmit("timer:addSeconds", { seconds: -15 })}>
-            −15s
-          </Button>
-          <span className="text-[10px] text-muted-foreground">ajustar tiempo</span>
-          <Button
-            size="sm" variant="outline"
-            className="text-xs h-7 px-2.5 border-dashed"
-            onClick={() => onEmit("timer:addSeconds", { seconds: 15 })}>
-            +15s
-          </Button>
+        <div className="flex flex-col items-center gap-1.5">
+          <span className="text-[10px] text-muted-foreground uppercase tracking-widest">Ajustar tiempo</span>
+          <div className="flex items-center gap-1">
+            {[-15, -5, -1].map((s) => (
+              <Button
+                key={s}
+                size="sm" variant="outline"
+                className="text-xs h-7 px-2 border-dashed text-red-300 hover:bg-red-950/40"
+                onClick={() => onEmit("timer:addSeconds", { seconds: s })}
+              >
+                {s}s
+              </Button>
+            ))}
+            <span className="mx-1 text-muted-foreground/50">·</span>
+            {[1, 5, 15].map((s) => (
+              <Button
+                key={s}
+                size="sm" variant="outline"
+                className="text-xs h-7 px-2 border-dashed text-green-300 hover:bg-green-950/40"
+                onClick={() => onEmit("timer:addSeconds", { seconds: s })}
+              >
+                +{s}s
+              </Button>
+            ))}
+          </div>
         </div>
       )}
       {/* Zona de descalificación */}
@@ -1397,18 +1551,59 @@ function MatchControls({
             <Button
               size="sm" variant="ghost"
               className="flex-1 text-red-400/50 hover:text-white hover:bg-red-700/80 text-xs h-7 px-2 border border-red-900/30 hover:border-red-600 transition-all"
-              onClick={() => onEmit("match:dq", { competitor: "red" })}>
+              onClick={() => setDqConfirm("red")}>
               <UserX className="size-3 mr-1" />Descalif. Rojo
             </Button>
             <Button
               size="sm" variant="ghost"
               className="flex-1 text-blue-400/50 hover:text-white hover:bg-blue-700/80 text-xs h-7 px-2 border border-blue-900/30 hover:border-blue-600 transition-all"
-              onClick={() => onEmit("match:dq", { competitor: "blue" })}>
+              onClick={() => setDqConfirm("blue")}>
               <UserX className="size-3 mr-1" />Descalif. Azul
             </Button>
           </div>
         </div>
       )}
+      {/* Diálogo de confirmación DQ */}
+      <Dialog open={dqConfirm !== null} onOpenChange={(o) => !o && setDqConfirm(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <UserX className={cn("size-5", dqConfirm === "red" ? "text-red-400" : "text-blue-400")} />
+              Confirmar descalificación
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-2 space-y-3">
+            <p className="text-sm">
+              Vas a descalificar a{" "}
+              <strong className={cn(dqConfirm === "red" ? "text-red-400" : "text-blue-400")}>
+                {dqConfirm === "red" ? (fight?.red.name ?? "Rojo") : (fight?.blue.name ?? "Azul")}
+              </strong>
+              . El combate finalizará y se otorgará la victoria al rival.
+            </p>
+            <p className="text-xs text-amber-400/80">
+              ⚠ Esta acción no puede deshacerse fácilmente. Asegurate antes de confirmar.
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setDqConfirm(null)}>
+              Cancelar
+            </Button>
+            <Button
+              className={cn(
+                "text-white",
+                dqConfirm === "red" ? "bg-red-700 hover:bg-red-600" : "bg-blue-700 hover:bg-blue-600",
+              )}
+              onClick={() => {
+                if (dqConfirm) onEmit("match:dq", { competitor: dqConfirm });
+                setDqConfirm(null);
+              }}
+            >
+              <UserX className="size-4 mr-1" />
+              Descalificar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -1452,7 +1647,7 @@ function FlagCounterField({
 export function FightPage() {
   const { connected, state, emit, socket } = useSocket();
   const navigate = useNavigate();
-  const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights, addTiebreakFights, postponeFight, resetFight, reset } =
+  const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights, addTiebreakFights, postponeFight, resetFight, reset, addGuestFight } =
     useTournamentStore(
       useShallow((s) => ({
         fights: s.fights,
@@ -1468,24 +1663,29 @@ export function FightPage() {
         postponeFight: s.postponeFight,
         resetFight: s.resetFight,
         reset: s.reset,
+        addGuestFight: s.addGuestFight,
       }))
     );
 
   const [loaded, setLoaded] = React.useState(false);
   const [confirmRedo, setConfirmRedo] = React.useState(false);
-  const [bottomTab, setBottomTab] = React.useState<"mesa" | "porjuez" | "remotos">("porjuez");
+  const [bottomTab, setBottomTab] = React.useState<"mesa" | "porjuez" | "remotos">(
+    () => (useTournamentStore.getState().config.matchType === "tul" ? "mesa" : "porjuez")
+  );
   const [showFightList, setShowFightList] = React.useState(false);
   const [resultDialogOpen, setResultDialogOpen] = React.useState(false);
   const [resultFlagsRed, setResultFlagsRed] = React.useState(0);
   const [resultFlagsBlue, setResultFlagsBlue] = React.useState(0);
-  const [showImportedPanel, setShowImportedPanel] = React.useState(true);
   const [winnerOverlayOpen, setWinnerOverlayOpen] = React.useState(false);
+  const [guestDialogOpen, setGuestDialogOpen] = React.useState(false);
+  const [guestForm, setGuestForm] = React.useState({ red: "", blue: "", category: "", ring: "" });
   // Default: tiebreakerSeconds del config (configurado en Settings), luego overtime_seconds de las reglas, luego 30s
   const [tiebreakerDuration, setTiebreakerDuration] = React.useState(() => {
     const cfg = useTournamentStore.getState().config;
     return cfg.tiebreakerSeconds ?? (cfg.ruleSet as RuleSetSparring)?.rounds?.overtime_seconds ?? 30;
   });
   const prevIsFinishedRef = React.useRef<boolean | null>(null);
+  const prevPhaseRef = React.useRef<string>("idle");
 
   const currentFight = fights[currentFightIndex];
   const { matchState, matchPaused, judges } = state;
@@ -1547,6 +1747,18 @@ export function FightPage() {
     setLoaded(false);
     setConfirmRedo(false);
   }, [currentFightIndex]);
+
+  // Chicharra de campana al terminar el round (round → rest/penalties/finished)
+  React.useEffect(() => {
+    const prev = prevPhaseRef.current;
+    prevPhaseRef.current = phase;
+    if (!loaded) return;
+    const endingPhases = ["round", "overtime", "golden_point"];
+    const finishedPhases = ["rest", "penalties", "finished"];
+    if (endingPhases.includes(prev) && finishedPhases.includes(phase)) {
+      playBell();
+    }
+  }, [phase, loaded]);
 
   // Mostrar overlay de ganador cuando el combate termina (solo en la transición false→true Y si el combate está cargado)
   React.useEffect(() => {
@@ -1614,6 +1826,15 @@ export function FightPage() {
     return () => { socket.off('fight:remote-completed', onRemoteCompleted); };
   }, [socket, completeFight]);
 
+  // Strip any leftover 'importedFrom' fights persisted from a previous session.
+  // Guest fights (EXT: prefix) are intentional and stay.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount to clear stale imported fights
+  React.useEffect(() => {
+    useTournamentStore.setState((s) => ({
+      fights: s.fights.filter((f) => !f.importedFrom || f.groupId?.startsWith("EXT:")),
+    }));
+  }, []);
+
   // Auto-load desde DB del servidor al montar. Siempre se ejecuta para detectar
   // peleas importadas mientras la FightPage no estaba abierta (socket event perdido).
   // addImportedFights deduplica por ID, así que es seguro llamarlo aunque el store
@@ -1622,15 +1843,20 @@ export function FightPage() {
   React.useEffect(() => {
     fetch("/api/ring/queue")
       .then((r) => r.json())
-      .then((queue: Array<{ fight: { id: string; red: { id: string; name: string }; blue: { id: string; name: string } } }>) => {
+      .then((queue: Array<{ fight: { id: string; sourceRing: string | null; red: { id: string; name: string }; blue: { id: string; name: string } } }>) => {
         if (!Array.isArray(queue) || queue.length === 0) return;
+        // Only import fights that came from another ring (sourceRing != null).
+        // Local fights (sourceRing == null) already live in the Zustand store — importing
+        // them here would duplicate them and show them as "Reasignadas desde Mesa Central".
+        const fromOtherRing = queue.filter(({ fight }) => !!fight.sourceRing);
+        if (fromOtherRing.length === 0) return;
         addImportedFights(
-          queue.map(({ fight: f }) => ({
+          fromOtherRing.map(({ fight: f }) => ({
             id: f.id,
             red: { id: f.red.id, name: f.red.name },
             blue: { id: f.blue.id, name: f.blue.name },
             completed: false,
-            importedFrom: "Mesa Central",
+            importedFrom: f.sourceRing!,
           }))
         );
       })
@@ -1727,8 +1953,7 @@ export function FightPage() {
   function handleStartTiebreaker() {
     if (!currentFight) return;
     const reason = matchState?.result?.reason ?? "points";
-    completeFight(currentFight.id, "draw", reason, resultFlagsRed, resultFlagsBlue);
-    // Contar desempates completados (ya incluyendo el actual, marcado arriba)
+    completeFight(currentFight.id, "draw", reason, resultFlagsRed, resultFlagsBlue, penaltyCounts.warnings.red, penaltyCounts.warnings.blue, penaltyCounts.fouls.red, penaltyCounts.fouls.blue);
     const matchId = currentFight.bracketMatchId;
     const freshFights = useTournamentStore.getState().fights;
     const completedTbs = freshFights.filter(
@@ -1743,8 +1968,10 @@ export function FightPage() {
       completed: false,
       isTiebreakExtra: !isGoldenPoint,
       isGoldenPointFight: isGoldenPoint || undefined,
-      bracketMatchId: currentFight.bracketMatchId,
+      // For tiebreak group fights (no bracketMatchId), store parent's id so GP can be linked back
+      bracketMatchId: currentFight.bracketMatchId ?? currentFight.id,
       tiebreakerSeconds: isGoldenPoint ? undefined : tiebreakerDuration,
+      groupId: currentFight.groupId,
     };
     addTiebreakFights([nextFight]);
     setResultDialogOpen(false);
@@ -1763,10 +1990,8 @@ export function FightPage() {
         else if ((t.blue ?? 0) > (t.red ?? 0)) fb++;
       }
     }
-    // Garantizar que el perdedor tenga estrictamente menos banderas que el ganador
-    const w = matchState.result.winner;
-    if (w === "red" && fb >= fr) fb = Math.max(0, fr - 1);
-    if (w === "blue" && fr >= fb) fr = Math.max(0, fb - 1);
+    // Mostrar los números reales — el motor ya garantiza que el ganador tiene mayoría estricta.
+    // Si llega aquí como empate, los números pueden ser cualquier combinación válida (ej. 2-1-1).
     setResultFlagsRed(fr);
     setResultFlagsBlue(fb);
     setResultDialogOpen(true);
@@ -1777,10 +2002,10 @@ export function FightPage() {
     const winner = matchState?.result?.winner;
     const reason = matchState?.result?.reason ?? "points";
     if (!winner) return;
-    // En eliminación, los empates deben ir a desempate — nunca confirmar el resultado directamente
-    // Excepción: Punto de Oro (si termina en empate, dejar que el árbitro confirme)
-    if (winner === "draw" && config.mode === "elimination" && !currentFight.isGoldenPointFight) return;
-    completeFight(currentFight.id, winner, reason, resultFlagsRed, resultFlagsBlue);
+    // En eliminación, final, desempate y Punto de Oro: los empates deben seguir peleando — nunca confirmar directo
+    const requiresWinner = config.mode === "elimination" || currentFight.isFinalFight || currentFight.isTiebreakExtra || currentFight.isGoldenPointFight;
+    if (winner === "draw" && requiresWinner) return;
+    completeFight(currentFight.id, winner, reason, { flagsRed: resultFlagsRed, flagsBlue: resultFlagsBlue, warningsRed: penaltyCounts.warnings.red, warningsBlue: penaltyCounts.warnings.blue, foulsRed: penaltyCounts.fouls.red, foulsBlue: penaltyCounts.fouls.blue });
     if (currentFight.bracketMatchId && winner !== "draw") {
       completeBracketMatch(currentFight.bracketMatchId, winner === "red" ? currentFight.red.id : currentFight.blue.id);
     }
@@ -1887,13 +2112,17 @@ export function FightPage() {
                       const vote = votes[jid];
                       return (
                         <div key={jid} className={cn(
-                          "rounded-xl px-3 py-2 border text-sm font-bold min-w-[56px]",
+                          "rounded-xl px-3 py-2 border text-sm font-bold min-w-[56px] flex flex-col items-center",
                           vote === "red" ? "bg-red-800/60 border-red-500 text-red-200" :
                           vote === "blue" ? "bg-blue-800/60 border-blue-500 text-blue-200" :
                           "bg-white/10 border-white/20 text-white/50"
                         )}>
                           <p className="text-[10px] text-white/40 mb-0.5">{jid}</p>
-                          <p>{vote === "red" ? "🔴" : vote === "blue" ? "🔵" : vote === "draw" ? "🤝" : "—"}</p>
+                          {vote === "red" || vote === "blue" ? (
+                            <FlagIcon side={vote} size={28} />
+                          ) : (
+                            <p>{vote === "draw" ? "🤝" : "—"}</p>
+                          )}
                         </div>
                       );
                     })}
@@ -1928,6 +2157,156 @@ export function FightPage() {
           })()}
         </DialogContent>
       </Dialog>
+
+      {/* ── GUEST FIGHT DIALOG ─────────────────────────────────── */}
+      {guestDialogOpen && (() => {
+        // Categorías huésped ya existentes, deduplicadas por groupId
+        const existingGuest = Array.from(
+          fights
+            .filter((f) => f.groupId?.startsWith("EXT:"))
+            .reduce((map, f) => {
+              if (!map.has(f.groupId!)) {
+                const displayName = f.groupId!.slice(4).replace(/-/g, " ")
+                  .replace(/\b\w/g, (c) => c.toUpperCase());
+                map.set(f.groupId!, { groupId: f.groupId!, displayName, ring: f.importedFrom ?? "" });
+              }
+              return map;
+            }, new Map<string, { groupId: string; displayName: string; ring: string }>())
+            .values()
+        );
+
+        const isNewMode = guestForm.category !== "" || guestForm.ring !== "" ||
+          !existingGuest.some((g) => g.displayName === guestForm.category && g.ring === guestForm.ring);
+        const selectedChip = existingGuest.find(
+          (g) => g.displayName === guestForm.category && g.ring === guestForm.ring
+        ) ?? null;
+        const canSubmit = guestForm.red.trim() && guestForm.blue.trim() &&
+          guestForm.category.trim() && guestForm.ring.trim();
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
+            <div className="bg-card border border-border rounded-2xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
+              <div>
+                <p className="text-sm font-bold uppercase tracking-widest text-purple-300">🏁 Pelea huésped</p>
+                <p className="text-xs text-muted-foreground mt-1">Se agrega al final de la cola. No afecta tu clasificación.</p>
+              </div>
+
+              {/* Chips de categorías existentes */}
+              {existingGuest.length > 0 && (
+                <div className="space-y-1.5">
+                  <p className="text-xs text-muted-foreground">Categoría reciente:</p>
+                  <div className="flex flex-wrap gap-2">
+                    {existingGuest.map((g) => (
+                      <button
+                        key={g.groupId}
+                        type="button"
+                        onClick={() => setGuestForm((f) => ({ ...f, category: g.displayName, ring: g.ring }))}
+                        className={[
+                          "rounded-full px-3 py-1 text-xs font-medium border transition-colors",
+                          selectedChip?.groupId === g.groupId
+                            ? "bg-purple-700 border-purple-500 text-white"
+                            : "bg-purple-900/30 border-purple-700/50 text-purple-300 hover:bg-purple-800/40",
+                        ].join(" ")}
+                      >
+                        🏁 {g.displayName} · {g.ring}
+                      </button>
+                    ))}
+                    {selectedChip && (
+                      <button
+                        type="button"
+                        onClick={() => setGuestForm((f) => ({ ...f, category: "", ring: "" }))}
+                        className="rounded-full px-3 py-1 text-xs font-medium border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-muted-foreground/70 transition-colors"
+                      >
+                        + nueva
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="space-y-3">
+                {/* Rojo / Azul — siempre visibles */}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="text-xs text-muted-foreground">Rojo</label>
+                    <input
+                      autoFocus
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm mt-1"
+                      placeholder="Nombre rojo"
+                      value={guestForm.red}
+                      onChange={(e) => setGuestForm((f) => ({ ...f, red: e.target.value }))}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">Azul</label>
+                    <input
+                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm mt-1"
+                      placeholder="Nombre azul"
+                      value={guestForm.blue}
+                      onChange={(e) => setGuestForm((f) => ({ ...f, blue: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
+                {/* Categoría + ring: solo si no hay chip seleccionado */}
+                {!selectedChip && (
+                  <>
+                    <div>
+                      <label className="text-xs text-muted-foreground">Categoría (de ese cuadrilátero)</label>
+                      <input
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm mt-1"
+                        placeholder="ej: Infantil B Varones"
+                        value={guestForm.category}
+                        onChange={(e) => setGuestForm((f) => ({ ...f, category: e.target.value }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground">Cuadrilátero de origen</label>
+                      <input
+                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm mt-1"
+                        placeholder="ej: Cuadrilátero 2"
+                        value={guestForm.ring}
+                        onChange={(e) => setGuestForm((f) => ({ ...f, ring: e.target.value }))}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* Resumen cuando hay chip seleccionado */}
+                {selectedChip && (
+                  <div className="rounded-lg bg-purple-900/20 border border-purple-700/30 px-3 py-2 text-xs text-purple-300 space-y-0.5">
+                    <p><span className="text-muted-foreground">Categoría:</span> {selectedChip.displayName}</p>
+                    <p><span className="text-muted-foreground">Origen:</span> {selectedChip.ring}</p>
+                  </div>
+                )}
+              </div>
+
+              <div className="flex gap-2 pt-1">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  onClick={() => { setGuestDialogOpen(false); setGuestForm({ red: "", blue: "", category: "", ring: "" }); }}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  className="flex-1 bg-purple-700 hover:bg-purple-600"
+                  disabled={!canSubmit}
+                  onClick={() => {
+                    addGuestFight(guestForm.red, guestForm.blue, guestForm.category, guestForm.ring);
+                    // Mantener la categoría seleccionada para el próximo, solo limpiar nombres
+                    setGuestForm((f) => ({ ...f, red: "", blue: "" }));
+                    setGuestDialogOpen(false);
+                    toast.success("Pelea huésped agregada al final de la cola");
+                  }}
+                >
+                  Agregar pelea
+                </Button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── FIGHT LIST DIALOG ──────────────────────────────────── */}
       <Dialog open={showFightList} onOpenChange={setShowFightList}>
@@ -1988,7 +2367,7 @@ export function FightPage() {
       </Dialog>
 
       {/* ── TOP BAR ─────────────────────────────────────────────── */}
-      <div className="shrink-0 border-b border-border">
+      <div id="tour-fight-header" className="shrink-0 border-b border-border">
 
         {/* Fila 1: navegación + nombres + acciones */}
         <div className="px-3 py-2 flex items-center gap-2">
@@ -2035,6 +2414,17 @@ export function FightPage() {
               onClick={() => setShowFightList(true)}
             >
               <List className="size-4" />
+            </Button>
+
+            {/* Pelea huésped */}
+            <Button
+              size="sm"
+              variant="outline"
+              className="shrink-0 text-purple-300 border-purple-700/60 hover:bg-purple-900/20"
+              title="Agregar pelea de otro cuadrilátero"
+              onClick={() => setGuestDialogOpen(true)}
+            >
+              🏁 Huésped
             </Button>
 
             {/* Postergar pelea — mueve la actual una posición hacia adelante */}
@@ -2085,13 +2475,6 @@ export function FightPage() {
         <FightProgressStrip fights={fights} currentIndex={currentFightIndex} onSelect={setCurrentFightIndex} />
       </div>
 
-      {/* ── BANNER PELEA REASIGNADA ───────────────────────────── */}
-      {currentFight?.importedFrom && (
-        <div className="shrink-0 flex items-center justify-center gap-2 py-1.5 bg-yellow-500/15 border-b border-yellow-500/30 text-yellow-300 text-xs font-medium tracking-wide">
-          🔀 PELEA REASIGNADA · Originada en: <span className="font-bold">{currentFight.importedFrom}</span>
-        </div>
-      )}
-
       {/* ── BANNER ÚLTIMA PELEA DE LA LLAVE ──────────────────── */}
       {isLastInGroup && (
         <div className="shrink-0 flex items-center justify-center gap-2 py-1.5 bg-amber-500/15 border-b border-amber-500/30 text-amber-300 text-xs font-semibold tracking-wide">
@@ -2103,7 +2486,7 @@ export function FightPage() {
       <div className="flex-1 min-h-0 overflow-hidden">
 
         {/* DESKTOP (md+): 3 columnas lado a lado */}
-        <div className="hidden md:grid h-full grid-cols-[1fr_auto_1fr]">
+        <div className="hidden md:grid h-full grid-cols-[1fr_auto_1fr] relative">
 
           {/* ROJO */}
           <div className="flex flex-col items-center justify-center gap-5 px-4 py-3 lg:px-8 lg:py-6 bg-red-950/50 border-r border-red-900/40">
@@ -2167,98 +2550,131 @@ export function FightPage() {
           </div>
 
           {/* CENTRO: timer + controles */}
-          <div className="flex flex-col items-center justify-center gap-4 px-8 py-6 min-w-85">
-            {/* Phase + pause badges */}
-            <div className="flex items-center gap-2">
-              <Badge className={cn(
-                "text-sm px-4 py-1.5",
-                phase === "round" && "bg-green-600",
-                phase === "rest" && "bg-yellow-600",
-                phase === "overtime" && "bg-orange-600",
-                phase === "golden_point" && "bg-purple-600",
-                phase === "finished" && "bg-blue-700",
-                phase === "penalties" && "bg-red-800",
-                phase === "idle" && "bg-secondary"
-              )}>
-                {phase === "rest" && isLastRound
-                  ? "Votación"
-                  : `${PHASE_LABELS[phase]}${roundSuffix(phase, currentRound)}`}
-              </Badge>
-              {currentFight?.isTiebreakExtra && (
-                <Badge variant="outline" className="text-orange-400 border-orange-600">⚡ Desempate</Badge>
-              )}
-              {currentFight?.isGoldenPointFight && (
-                <Badge variant="outline" className="text-yellow-300 border-yellow-500">⚡ Punto de Oro</Badge>
-              )}
-              {showPauseBadge(matchPaused, phase) && (
-                <Badge variant="outline" className="text-yellow-400 border-yellow-600">PAUSA</Badge>
-              )}
-            </div>
-            <div className={cn(
-              "font-mono font-black leading-none",
-              timerClass(timeLeft, isRunning, matchPaused),
-              isTul && "hidden",
-            )}>
-              {formatTime(timeLeft)}
-            </div>
-            {loaded ? (
-              <MatchControls
-                loaded={loaded}
-                isFinished={isFinished}
-                phase={phase}
-                matchPaused={matchPaused}
-                fight={currentFight}
-                isLast={currentFightIndex === fights.length - 1}
-                state={state}
-                isTul={isTul}
-                onEmit={emit}
-                onFinishAndNext={handleOpenResultDialog}
-              />
-            ) : currentFight?.completed ? (
-              <div className="flex flex-col items-center gap-3 w-full px-4">
-                <div className="rounded-lg bg-secondary/30 border border-border px-4 py-3 text-center space-y-1 w-full">
-                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Resultado</p>
-                  {currentFight.winner === "red" ? (
-                    <p className="font-black text-lg text-red-400">🔴 {currentFight.red.name}</p>
-                  ) : currentFight.winner === "blue" ? (
-                    <p className="font-black text-lg text-blue-400">🔵 {currentFight.blue.name}</p>
+          <div id="tour-timer" className="flex flex-col items-center justify-center gap-4 px-8 py-6 min-w-85">
+            {currentFight?.completed ? (() => {
+              const isDraw = currentFight.winner === "draw";
+              const isRed = currentFight.winner === "red";
+              const winnerName = isRed ? currentFight.red.name : !isDraw ? currentFight.blue.name : null;
+              return (
+                <div className="flex flex-col items-center gap-5 w-full text-center">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted-foreground">Resultado</p>
+                  {isDraw ? (
+                    <p className="text-[clamp(3rem,8vh,6.5rem)] font-black text-yellow-400 leading-none">⚖ Empate</p>
                   ) : (
-                    <p className="font-black text-lg text-yellow-400">⚖ Empate</p>
+                    <>
+                      <p className={cn(
+                        "text-[clamp(2.5rem,6vh,5rem)] font-black leading-tight break-words text-center w-full",
+                        isRed ? "text-red-400" : "text-blue-400"
+                      )}>
+                        {isRed ? "🔴" : "🔵"} {winnerName}
+                      </p>
+                      <p className="text-sm text-muted-foreground -mt-3">ganó el combate</p>
+                    </>
                   )}
                   {(currentFight.flagsRed != null && currentFight.flagsBlue != null) && (
-                    <p className="text-sm text-muted-foreground">🔴 {currentFight.flagsRed} — {currentFight.flagsBlue} 🔵</p>
+                    <div className="flex items-center gap-3 text-2xl font-black">
+                      <span className="text-red-400">{currentFight.flagsRed}</span>
+                      <span className="text-muted-foreground text-base">—</span>
+                      <span className="text-blue-400">{currentFight.flagsBlue}</span>
+                      <span className="text-xs font-normal text-muted-foreground ml-1 self-end mb-1">banderas</span>
+                    </div>
+                  )}
+                  <div className="w-full pt-3 border-t border-white/10">
+                    {confirmRedo ? (
+                      <div className="rounded-xl border border-destructive/50 bg-destructive/10 px-4 py-3 space-y-3">
+                        <div className="flex items-start gap-2 text-left">
+                          <span className="text-destructive text-lg leading-none mt-0.5">⚠</span>
+                          <div className="space-y-1">
+                            <p className="text-sm font-bold text-destructive">Acción irreversible</p>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Borrar este resultado puede alterar la clasificación, desempates y la Fase Final. Solo hacelo si el resultado fue cargado por error.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="destructive" className="flex-1" onClick={() => {
+                            resetFight(currentFight.id);
+                            emit("match:reset");
+                            setConfirmRedo(false);
+                            handleLoad();
+                          }}>
+                            Sí, resetear
+                          </Button>
+                          <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
+                            Cancelar
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-muted-foreground/60 hover:text-amber-400 hover:bg-amber-950/30 text-xs"
+                        onClick={() => setConfirmRedo(true)}
+                      >
+                        ⚠ Rehacer combate
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              );
+            })() : (
+              <>
+                {/* Phase + pause badges */}
+                <div className="flex items-center gap-2">
+                  <Badge className={cn(
+                    "text-sm px-4 py-1.5",
+                    phase === "round" && "bg-green-600",
+                    phase === "rest" && "bg-yellow-600",
+                    phase === "overtime" && "bg-orange-600",
+                    phase === "golden_point" && "bg-purple-600",
+                    phase === "finished" && "bg-blue-700",
+                    phase === "penalties" && "bg-red-800",
+                    phase === "idle" && "bg-secondary"
+                  )}>
+                    {phase === "rest" && isLastRound
+                      ? "Votación"
+                      : `${PHASE_LABELS[phase]}${roundSuffix(phase, currentRound)}`}
+                  </Badge>
+                  {currentFight?.isTiebreakExtra && (
+                    <Badge variant="outline" className="text-orange-400 border-orange-600">⚡ Desempate</Badge>
+                  )}
+                  {currentFight?.isGoldenPointFight && (
+                    <Badge variant="outline" className="text-yellow-300 border-yellow-500">⚡ Punto de Oro</Badge>
+                  )}
+                  {showPauseBadge(matchPaused, phase) && (
+                    <Badge variant="outline" className="text-yellow-400 border-yellow-600">PAUSA</Badge>
                   )}
                 </div>
-                {confirmRedo ? (
-                  <div className="space-y-2 w-full">
-                    <p className="text-xs text-amber-400 text-center font-medium">¿Borrar resultado y rehacer la pelea?</p>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="destructive" className="flex-1" onClick={() => {
-                        resetFight(currentFight.id);
-                        emit("match:reset");
-                        setConfirmRedo(false);
-                        handleLoad();
-                      }}>
-                        Sí, resetear
-                      </Button>
-                      <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
-                        Cancelar
-                      </Button>
-                    </div>
-                  </div>
+                <div className={cn(
+                  "font-mono font-black leading-none",
+                  timerClass(timeLeft, isRunning, matchPaused),
+                  isTul && "hidden",
+                )}>
+                  {formatTime(timeLeft)}
+                </div>
+                {loaded ? (
+                  <MatchControls
+                    loaded={loaded}
+                    isFinished={isFinished}
+                    phase={phase}
+                    matchPaused={matchPaused}
+                    fight={currentFight}
+                    isLast={currentFightIndex === fights.length - 1}
+                    state={state}
+                    isTul={isTul}
+                    onEmit={emit}
+                    onFinishAndNext={handleOpenResultDialog}
+                  />
                 ) : (
-                  <Button size="lg" variant="outline" className="w-full border-amber-700/50 text-amber-400 hover:bg-amber-950/40 hover:text-amber-300" onClick={() => setConfirmRedo(true)}>
-                    ⚠ Rehacer combate
-                  </Button>
+                  <div className="flex flex-col items-center gap-3">
+                    <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
+                      <Play />
+                      {isTul ? 'Iniciar competencia' : 'Cargar combate'}
+                    </Button>
+                  </div>
                 )}
-              </div>
-            ) : (
-              <div className="flex flex-col items-center gap-3">
-                <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
-                  <Play />
-                  Cargar combate
-                </Button>
-              </div>
+              </>
             )}
           </div>
 
@@ -2484,57 +2900,79 @@ export function FightPage() {
                 onEmit={emit}
                 onFinishAndNext={handleOpenResultDialog}
               />
-            ) : currentFight?.completed ? (
-              <div className="flex flex-col items-center gap-3 w-full">
-                <div className="rounded-lg bg-secondary/30 border border-border px-4 py-3 text-center space-y-1 w-full">
-                  <p className="text-xs text-muted-foreground font-medium uppercase tracking-wider">Resultado</p>
-                  {currentFight.winner === "red" ? (
-                    <p className="font-black text-base text-red-400">🔴 {currentFight.red.name}</p>
-                  ) : currentFight.winner === "blue" ? (
-                    <p className="font-black text-base text-blue-400">🔵 {currentFight.blue.name}</p>
+            ) : currentFight?.completed ? (() => {
+              const isDraw = currentFight.winner === "draw";
+              const isRed = currentFight.winner === "red";
+              const winnerName = isRed ? currentFight.red.name : !isDraw ? currentFight.blue.name : null;
+              return (
+                <div className="flex flex-col items-center gap-4 w-full text-center">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.25em] text-muted-foreground">Resultado</p>
+                  {isDraw ? (
+                    <p className="text-5xl font-black text-yellow-400 leading-none">⚖ Empate</p>
                   ) : (
-                    <p className="font-black text-base text-yellow-400">⚖ Empate</p>
+                    <>
+                      <p className={cn("text-4xl font-black leading-tight break-words w-full", isRed ? "text-red-400" : "text-blue-400")}>
+                        {isRed ? "🔴" : "🔵"} {winnerName}
+                      </p>
+                      <p className="text-sm text-muted-foreground -mt-2">ganó el combate</p>
+                    </>
                   )}
                   {(currentFight.flagsRed != null && currentFight.flagsBlue != null) && (
-                    <p className="text-sm text-muted-foreground">🔴 {currentFight.flagsRed} — {currentFight.flagsBlue} 🔵</p>
-                  )}
-                </div>
-                {confirmRedo ? (
-                  <div className="space-y-2 w-full">
-                    <p className="text-xs text-amber-400 text-center font-medium">¿Borrar resultado y rehacer la pelea?</p>
-                    <div className="flex gap-2">
-                      <Button size="sm" variant="destructive" className="flex-1" onClick={() => {
-                        resetFight(currentFight.id);
-                        emit("match:reset");
-                        setConfirmRedo(false);
-                        handleLoad();
-                      }}>
-                        Sí, resetear
-                      </Button>
-                      <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
-                        Cancelar
-                      </Button>
+                    <div className="flex items-center gap-3 text-xl font-black">
+                      <span className="text-red-400">{currentFight.flagsRed}</span>
+                      <span className="text-muted-foreground text-base">—</span>
+                      <span className="text-blue-400">{currentFight.flagsBlue}</span>
+                      <span className="text-xs font-normal text-muted-foreground ml-1 self-end mb-1">banderas</span>
                     </div>
+                  )}
+                  <div className="w-full pt-3 border-t border-white/10">
+                    {confirmRedo ? (
+                      <div className="rounded-xl border border-destructive/50 bg-destructive/10 px-4 py-3 space-y-3 w-full">
+                        <div className="flex items-start gap-2">
+                          <span className="text-destructive text-lg leading-none mt-0.5">⚠</span>
+                          <div className="space-y-1 text-left">
+                            <p className="text-sm font-bold text-destructive">Acción irreversible</p>
+                            <p className="text-xs text-muted-foreground leading-relaxed">
+                              Borrar este resultado puede alterar la clasificación, desempates y la Fase Final. Solo hacelo si el resultado fue cargado por error.
+                            </p>
+                          </div>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button size="sm" variant="destructive" className="flex-1" onClick={() => {
+                            resetFight(currentFight.id);
+                            emit("match:reset");
+                            setConfirmRedo(false);
+                            handleLoad();
+                          }}>
+                            Sí, resetear
+                          </Button>
+                          <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
+                            Cancelar
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button size="sm" variant="ghost" className="text-muted-foreground/60 hover:text-amber-400 hover:bg-amber-950/30 text-xs" onClick={() => setConfirmRedo(true)}>
+                        ⚠ Rehacer combate
+                      </Button>
+                    )}
                   </div>
-                ) : (
-                  <Button size="lg" variant="outline" className="w-full border-amber-700/50 text-amber-400 hover:bg-amber-950/40 hover:text-amber-300" onClick={() => setConfirmRedo(true)}>
-                    ⚠ Rehacer combate
-                  </Button>
-                )}
-              </div>
-            ) : (
+                </div>
+              );
+            })() : (
               <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
                 <Play />
-                Cargar combate
+                {isTul ? 'Iniciar competencia' : 'Cargar combate'}
               </Button>
             )}
           </div>
+
         </div>
       </div>
 
       {/* ── PANEL INFERIOR (TABS) ─────────────────────────────────── */}
       {loaded && (
-        <div className="shrink-0 border-t border-border bg-card/40 px-4 py-2 space-y-2 max-h-[42vh] overflow-y-auto">
+        <div id="tour-bottom-tabs" className="shrink-0 border-t border-border bg-card/40 px-4 py-2 space-y-2 max-h-[42vh] overflow-y-auto">
           {/* Tab bar */}
           <div className="flex items-center gap-1 border-b border-border/40 pb-1">
             {(!isTul || tulPhase === "voting") && (
@@ -2624,87 +3062,6 @@ export function FightPage() {
           )}
         </div>
       )}
-
-      {/* ── PANEL PELEAS REASIGNADAS DESDE OTRO TATAMI ───────────── */}
-      {(() => {
-        // Agrupa peleas pendientes por tatami origen
-        const imported = fights.filter((f) => f.importedFrom && !f.completed);
-        if (imported.length === 0) return null;
-        const byOrigin = new Map<string, typeof fights>();
-        for (const f of imported) {
-          // biome-ignore lint/style/noNonNullAssertion: imported array was filtered to only include f.importedFrom truthy values
-          const key = f.importedFrom!;
-          if (!byOrigin.has(key)) byOrigin.set(key, []);
-          // biome-ignore lint/style/noNonNullAssertion: byOrigin.set() called above guarantees key exists
-          byOrigin.get(key)!.push(f);
-        }
-        return (
-          <div className="shrink-0 border-t border-yellow-700/40 bg-yellow-950/10">
-            {/* Header colapsable */}
-            <button
-              type="button"
-              onClick={() => setShowImportedPanel((v) => !v)}
-              className="w-full flex items-center justify-between px-4 py-2 text-left hover:bg-yellow-900/10 transition-colors"
-            >
-              <span className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider text-yellow-400/90">
-                <span>🔀</span>
-                Peleas reasignadas ({imported.length})
-              </span>
-              <ChevronDown className={cn("size-3.5 text-yellow-400/70 transition-transform", showImportedPanel && "rotate-180")} />
-            </button>
-
-            {showImportedPanel && (
-              <div className="px-4 pb-3 space-y-3">
-                {Array.from(byOrigin.entries()).map(([origin, originFights]) => (
-                  <div key={origin}>
-                    <p className="text-[11px] font-semibold uppercase tracking-wider text-yellow-500/70 mb-1.5">
-                      Desde {origin} · {originFights.length} pendiente{originFights.length !== 1 ? "s" : ""}
-                    </p>
-                    <div className="space-y-1">
-                      {originFights.map((f) => {
-                        const idx = fights.indexOf(f);
-                        const isActive = idx === currentFightIndex;
-                        return (
-                          <div
-                            key={f.id}
-                            className={cn(
-                              "flex items-center justify-between rounded-lg px-3 py-2 border text-sm transition-colors",
-                              isActive
-                                ? "border-yellow-500/60 bg-yellow-900/30 text-yellow-200"
-                                : "border-border bg-card hover:bg-secondary/50 text-foreground",
-                            )}
-                          >
-                            <span className="font-medium">
-                              <span className="text-red-400">{f.red.name}</span>
-                              <span className="text-muted-foreground mx-2">vs</span>
-                              <span className="text-blue-400">{f.blue.name}</span>
-                            </span>
-                            {isActive ? (
-                              <span className="text-[10px] font-semibold text-yellow-400 uppercase tracking-wide">En curso</span>
-                            ) : (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 px-3 text-xs border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30"
-                                onClick={() => {
-                                  setCurrentFightIndex(idx);
-                                  setLoaded(false);
-                                }}
-                              >
-                                Ir a esta pelea
-                              </Button>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        );
-      })()}
 
       {/* ── DIALOG RESULTADO ─────────────────────────────────────── */}
       {matchState?.result != null && (
@@ -2855,17 +3212,24 @@ export function FightPage() {
                 {/* Confirmar / Desempate / Punto de Oro */}
                 {(() => {
                   const isDraw = matchState?.result?.winner === "draw";
-                  const isElim = config.mode === "elimination";
                   const isGPFight = currentFight?.isGoldenPointFight;
+                  // Elim/final/tiebreak/GP fights require a winner — draw must lead to another tiebreak or GP
+                  const isElim = config.mode === "elimination" || currentFight?.isFinalFight || currentFight?.isTiebreakExtra || isGPFight;
                   // Calcular si el próximo será Punto de Oro
                   const tbMatchId = currentFight?.bracketMatchId;
                   const completedTbs = fights.filter(
                     (f) => f.isTiebreakExtra && f.completed && f.bracketMatchId === tbMatchId
                   ).length;
-                  const afterThisCount = completedTbs + (currentFight?.isTiebreakExtra ? 1 : 0);
+                  // GP fights are not isTiebreakExtra but we're already past the limit, so force nextIsGoldenPoint=true
+                  const afterThisCount = isGPFight
+                    ? (config.maxTiebreakers ?? 1)
+                    : completedTbs + (currentFight?.isTiebreakExtra ? 1 : 0);
                   const nextIsGoldenPoint = afterThisCount >= (config.maxTiebreakers ?? 1);
 
-                  if (isDraw && isElim && !isGPFight) {
+                  // Round-robin group fights: draw is valid but referee can optionally tiebreak
+                  const isRoundRobinGroup = config.mode === "roundRobin" && !currentFight?.isFinalFight && !isGPFight && !currentFight?.isTiebreakExtra;
+
+                  if (isDraw && isElim) {
                     return (
                       <>
                         {nextIsGoldenPoint ? (
@@ -2907,6 +3271,42 @@ export function FightPage() {
                         >
                           <Zap className="size-4" />
                           {nextIsGoldenPoint ? "Iniciar Punto de Oro" : "Iniciar desempate"}
+                        </Button>
+                      </>
+                    );
+                  }
+                  if (isDraw && isRoundRobinGroup) {
+                    return (
+                      <>
+                        <div className="rounded-xl border border-orange-800/50 bg-orange-950/20 p-4 space-y-3">
+                          <p className="text-sm font-bold text-orange-300 flex items-center gap-2">
+                            <Zap className="size-4" />
+                            Desempate opcional
+                          </p>
+                          <div className="flex items-center gap-3">
+                            <label className="text-xs text-muted-foreground whitespace-nowrap">Duración (seg)</label>
+                            <input
+                              type="number"
+                              min={10}
+                              max={600}
+                              step={5}
+                              value={tiebreakerDuration}
+                              onChange={(e) => setTiebreakerDuration(Math.max(10, Math.min(600, Number(e.target.value))))}
+                              className="w-full rounded-md bg-background border border-input px-3 py-1.5 text-sm text-center font-bold tabular-nums"
+                            />
+                          </div>
+                        </div>
+                        <Button
+                          className="w-full bg-orange-700 hover:bg-orange-600 text-white"
+                          size="lg"
+                          onClick={handleStartTiebreaker}
+                        >
+                          <Zap className="size-4" />
+                          Iniciar desempate
+                        </Button>
+                        <Button className="w-full" variant="outline" size="lg" onClick={handleConfirmResult}>
+                          <ChevronRight className="size-4" />
+                          Confirmar empate
                         </Button>
                       </>
                     );

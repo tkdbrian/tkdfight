@@ -52,11 +52,19 @@ export class SetupPage {
     await this.page.getByText(name).first().waitFor({ state: "visible", timeout: 5000 });
   }
 
+  /** Add multiple competitors in sequence */
+  async addCompetitors(names: string[]): Promise<void> {
+    for (const name of names) {
+      await this.addCompetitor(name);
+    }
+  }
+
   /** Configure category - simpler approach without strict mode issues */
   async configureCategory(options: {
     weight: string;
     rank: string;
     gender: "M" | "F";
+    discipline?: "Sparring" | "Tul / Formas";
     mode: "Round Robin" | "Eliminación";
   }): Promise<void> {
     // Select weight
@@ -65,6 +73,10 @@ export class SetupPage {
     await this.selectCategoryOption(options.rank);
     // Select gender
     await this.selectCategoryOption(options.gender);
+    // Select discipline (optional, defaults to Sparring in app)
+    if (options.discipline) {
+      await this.selectCategoryOption(options.discipline);
+    }
     // Select mode
     await this.selectCategoryOption(options.mode);
   }
@@ -72,20 +84,12 @@ export class SetupPage {
   /** Start the category with competitors */
   async startCategory(): Promise<void> {
     await this.startCategoryButton.click();
-    // Wait for the sidebar phase indicator to show "fighting".
-    // This confirms setPhase("fighting") was called after the API fetch completed
-    // and that Zustand persist saved the full tournament state to localStorage.
-    await this.page
-      .locator("span.capitalize")
-      .filter({ hasText: "fighting" })
-      .waitFor({ state: "visible", timeout: 10000 });
+    // El alta de peleas incluye fetch + persist asíncrono.
+    // Dejamos una espera corta y navegamos a /fight para que cada test
+    // espere su estado específico sin suposiciones rígidas aquí.
+    await this.page.waitForTimeout(800);
     // React Router's navigate("/fight") does not change the browser URL in Playwright
     // for this nested-Routes SPA. Navigate directly so the page rehydrates from localStorage.
     await this.page.goto("/fight", { waitUntil: "domcontentloaded" });
-    // Wait for "Cargar combate" to confirm Zustand has hydrated fight data from localStorage.
-    // (Zustand persist with localStorage may apply state asynchronously on first render.)
-    await this.page
-      .getByRole("button", { name: "Cargar combate", exact: true })
-      .waitFor({ state: "visible", timeout: 10000 });
   }
 }

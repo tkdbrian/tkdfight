@@ -77,7 +77,9 @@ export class FightPage {
   /** Load a fight and wait for the fight controls to appear */
   async loadFight(): Promise<void> {
     await this.loadFightButton.click();
-    await this.startFightButton.waitFor({ state: "visible", timeout: 10_000 });
+    await this.startFightButton
+      .or(this.page.getByRole("button", { name: "Iniciar votación", exact: true }))
+      .waitFor({ state: "visible", timeout: 10_000 });
   }
 
   /** Start the fight and wait for the round to begin */
@@ -111,5 +113,23 @@ export class FightPage {
   async endRound(): Promise<void> {
     await this.endRoundButton.click();
     await this.page.waitForTimeout(300);
+  }
+
+  /** Start Tul voting flow */
+  async startTulVoting(): Promise<void> {
+    await this.page.getByRole("button", { name: "Iniciar votación", exact: true }).click();
+    await this.page.getByText(/jueces votaron/i).first().waitFor({ state: "visible", timeout: 5_000 });
+  }
+
+  /** Mesa decide in Tul/Sparring by voting directly for a side */
+  async mesaDecide(side: "red" | "blue" | "draw"): Promise<void> {
+    await this.page.getByRole("button", { name: "Mesa decide", exact: true }).click();
+    if (side === "red") {
+      await this.page.getByRole("button", { name: /rojo/i }).first().click();
+    } else if (side === "blue") {
+      await this.page.getByRole("button", { name: /azul/i }).first().click();
+    } else {
+      await this.page.getByRole("button", { name: /empate/i }).first().click();
+    }
   }
 }

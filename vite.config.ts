@@ -3,6 +3,9 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
+
+const pkg = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf-8")) as { version: string };
 
 export default defineConfig({
   plugins: [
@@ -59,5 +62,8 @@ export default defineConfig({
   build: {
     outDir: "dist",
     emptyOutDir: true,
+  },
+  define: {
+    __APP_VERSION__: JSON.stringify(pkg.version),
   },
 });

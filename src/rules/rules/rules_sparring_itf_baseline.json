@@ -6,7 +6,7 @@
   "judgingMode": "flags",
   "rounds": {
     "count": 1,
-    "duration_seconds": 90,
+    "duration_seconds": 60,
     "rest_seconds": 0,
     "golden_point": false,
     "overtime_seconds": 30

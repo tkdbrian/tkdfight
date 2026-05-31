@@ -234,7 +234,9 @@ export function generateGroupsTournament(
     groupFightsList.push(gFights);
   }
 
-  const fights = interleaveGroupFights(groupFightsList);
+  // Peleas agrupadas en bloque por llave: primero todas las de G1, luego G2, etc.
+  // Esto permite enviar una llave entera a otro cuadrilátero sin mezclar peleas.
+  const fights = groupFightsList.flat();
 
   return { groups, fights };
 }
@@ -267,9 +269,20 @@ export function generateEliminationBracket(
 }
 
 function buildSeeds(size: number, competitors: CompetitorEntry[]): (string | null)[] {
-  return Array.from({ length: size }, (_, i) =>
-    i < competitors.length ? competitors[i].id : null
-  );
+  const n = competitors.length;
+  const realR1Fights = n - size / 2;
+  const seeds: (string | null)[] = new Array(size).fill(null);
+  // Competitors that fight in R1 occupy the first realR1Fights*2 slots
+  for (let i = 0; i < realR1Fights * 2; i++) {
+    seeds[i] = competitors[i].id;
+  }
+  // Competitors with a BYE go into every other slot after that
+  let ci = realR1Fights * 2;
+  for (let slot = realR1Fights * 2; slot < size && ci < n; slot += 2) {
+    seeds[slot] = competitors[ci].id;
+    ci++;
+  }
+  return seeds;
 }
 
 function buildMatchIds(size: number, totalRounds: number): string[][] {

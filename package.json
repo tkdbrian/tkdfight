@@ -34,6 +34,7 @@
     "better-sqlite3": "^12.8.0",
     "canvas-confetti": "^1.9.4",
     "class-variance-authority": "^0.7.1",
+    "driver.js": "^1.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.5.2",
     "helmet": "^8.1.0",

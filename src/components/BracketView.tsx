@@ -41,11 +41,12 @@ function getMatchX(round: number): number {
   return ROUND_GAP / 2 + round * (MATCH_W + ROUND_GAP);
 }
 
-function getMatchY(round: number, position: number, roundSizes: number[], svgHeight: number): number {
-  const count = roundSizes[round] ?? 1;
-  const totalH = count * (MATCH_H + MATCH_V_GAP) - MATCH_V_GAP;
-  const startY = (svgHeight - totalH) / 2;
-  return startY + position * (MATCH_H + MATCH_V_GAP);
+// Standard bracket Y: each match in round R is centered between the two
+// R-1 matches that feed it. step doubles each round so spacing grows naturally.
+const TOP_PADDING = 30;
+function getMatchY(round: number, position: number): number {
+  const step = (MATCH_H + MATCH_V_GAP) * (2 ** round);
+  return TOP_PADDING + position * step + (step - MATCH_H) / 2;
 }
 
 type DragState = {
@@ -68,6 +69,8 @@ export function BracketView({
 }: Readonly<BracketViewProps>) {
   const svgRef = React.useRef<SVGSVGElement>(null);
   const [drag, setDrag] = React.useState<DragState | null>(null);
+  // Prevents the <g> onClick from double-firing after handlePointerUp already selected the match
+  const suppressNextClick = React.useRef(false);
 
   if (matches.length === 0) {
     return (
@@ -81,21 +84,35 @@ export function BracketView({
   const roundSizes = Array.from({ length: totalRounds }, (_, r) =>
     matches.filter((m) => m.round === r).length
   );
+
+  // Competitor slot numbers (1..bracketSize) — one per row in every match.
+  const bracketSize = Math.max(16, 2 ** totalRounds);
+  function getSlotNumber(round: number, position: number, slot: "red" | "blue"): number {
+    // Each match occupies 2 consecutive slot numbers
+    const slotsPerMatch = 2;
+    let cumulative = 0;
+    for (let r = 0; r < round; r++) cumulative += (bracketSize / 2 ** r);
+    return cumulative + position * slotsPerMatch + (slot === "red" ? 1 : 2);
+  }
   const round0Count = roundSizes[0] ?? 1;
-  const svgHeight = round0Count * (MATCH_H + MATCH_V_GAP) + MATCH_V_GAP;
-  const svgWidth = totalRounds * (MATCH_W + ROUND_GAP) + ROUND_GAP;
+  const svgHeight = TOP_PADDING + round0Count * (MATCH_H + MATCH_V_GAP);
+  const SLOT_LABEL_W = 22; // extra left margin for slot numbers
+  const svgWidth = SLOT_LABEL_W + totalRounds * (MATCH_W + ROUND_GAP) + ROUND_GAP;
 
   function toSvgCoords(clientX: number, clientY: number) {
     const rect = svgRef.current?.getBoundingClientRect();
     if (!rect) return { x: clientX, y: clientY };
-    return { x: clientX - rect.left, y: clientY - rect.top };
+    // Account for viewBox scaling: map client coords to SVG internal coords
+    const scaleX = svgWidth / rect.width;
+    const scaleY = svgHeight / rect.height;
+    return { x: (clientX - rect.left) * scaleX, y: (clientY - rect.top) * scaleY };
   }
 
   function getSlotAt(svgX: number, svgY: number): { matchId: string; slot: "red" | "blue" } | null {
     for (const match of matches) {
       if (match.round !== 0 || match.completed) continue;
       const x = getMatchX(match.round);
-      const y = getMatchY(match.round, match.position, roundSizes, svgHeight);
+      const y = getMatchY(match.round, match.position);
       if (svgX >= x && svgX <= x + MATCH_W) {
         if (svgY >= y && svgY <= y + MATCH_H / 2) return { matchId: match.id, slot: "red" };
         if (svgY > y + MATCH_H / 2 && svgY <= y + MATCH_H) return { matchId: match.id, slot: "blue" };
@@ -112,7 +129,9 @@ export function BracketView({
   ) {
     if (!onSwap) return;
     e.stopPropagation();
-    e.preventDefault();
+    // Do NOT call e.preventDefault() here — it would suppress the click event
+    // that triggers onSelectMatch on the parent <g> element.
+    // setPointerCapture is sufficient to handle drag without default prevention.
     const { x, y } = toSvgCoords(e.clientX, e.clientY);
     svgRef.current?.setPointerCapture(e.pointerId);
     setDrag({ matchId, slot, name, startClientX: e.clientX, startClientY: e.clientY, svgX: x, svgY: y, active: false, hoverTarget: null });
@@ -135,6 +154,12 @@ export function BracketView({
       if (target && (target.matchId !== drag.matchId || target.slot !== drag.slot)) {
         onSwap(drag.matchId, drag.slot, target.matchId, target.slot);
       }
+    } else if (!drag.active) {
+      // Tap on a R1 match (no drag happened) — select it.
+      // Pointer capture on the SVG can prevent click from bubbling through
+      // drag rects, so we handle selection here instead.
+      suppressNextClick.current = true;
+      onSelectMatch?.(drag.matchId);
     }
     setDrag(null);
   }
@@ -142,7 +167,7 @@ export function BracketView({
   const lines: React.ReactElement[] = [];
   for (const match of matches) {
     const x = getMatchX(match.round);
-    const y = getMatchY(match.round, match.position, roundSizes, svgHeight);
+    const y = getMatchY(match.round, match.position);
     const midY = y + MATCH_H / 2;
     const rightX = x + MATCH_W;
 
@@ -151,18 +176,28 @@ export function BracketView({
     );
     if (nextMatch) {
       const nx = getMatchX(nextMatch.round);
-      const ny = getMatchY(nextMatch.round, nextMatch.position, roundSizes, svgHeight);
+      const ny = getMatchY(nextMatch.round, nextMatch.position);
       const isRedSlot = nextMatch.red.fromMatchId === match.id;
       const targetY = ny + (isRedSlot ? MATCH_H * 0.25 : MATCH_H * 0.75);
       const midX = rightX + ROUND_GAP / 2;
 
       lines.push(
+        <g key={`line-${match.id}`}>
+          <path
+            d={`M ${rightX} ${midY} H ${midX} V ${targetY} H ${nx}`}
+            fill="none"
+            stroke="hsl(var(--border))"
+            strokeWidth={1.5}
+          />
+        </g>
+      );
+    } else {
+      lines.push(
         <path
-          key={`line-${match.id}`}
-          d={`M ${rightX} ${midY} H ${midX} V ${targetY} H ${nx}`}
+          key={`line-final-${match.id}`}
+          d={`M ${rightX} ${midY}`}
           fill="none"
-          stroke="hsl(var(--border))"
-          strokeWidth={1.5}
+          stroke="none"
         />
       );
     }
@@ -171,18 +206,19 @@ export function BracketView({
   const isDragging = drag?.active ?? false;
 
   return (
-    <div className="overflow-auto w-full">
+    <div className="overflow-x-auto w-full">
       {/* biome-ignore lint/a11y/noSvgWithoutTitle: game board SVG — decorative, not semantic content */}
       <svg
         ref={svgRef}
-        width={svgWidth}
-        height={svgHeight}
+        viewBox={`0 0 ${svgWidth} ${svgHeight}`}
+        width="100%"
         className="block"
         style={{ minWidth: svgWidth, cursor: isDragging ? "grabbing" : "default", touchAction: "none" }}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={() => setDrag(null)}
       >
+        <g transform={`translate(${SLOT_LABEL_W}, 0)`}>
         {Array.from({ length: totalRounds }, (_, round) => (
           <text
             key={`round-label-r${round}`}
@@ -200,7 +236,7 @@ export function BracketView({
 
         {matches.map((match) => {
           const x = getMatchX(match.round);
-          const y = getMatchY(match.round, match.position, roundSizes, svgHeight);
+          const y = getMatchY(match.round, match.position);
           const isCurrent = match.id === currentMatchId;
           const isCompleted = match.completed;
           const redIsWinner = isCompleted && match.winnerId === match.red.competitor?.id;
@@ -216,7 +252,10 @@ export function BracketView({
           return (
             <g
               key={match.id}
-              onClick={() => !isDragging && onSelectMatch?.(match.id)}
+              onClick={() => {
+                if (suppressNextClick.current) { suppressNextClick.current = false; return; }
+                if (!isDragging) onSelectMatch?.(match.id);
+              }}
               className={cn(onSelectMatch && !isDragging && "cursor-pointer")}
             >
               <rect
@@ -250,6 +289,17 @@ export function BracketView({
               >
                 {competitorName(match.red).substring(0, 22)}
               </text>
+              {/* Slot number left of red row */}
+              <text
+                x={x - 5} y={y + MATCH_H * 0.32}
+                textAnchor="end"
+                fontSize={11}
+                fontWeight="600"
+                fill="hsl(var(--muted-foreground)/0.6)"
+                pointerEvents="none"
+              >
+                {getSlotNumber(match.round, match.position, "red")}
+              </text>
               <text
                 x={x + 10} y={y + MATCH_H * 0.72}
                 fontSize={14}
@@ -258,6 +308,17 @@ export function BracketView({
                 opacity={blueIsDragSource && isDragging ? 0.25 : 1}
               >
                 {competitorName(match.blue).substring(0, 22)}
+              </text>
+              {/* Slot number left of blue row */}
+              <text
+                x={x - 5} y={y + MATCH_H * 0.72}
+                textAnchor="end"
+                fontSize={11}
+                fontWeight="600"
+                fill="hsl(var(--muted-foreground)/0.6)"
+                pointerEvents="none"
+              >
+                {getSlotNumber(match.round, match.position, "blue")}
               </text>
               {isCurrent && (
                 <circle cx={x + MATCH_W - 8} cy={y + 8} r={4} fill="hsl(var(--primary))" />
@@ -310,6 +371,7 @@ export function BracketView({
             </text>
           </g>
         )}
+      </g>
       </svg>
     </div>
   );

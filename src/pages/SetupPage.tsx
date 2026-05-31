@@ -464,6 +464,8 @@ export function SetupPage() {
   const {
     competitors,
     config,
+    fights,
+    phase,
     addCompetitor,
     removeCompetitor,
     clearCompetitors,
@@ -481,6 +483,8 @@ export function SetupPage() {
     useShallow((s) => ({
       competitors: s.competitors,
       config: s.config,
+      fights: s.fights,
+      phase: s.phase,
       addCompetitor: s.addCompetitor,
       removeCompetitor: s.removeCompetitor,
       clearCompetitors: s.clearCompetitors,
@@ -501,6 +505,11 @@ export function SetupPage() {
   const [cat, setCat] = useState<CatState>(EMPTY_CAT);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
   const showWelcome = competitors.length === 0 && !setupStarted && !welcomeDismissed;
+
+  // Confirmación de 2 pasos para no borrar categoría activa por accidente
+  // 0 = normal, 1 = primer aviso, 2 = segundo aviso (último paso antes de ejecutar)
+  const [confirmStart, setConfirmStart] = useState(0);
+  const categoryIsActive = phase === "fighting" && fights.length > 0;
 
   const [draftTournamentName, setDraftTournamentName] = useState(config.tournamentName ?? "");
   const [draftAlias, setDraftAlias] = useState("");
@@ -661,6 +670,7 @@ export function SetupPage() {
   function _fmt(s: number) { return s < 60 ? `${s} s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 
   const [dialogOpen, setDialogOpen] = useState(false);
+  const [clearConfirmOpen, setClearConfirmOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<FormData>(EMPTY_FORM);
   const [formError, setFormError] = useState("");
@@ -673,6 +683,13 @@ export function SetupPage() {
   function handleQuickAdd() {
     const name = quickName.trim();
     if (!name) return;
+    const duplicate = competitors.some(
+      (c) => c.name.trim().toLowerCase() === name.toLowerCase()
+    );
+    if (duplicate) {
+      toast.error(`Ya existe un competidor llamado "${name}"`);
+      return;
+    }
     addCompetitor({ name, team: quickTeam.trim() || undefined });
     setQuickName("");
     setQuickTeam("");
@@ -742,6 +759,13 @@ export function SetupPage() {
     const weightNum = form.weight ? Number(form.weight) : undefined;
     if (form.weight && (Number.isNaN(weightNum) || (weightNum ?? 0) <= 0)) {
       setFormError("El peso debe ser un numero positivo.");
+      return;
+    }
+    const duplicate = competitors.some(
+      (c) => c.id !== editingId && c.name.trim().toLowerCase() === form.name.trim().toLowerCase()
+    );
+    if (duplicate) {
+      setFormError(`Ya existe un competidor llamado "${form.name.trim()}".`);
       return;
     }
     if (editingId) {
@@ -917,6 +941,7 @@ export function SetupPage() {
             </h1>
             <div className="mt-2">
               <button
+                id="tour-cat-btn"
                 type="button"
                 onClick={() => setCatExpanded((v) => !v)}
                 className={cn(
@@ -937,21 +962,78 @@ export function SetupPage() {
             </div>
           </div>
           <div className="flex flex-col items-end gap-1.5 shrink-0">
-            <Button
-              onClick={() => void handleStart()}
-              disabled={!canStart}
-              size="xl"
-              className={cn(
-                "transition-all",
-                canStart
-                  ? "bg-green-600 hover:bg-green-500 text-white border-green-600 shadow-lg shadow-green-900/40 ring-2 ring-green-600/25"
-                  : "",
-              )}
-            >
-              <Swords className="size-5" />
-              Iniciar Categoría
-            </Button>
-            {canStart ? null : <p className="text-xs text-muted-foreground/60">{canStartHint}</p>}
+            {/* Paso 0: botón normal */}
+            {confirmStart === 0 && (
+              <Button
+                id="tour-start-btn"
+                onClick={() => {
+                  if (categoryIsActive) {
+                    setConfirmStart(1);
+                  } else {
+                    void handleStart();
+                  }
+                }}
+                disabled={!canStart}
+                size="xl"
+                className={cn(
+                  "transition-all",
+                  canStart
+                    ? "bg-green-600 hover:bg-green-500 text-white border-green-600 shadow-lg shadow-green-900/40 ring-2 ring-green-600/25"
+                    : "",
+                )}
+              >
+                <Swords className="size-5" />
+                Iniciar Categoría
+              </Button>
+            )}
+
+            {/* Paso 1: primer aviso */}
+            {confirmStart === 1 && (
+              <div className="rounded-xl border border-amber-600/60 bg-amber-950/40 px-4 py-3 space-y-3 max-w-xs text-right">
+                <div className="flex items-start gap-2 text-left">
+                  <span className="text-amber-400 text-xl leading-none mt-0.5">⚠</span>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-amber-300">Hay una categoría activa</p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Se borrarán todas las peleas y resultados de <span className="font-semibold text-foreground">{config.categoryName || "la categoría actual"}</span>. Esta acción no se puede deshacer.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button size="sm" variant="outline" onClick={() => setConfirmStart(0)}>
+                    Cancelar
+                  </Button>
+                  <Button size="sm" variant="destructive" onClick={() => setConfirmStart(2)}>
+                    Continuar igual
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Paso 2: confirmación final */}
+            {confirmStart === 2 && (
+              <div className="rounded-xl border border-destructive/70 bg-destructive/15 px-4 py-3 space-y-3 max-w-xs text-right">
+                <div className="flex items-start gap-2 text-left">
+                  <span className="text-destructive text-xl leading-none mt-0.5">🗑</span>
+                  <div className="space-y-1">
+                    <p className="text-sm font-bold text-destructive">¿Confirmar borrado?</p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Última oportunidad. Los <span className="font-semibold text-foreground">{fights.filter(f => f.completed).length} resultado{fights.filter(f => f.completed).length !== 1 ? "s" : ""}</span> cargados se perderán para siempre.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex gap-2 justify-end">
+                  <Button size="sm" variant="outline" onClick={() => setConfirmStart(0)}>
+                    Cancelar
+                  </Button>
+                  <Button size="sm" variant="destructive" className="font-bold" onClick={() => { setConfirmStart(0); void handleStart(); }}>
+                    Sí, borrar y empezar
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {canStart && confirmStart === 0 ? null : (!canStart && confirmStart === 0 ? <p className="text-xs text-muted-foreground/60">{canStartHint}</p> : null)}
           </div>
         </div>
 
@@ -1021,7 +1103,12 @@ export function SetupPage() {
                     <button
                       key={t}
                       type="button"
-                      onClick={() => setConfig({ matchType: t })}
+                      onClick={() => {
+                        const updates: Partial<typeof config> = { matchType: t };
+                        // Defaults por disciplina: tul → eliminación; sparring → round-robin
+                        updates.mode = t === "tul" ? "elimination" : "round-robin";
+                        setConfig(updates);
+                      }}
                       className={cn(
                         "rounded-full border font-medium transition-all duration-150",
                         (config.matchType ?? "sparring") === t
@@ -1102,7 +1189,7 @@ export function SetupPage() {
       )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <Card>
+        <Card id="tour-competitor-card">
           <CardHeader className="pb-2 pt-4 px-4">
             <CardTitle className="text-sm flex items-center gap-2">
               Lista
@@ -1116,6 +1203,17 @@ export function SetupPage() {
                 <FileSpreadsheet className="size-3.5" />
                 {importLoading ? "Cargando..." : "Importar Excel"}
               </button>
+              {competitors.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setClearConfirmOpen(true)}
+                  className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium border border-destructive/40 text-destructive/80 hover:bg-destructive/10 hover:text-destructive transition-colors"
+                  title="Vaciar lista de competidores (para cargar otra categoría)"
+                >
+                  <Trash2 className="size-3.5" />
+                  Vaciar lista
+                </button>
+              )}
               <input
                 ref={fileInputRef}
                 type="file"
@@ -1267,6 +1365,43 @@ export function SetupPage() {
           <DialogFooter>
             <Button variant="outline" onClick={() => setDialogOpen(false)}>Cancelar</Button>
             <Button onClick={handleSave}>Guardar</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Diálogo de confirmación: vaciar lista de competidores */}
+      <Dialog open={clearConfirmOpen} onOpenChange={setClearConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Trash2 className="size-5 text-destructive" />
+              Vaciar lista de competidores
+            </DialogTitle>
+          </DialogHeader>
+          <div className="py-2 space-y-3">
+            <p className="text-sm">
+              Se eliminarán los <strong>{competitors.length}</strong> competidores cargados para que puedas armar una nueva categoría.
+            </p>
+            <p className="text-xs text-amber-400/80">
+              ⚠ Los combates y resultados ya jugados se mantienen en Resultados. Esta acción solo limpia la lista de competidores actual.
+            </p>
+          </div>
+          <DialogFooter className="gap-2">
+            <Button variant="outline" onClick={() => setClearConfirmOpen(false)}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                const n = competitors.length;
+                clearCompetitors();
+                setClearConfirmOpen(false);
+                toast.success(`Lista vaciada — ${n} competidor${n !== 1 ? "es" : ""} eliminados`);
+              }}
+            >
+              <Trash2 className="size-4 mr-1" />
+              Vaciar lista
+            </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

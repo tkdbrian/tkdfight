@@ -104,6 +104,43 @@ export function compareScores(
   return 'draw'
 }
 
+// Per-judge tally + majority rule.
+// Each judge "favors" red, blue or ties based on their own accumulated points.
+// Winner = color with strict majority of judges (≥ floor(n/2)+1).
+// Without majority → draw (regardless of raw point sums).
+export function computeJudgeMajority(
+  rounds: RoundState[],
+  judgesCount: number
+): { redLeaders: number; blueLeaders: number; ties: number; winner: Competitor | 'draw' } {
+  const totals: Record<string, { red: number; blue: number }> = {}
+  for (const r of rounds) {
+    for (const ev of r.events) {
+      if (ev.judgeId === 'arbiter') continue
+      if (!totals[ev.judgeId]) totals[ev.judgeId] = { red: 0, blue: 0 }
+      totals[ev.judgeId][ev.competitor] += ev.value
+    }
+  }
+  let redLeaders = 0
+  let blueLeaders = 0
+  let ties = 0
+  for (const t of Object.values(totals)) {
+    if (t.red > t.blue) redLeaders++
+    else if (t.blue > t.red) blueLeaders++
+    else ties++
+  }
+  const accounted = redLeaders + blueLeaders + ties
+  if (accounted < judgesCount) ties += judgesCount - accounted
+  let winner: Competitor | 'draw'
+  // Regla consistente con mesa/banderines:
+  // - draw gana solo si es mayoría clara (ties > red y ties > blue)
+  // - si red y blue empatan, resultado draw
+  // - si no, gana el color con más jueces líderes
+  if (ties > redLeaders && ties > blueLeaders) winner = 'draw'
+  else if (redLeaders === blueLeaders) winner = 'draw'
+  else winner = redLeaders > blueLeaders ? 'red' : 'blue'
+  return { redLeaders, blueLeaders, ties, winner }
+}
+
 // "fewest deductions against" = competitor who had fewer deductions imposed on them
 // deductions are stored as negative, so "fewer deductions" = closer to 0 = higher value
 export function fewestDeductionsAgainst(

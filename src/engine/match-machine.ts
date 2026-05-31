@@ -12,6 +12,7 @@ import {
   calculateEventValue,
   checkDQ,
   compareScores,
+  computeJudgeMajority,
   computeRoundTotals,
   resolveTiebreak,
 } from './scoring'
@@ -179,8 +180,10 @@ export function endPhase(state: MatchState, rules: RuleSetSparring): MatchState 
 // ── Evaluation helpers ─────────────────────────────────────────────────────
 
 function evaluateMatch(state: MatchState, rules: RuleSetSparring): MatchState {
-  const totals = aggregateTotalsWithPenalties(state.rounds)
-  const winner = compareScores(totals)
+  // Regla: gana el color con mayoría estricta de jueces (≥ floor(n/2)+1).
+  // Sin mayoría → empate y se aplica cascada de desempate / golden point / jurado.
+  const judgesCount = rules.judgesCount ?? 1
+  const { winner } = computeJudgeMajority(state.rounds, judgesCount)
 
   if (winner !== 'draw') {
     return { ...state, phase: 'finished', result: { winner, reason: 'points' } }
@@ -223,8 +226,9 @@ function evaluateMatch(state: MatchState, rules: RuleSetSparring): MatchState {
 }
 
 function evaluateOvertime(state: MatchState, rules: RuleSetSparring): MatchState {
-  const totals = aggregateTotalsWithPenalties(state.rounds)
-  const winner = compareScores(totals)
+  // Misma regla en overtime: mayoría estricta de jueces.
+  const judgesCount = rules.judgesCount ?? 1
+  const { winner } = computeJudgeMajority(state.rounds, judgesCount)
 
   if (winner !== 'draw') {
     return { ...state, phase: 'finished', result: { winner, reason: 'overtime_points' } }

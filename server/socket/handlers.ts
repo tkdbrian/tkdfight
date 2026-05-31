@@ -42,25 +42,23 @@ function tallyFlagWinner(votes: Map<string, string>, n: number): { red: number; 
     else if (v === 'draw') draw++
   }
   let winner: FightWinner
-  if (red > blue && red > draw) winner = 'red'
-  else if (blue > red && blue > draw) winner = 'blue'
-  else if (draw > red && draw > blue) winner = 'draw'
-  else if (red === blue) winner = 'draw'   // empate rojo-azul → empate
-  else winner = red > blue ? 'red' : 'blue' // color gana vs empate en empate
+  // Regla de mesa:
+  // 1) Si empate es mayoría clara (draw > red y draw > blue), gana empate.
+  // 2) Si rojo y azul empatan entre sí, gana empate.
+  // 3) Si no, gana el color con más votos entre rojo/azul (aunque empate tenga el mismo valor).
+  if (draw > red && draw > blue) winner = 'draw'
+  else if (red === blue) winner = 'draw'
+  else winner = red > blue ? 'red' : 'blue'
   return { red, blue, draw, winner }
 }
 
-function roundsWinner(flags: Array<{ red: number; blue: number; winner: string }>): FightWinner {
+function roundsWinner(flags: Array<{ red: number; blue: number; draw?: number; winner: string }>): FightWinner {
   const redR = flags.filter(r => r.winner === 'red').length
   const blueR = flags.filter(r => r.winner === 'blue').length
-  if (redR > blueR) return 'red'
-  if (blueR > redR) return 'blue'
-  // Rounds empatados — desempate por total de votos de banderas
-  const totalRed = flags.reduce((s, r) => s + r.red, 0)
-  const totalBlue = flags.reduce((s, r) => s + r.blue, 0)
-  if (totalRed > totalBlue) return 'red'
-  if (totalBlue > totalRed) return 'blue'
-  return 'draw'
+  const drawR = flags.filter(r => r.winner === 'draw').length
+  if (drawR > redR && drawR > blueR) return 'draw'
+  if (redR === blueR) return 'draw'
+  return redR > blueR ? 'red' : 'blue'
 }
 
 export function registerSocketHandlers(io: Server) {
@@ -182,19 +180,20 @@ export function registerSocketHandlers(io: Server) {
     socket.on('match:confirmPenalties', () => {
       if (!state.matchState || !state.rules) return
       if (state.matchState.phase !== 'penalties') return
-      // Winner = majority of judge leads (same principle as flag voting).
-      // This ensures penalties never override the "how many judges gave the win" rule.
+      // Misma regla que banderines: empate solo si draw/tie es mayoría clara,
+      // o si rojo y azul están empatados entre sí.
       const jt = computeJudgeTotals()
       const judgeValues = Object.values(jt)
-      let redLeads = 0, blueLeads = 0
+      let redLeads = 0, blueLeads = 0, tiedLeads = 0
       for (const t of judgeValues) {
         if (t.red > t.blue) redLeads++
         else if (t.blue > t.red) blueLeads++
+        else tiedLeads++
       }
       let overall: FightWinner
-      if (redLeads > blueLeads) overall = 'red'
-      else if (blueLeads > redLeads) overall = 'blue'
-      else overall = 'draw'
+      if (tiedLeads > redLeads && tiedLeads > blueLeads) overall = 'draw'
+      else if (redLeads === blueLeads) overall = 'draw'
+      else overall = redLeads > blueLeads ? 'red' : 'blue'
       state.matchState = {
         ...state.matchState,
         phase: 'finished',
@@ -348,9 +347,9 @@ export function registerSocketHandlers(io: Server) {
       // Only allow flag confirmation during rest phase (or pending jury decision in points mode)
       const msPhase = state.matchState.phase
       if (msPhase !== 'rest' && !(msPhase === 'finished' && state.matchState.pendingJuryDecision)) return
-      const { red, blue, winner } = tallyFlagWinner(state.judgeVotes, state.rules.judgesCount)
+      const { red, blue, draw, winner } = tallyFlagWinner(state.judgeVotes, state.rules.judgesCount)
       const votes = Object.fromEntries(state.judgeVotes)
-      state.roundFlags.push({ red, blue, winner, votes })
+      state.roundFlags.push({ red, blue, draw, winner, votes })
       state.judgeVotes.clear()
       const totalRounds = state.rules.rounds.count
       if (state.roundFlags.length >= totalRounds) {
@@ -438,12 +437,20 @@ function saveFallo(winnerOverride?: 'red' | 'blue' | 'draw') {
   let winner: 'red' | 'blue' | 'draw'
   if (winnerOverride) {
     winner = winnerOverride
-  } else if (redTotal > blueTotal) {
-    winner = 'red'
-  } else if (blueTotal > redTotal) {
-    winner = 'blue'
+  } else if (state.matchState?.result?.winner) {
+    // Confiar en el motor: ya aplicó la mayoría estricta de jueces.
+    winner = state.matchState.result.winner
   } else {
-    winner = 'draw'
+    // Fallback: misma regla de mesa en base a jueces líderes.
+    let redLeads = 0, blueLeads = 0, tiedLeads = 0
+    for (const v of Object.values(jt)) {
+      if (v.red > v.blue) redLeads++
+      else if (v.blue > v.red) blueLeads++
+      else tiedLeads++
+    }
+    if (tiedLeads > redLeads && tiedLeads > blueLeads) winner = 'draw'
+    else if (redLeads === blueLeads) winner = 'draw'
+    else winner = redLeads > blueLeads ? 'red' : 'blue'
   }
   // Accumulate flags from all rounds
   const flagsRed = state.roundFlags.reduce((s, r) => s + r.red, 0)

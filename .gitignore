@@ -13,3 +13,8 @@ data-*/*.sqlite3
 *.log
 playwright-report/
 test-results/
+
+bin/
+TKD_Torneo_2026.zip
+data-t1     /
+data-t2 /

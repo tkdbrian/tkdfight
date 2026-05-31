@@ -104,10 +104,10 @@ test.describe("TKD Tournament - Flujo Completo", () => {
 
     // exact: true evita strict mode violation ("1" no debe coincidir con "1 min", "1 round", etc.)
     for (const count of ["1", "3", "4", "5"]) {
-      await expect(page.getByRole("button", { name: count, exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: count, exact: true }).first()).toBeVisible();
     }
 
-    // "1:30 min" es el formato real del botón (la regex /\d+ (s|min)/ no lo matcheaba)
-    await expect(page.getByRole("button", { name: "1:30 min", exact: true })).toBeVisible();
+    // "1:30" es el label real del botón de duración
+    await expect(page.getByRole("button", { name: "1:30", exact: true })).toBeVisible();
   });
 });

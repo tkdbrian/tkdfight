@@ -29,6 +29,7 @@ export function BracketPage() {
     setBracket,
     setFights,
     setCurrentFightIndex,
+    appendFightAndSelect,
     setPhase,
     swapBracketSlots,
     addFinalFights,
@@ -43,6 +44,7 @@ export function BracketPage() {
       setBracket: s.setBracket,
       setFights: s.setFights,
       setCurrentFightIndex: s.setCurrentFightIndex,
+      appendFightAndSelect: s.appendFightAndSelect,
       setPhase: s.setPhase,
       swapBracketSlots: s.swapBracketSlots,
       addFinalFights: s.addFinalFights,
@@ -89,6 +91,34 @@ export function BracketPage() {
     const newFights = getActiveBracketFights(bracketMatches, fights);
     if (newFights.length === 0) return;
     setFights([...fights, ...newFights]);
+  }
+
+  // Start (or navigate to) a specific bracket match fight
+  function handleStartMatchFight(matchId: string) {
+    const match = bracketMatches.find((m) => m.id === matchId);
+    if (!match || !match.red.competitor || !match.blue.competitor || match.completed) return;
+
+    // Already has a FightEntry? Just navigate to it.
+    const existingIdx = fights.findIndex((f) => f.bracketMatchId === matchId);
+    if (existingIdx >= 0) {
+      setCurrentFightIndex(existingIdx);
+      setPhase("fighting");
+      navigate("/fight");
+      return;
+    }
+
+    // Create a new FightEntry for this specific match (atomic: appends + selects in one set()).
+    appendFightAndSelect({
+      id: crypto.randomUUID(),
+      red: match.red.competitor,
+      blue: match.blue.competitor,
+      completed: false,
+      bracketRound: match.round,
+      bracketPosition: match.position,
+      bracketMatchId: match.id,
+    });
+    setPhase("fighting");
+    navigate("/fight");
   }
 
   // ── Double bracket: final A vs B ──────────────────────────────────────────
@@ -209,7 +239,7 @@ export function BracketPage() {
 
       {/* Stats strip */}
       {bracketMatches.length > 0 && (
-        <div className="flex gap-3 flex-wrap text-sm text-muted-foreground">
+        <div className="flex gap-3 flex-wrap text-sm text-muted-foreground items-center">
           {isDoubleMode ? (
             <>
               <span>Grilla A: {matchesA.filter((m) => m.completed).length}/{matchesA.length}</span>
@@ -225,6 +255,19 @@ export function BracketPage() {
               <span>{completedMatches}/{totalMatches} combates completados</span>
               <span>·</span>
               <span>{bracketSeeds.filter((s) => s !== null).length} competidores activos</span>
+              <span>·</span>
+              {Array.from({ length: totalRounds }, (_, r) => {
+                const rm = bracketMatches.filter((m) => m.round === r);
+                const done = rm.filter((m) => m.completed).length;
+                return (
+                  <span key={r} className={cn(
+                    "px-2 py-0.5 rounded text-xs border",
+                    done === rm.length ? "border-green-700/60 text-green-400 bg-green-950/30" : "border-border"
+                  )}>
+                    {roundLabel(r, totalRounds)} {done}/{rm.length}
+                  </span>
+                );
+              })}
             </>
           )}
         </div>
@@ -251,7 +294,7 @@ export function BracketPage() {
             onSelectMatch={setSelectedMatchId}
             onSwap={swapBracketSlots}
             totalRounds={matchesA.length > 0 ? Math.max(...matchesA.map((m) => m.round)) + 1 : 0}
-            fights={fights}
+            onStartFight={handleStartMatchFight}
           />
           <BracketSection
             label="Grilla B"
@@ -261,12 +304,15 @@ export function BracketPage() {
             onSelectMatch={setSelectedMatchId}
             onSwap={swapBracketSlots}
             totalRounds={matchesB.length > 0 ? Math.max(...matchesB.map((m) => m.round)) + 1 : 0}
-            fights={fights}
+            onStartFight={handleStartMatchFight}
           />
         </div>
       ) : (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          <div className="lg:col-span-2">
+        <div className={cn(
+          "grid grid-cols-1 gap-4",
+          selectedMatch && "lg:grid-cols-3"
+        )}>
+          <div className={cn(selectedMatch ? "lg:col-span-2" : "col-span-full")}>
             <Card>
               <CardContent className="p-4 overflow-x-auto">
                 <BracketView
@@ -280,41 +326,16 @@ export function BracketPage() {
             </Card>
           </div>
 
-          <div className="space-y-3">
-            {selectedMatch ? (
+          {selectedMatch && (
+            <div className="space-y-3">
               <MatchDetailCard
                 match={selectedMatch}
                 competitors={competitors}
                 totalRounds={totalRounds}
+                onStartFight={handleStartMatchFight}
               />
-            ) : (
-              <Card>
-                <CardContent className="py-8 text-center text-sm text-muted-foreground">
-                  Seleccioná un match para ver detalles
-                </CardContent>
-              </Card>
-            )}
-
-            <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Rondas</CardTitle>
-              </CardHeader>
-              <CardContent className="pb-4 space-y-1">
-                {Array.from({ length: totalRounds }, (_, r) => {
-                  const roundMatches = bracketMatches.filter((m) => m.round === r);
-                  const done = roundMatches.filter((m) => m.completed).length;
-                  return (
-                    <div key={r} className="flex items-center justify-between text-sm">
-                      <span className="text-muted-foreground">{roundLabel(r, totalRounds)}</span>
-                      <span className={cn(done === roundMatches.length ? "text-green-400" : "")}>
-                        {done}/{roundMatches.length}
-                      </span>
-                    </div>
-                  );
-                })}
-              </CardContent>
-            </Card>
-          </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -323,7 +344,7 @@ export function BracketPage() {
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 
-import type { BracketMatch, CompetitorEntry, FightEntry } from "@/store/tournament";
+import type { BracketMatch, CompetitorEntry } from "@/store/tournament";
 
 function BracketSection({
   label,
@@ -333,6 +354,7 @@ function BracketSection({
   onSelectMatch,
   onSwap,
   totalRounds,
+  onStartFight,
 }: Readonly<{
   label: string;
   matches: BracketMatch[];
@@ -341,7 +363,7 @@ function BracketSection({
   onSelectMatch: (id: string) => void;
   onSwap: (aMatchId: string, aSlot: "red" | "blue", bMatchId: string, bSlot: "red" | "blue") => void;
   totalRounds: number;
-  fights: FightEntry[];
+  onStartFight: (matchId: string) => void;
 }>) {
   const selectedMatch = matches.find((m) => m.id === selectedMatchId);
 
@@ -356,8 +378,11 @@ function BracketSection({
           {matches.filter((m) => m.completed).length}/{matches.length} combates
         </span>
       </h2>
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2">
+      <div className={cn(
+        "grid grid-cols-1 gap-4",
+        selectedMatch && "lg:grid-cols-3"
+      )}>
+        <div className={cn(selectedMatch ? "lg:col-span-2" : "col-span-full")}>
           <Card>
             <CardContent className="p-4 overflow-x-auto">
               <BracketView
@@ -370,40 +395,16 @@ function BracketSection({
             </CardContent>
           </Card>
         </div>
-        <div className="space-y-3">
-          {selectedMatch ? (
+        {selectedMatch && (
+          <div className="space-y-3">
             <MatchDetailCard
               match={selectedMatch}
               competitors={competitors}
               totalRounds={totalRounds}
+              onStartFight={onStartFight}
             />
-          ) : (
-            <Card>
-              <CardContent className="py-6 text-center text-sm text-muted-foreground">
-                Seleccioná un match para ver detalles
-              </CardContent>
-            </Card>
-          )}
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm">Rondas</CardTitle>
-            </CardHeader>
-            <CardContent className="pb-4 space-y-1">
-              {Array.from({ length: totalRounds }, (_, r) => {
-                const roundMatches = matches.filter((m) => m.round === r);
-                const done = roundMatches.filter((m) => m.completed).length;
-                return (
-                  <div key={r} className="flex items-center justify-between text-sm">
-                    <span className="text-muted-foreground">{roundLabel(r, totalRounds)}</span>
-                    <span className={cn(done === roundMatches.length ? "text-green-400" : "")}>
-                      {done}/{roundMatches.length}
-                    </span>
-                  </div>
-                );
-              })}
-            </CardContent>
-          </Card>
-        </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -413,11 +414,14 @@ function MatchDetailCard({
   match,
   competitors,
   totalRounds,
+  onStartFight,
 }: Readonly<{
   match: BracketMatch;
   competitors: CompetitorEntry[];
   totalRounds: number;
+  onStartFight: (matchId: string) => void;
 }>) {
+  const canFight = !match.completed && !!match.red.competitor && !!match.blue.competitor;
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -452,8 +456,17 @@ function MatchDetailCard({
             </Badge>
           </div>
         )}
-        {!match.completed && match.red.competitor && match.blue.competitor && (
-          <p className="text-xs text-muted-foreground text-center">Pendiente de combate</p>
+        {canFight && (
+          <Button
+            className="w-full gap-2"
+            onClick={() => onStartFight(match.id)}
+          >
+            <Play className="size-4" />
+            Pelear ahora
+          </Button>
+        )}
+        {!canFight && !match.completed && (
+          <p className="text-xs text-muted-foreground text-center">Esperando competidores</p>
         )}
       </CardContent>
     </Card>

@@ -238,7 +238,7 @@ export interface MatchSnapshotData {
   match: Record<string, any>
   // biome-ignore lint/suspicious/noExplicitAny: loose types — JSON round-trip
   rules: Record<string, any>
-  roundFlags: Array<{ red: number; blue: number; winner: string; votes: Record<string, string> }>
+  roundFlags: Array<{ red: number; blue: number; draw?: number; winner: string; votes: Record<string, string> }>
 }
 
 export function saveMatchSnapshot(fightId: string, tournamentId: number, data: MatchSnapshotData): void {

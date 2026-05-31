@@ -221,7 +221,7 @@ export function SettingsPage() {
       </div>
 
       {/* ── Configuración rápida — afecta todos los ajustes ── */}
-      <div className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3 space-y-3">
+      <div id="tour-settings-presets" className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3 space-y-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">⚡ Configuración rápida</p>
         <div className="space-y-1.5">
           <Label className="text-xs text-muted-foreground">Copa Danes 26</Label>
@@ -319,7 +319,7 @@ export function SettingsPage() {
         )}
       </div>
 
-      <Tabs defaultValue="general" className="space-y-4">
+      <Tabs id="tour-settings-tabs" defaultValue="general" className="space-y-4">
         <TabsList className="grid w-full grid-cols-3">
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="elimination">Final y desempate</TabsTrigger>

@@ -29,6 +29,10 @@ export interface FightEntry {
   groupId?: string;
   flagsRed?: number;
   flagsBlue?: number;
+  warningsRed?: number;
+  warningsBlue?: number;
+  foulsRed?: number;
+  foulsBlue?: number;
   isTiebreakExtra?: boolean;
   tiebreakerSeconds?: number;
   isFinalFight?: boolean;
@@ -94,15 +98,17 @@ interface TournamentState {
   clearCompetitors: () => void;
   updateCompetitor: (id: string, data: Partial<Omit<CompetitorEntry, "id">>) => void;
   setFights: (fights: FightEntry[]) => void;
+  appendFightAndSelect: (fight: FightEntry) => void;
   setGroups: (groups: TournamentGroup[]) => void;
   setCurrentFightIndex: (index: number) => void;
-  completeFight: (fightId: string, winner: "red" | "blue" | "draw", reason: string, flagsRed?: number, flagsBlue?: number) => void;
+  completeFight: (fightId: string, winner: "red" | "blue" | "draw", reason: string, stats?: { flagsRed?: number; flagsBlue?: number; warningsRed?: number; warningsBlue?: number; foulsRed?: number; foulsBlue?: number }) => void;
   resetFight: (fightId: string) => void;
   setBracket: (matches: BracketMatch[], seeds: (string | null)[]) => void;
   updateBracketSeed: (position: number, competitorId: string | null) => void;
   addTiebreakFights: (fights: FightEntry[]) => void;
   addFinalFights: (fights: FightEntry[]) => void;
   addImportedFights: (fights: FightEntry[]) => void;
+  addGuestFight: (redName: string, blueName: string, categoryName: string, originRing: string) => void;
   completeBracketMatch: (matchId: string, winnerId: string) => void;
   swapBracketSlots: (aMatchId: string, aSlot: "red" | "blue", bMatchId: string, bSlot: "red" | "blue") => void;
   postponeFight: (fightId: string) => void;
@@ -162,14 +168,17 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
 
   setFights: (fights) => set({ fights, currentFightIndex: 0 }),
 
+  appendFightAndSelect: (fight) =>
+    set((s) => ({ fights: [...s.fights, fight], currentFightIndex: s.fights.length })),
+
   setGroups: (groups) => set({ groups }),
 
   setCurrentFightIndex: (index) => set({ currentFightIndex: index }),
 
-  completeFight: (fightId, winner, winReason, flagsRed, flagsBlue) =>
+  completeFight: (fightId, winner, winReason, stats) =>
     set((s) => ({
       fights: s.fights.map((f) =>
-        f.id === fightId ? { ...f, winner, winReason, completed: true, flagsRed, flagsBlue } : f
+        f.id === fightId ? { ...f, winner, winReason, completed: true, ...stats } : f
       ),
     })),
 
@@ -220,6 +229,20 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
       const toAdd = newFights.filter((f) => !existingIds.has(f.id));
       if (toAdd.length === 0) return {};
       return { fights: [...s.fights, ...toAdd] };
+    }),
+
+  addGuestFight: (redName, blueName, categoryName, originRing) =>
+    set((s) => {
+      const slug = categoryName.trim().toLowerCase().replace(/\s+/g, "-");
+      const fight: FightEntry = {
+        id: crypto.randomUUID(),
+        red: { id: crypto.randomUUID(), name: redName.trim() },
+        blue: { id: crypto.randomUUID(), name: blueName.trim() },
+        completed: false,
+        groupId: `EXT:${slug}`,
+        importedFrom: originRing.trim(),
+      };
+      return { fights: [...s.fights, fight] };
     }),
 
   completeBracketMatch: (matchId, winnerId) =>

@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { useTournamentStore, type FightEntry, type CompetitorEntry } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
 import { generateTiebreakFights, generateFinalFights } from "@/lib/bracket";
+import { POINTS_WIN, POINTS_DRAW } from "@/rules/round-robin";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -30,8 +31,8 @@ interface StandingRow {
   losses: number;
   points: number;       // 3×wins + 1×draws
   flagsFor: number;
-  flagsAgainst: number;
-  flagDiff: number;
+  foulsAgainst: number;
+  warnings: number;
 }
 
 // ── Logic ──────────────────────────────────────────────────────────────────
@@ -47,15 +48,15 @@ function computeGroupStandings(fights: FightEntry[]): Map<string, StandingRow[]>
     }
     let row = group.get(id);
     if (!row) {
-      row = { id, name, team, played: 0, wins: 0, draws: 0, losses: 0, points: 0, flagsFor: 0, flagsAgainst: 0, flagDiff: 0 };
+      row = { id, name, team, played: 0, wins: 0, draws: 0, losses: 0, points: 0, flagsFor: 0, foulsAgainst: 0, warnings: 0 };
       group.set(id, row);
     }
     return row;
   }
 
-  // Only count regular (non-tiebreak) fights for main standings
+  // Only count regular (non-tiebreak / non-golden-point) fights for main standings
   for (const f of fights) {
-    if (f.isTiebreakExtra) continue;
+    if (f.isTiebreakExtra || f.isGoldenPointFight) continue;
     const gid = f.groupId ?? "G1";
     ensureRow(gid, f.red.id, f.red.name, f.red.team);
     ensureRow(gid, f.blue.id, f.blue.name, f.blue.team);
@@ -72,30 +73,35 @@ function computeGroupStandings(fights: FightEntry[]): Map<string, StandingRow[]>
     const fr = f.flagsRed ?? 0;
     const fb = f.flagsBlue ?? 0;
     red.flagsFor += fr;
-    red.flagsAgainst += fb;
     blue.flagsFor += fb;
-    blue.flagsAgainst += fr;
+    // Puntos en contra (fouls received by each side)
+    red.foulsAgainst += f.foulsRed ?? 0;
+    blue.foulsAgainst += f.foulsBlue ?? 0;
+    // Warnings
+    red.warnings += f.warningsRed ?? 0;
+    blue.warnings += f.warningsBlue ?? 0;
 
     if (f.winner === "red") {
-      red.wins++;   red.points += 3;
+      red.wins++;   red.points += POINTS_WIN;
       blue.losses++;
     } else if (f.winner === "blue") {
-      blue.wins++;  blue.points += 3;
+      blue.wins++;  blue.points += POINTS_WIN;
       red.losses++;
     } else {
-      red.draws++;  red.points += 1;
-      blue.draws++; blue.points += 1;
+      red.draws++;  red.points += POINTS_DRAW;
+      blue.draws++; blue.points += POINTS_DRAW;
     }
   }
 
-  // Recalculate flagDiff and sort each group
+  // Sort each group
   const result = new Map<string, StandingRow[]>();
   for (const [gid, map] of byGroup) {
-    const rows = [...map.values()].map((r) => ({ ...r, flagDiff: r.flagsFor - r.flagsAgainst }));
+    const rows = [...map.values()];
     rows.sort((a, b) => {
       if (b.points !== a.points) return b.points - a.points;
       if (b.flagsFor !== a.flagsFor) return b.flagsFor - a.flagsFor;
-      return b.flagDiff - a.flagDiff;
+      if (a.foulsAgainst !== b.foulsAgainst) return a.foulsAgainst - b.foulsAgainst;
+      return a.warnings - b.warnings;
     });
     result.set(gid, rows);
   }
@@ -112,7 +118,8 @@ function detectTiebreaks(rows: StandingRow[]): string[] {
         r !== top &&
         r.points === top.points &&
         r.flagsFor === top.flagsFor &&
-        r.flagDiff === top.flagDiff,
+        r.foulsAgainst === top.foulsAgainst &&
+        r.warnings === top.warnings,
     )
     .map((r) => r.id)
     .concat(top.id);
@@ -125,14 +132,17 @@ interface TiebreakInfo {
   tiedIds: string[];
   fights: FightEntry[];
   resolvedOrder?: string[];
+  goldenPoint?: boolean; // true when the next fight must be punto de oro
 }
 
-function computeTiebreakOrder(tbFights: FightEntry[]): string[] {
-  const stats = new Map<string, { points: number; flagsFor: number; flagDiff: number }>();
+type TbStat = { points: number; flagsFor: number; foulsAgainst: number; warnings: number };
+
+function buildTbStats(tbFights: FightEntry[]): Map<string, TbStat> {
+  const stats = new Map<string, TbStat>();
 
   for (const f of tbFights) {
     for (const id of [f.red.id, f.blue.id]) {
-      if (!stats.has(id)) stats.set(id, { points: 0, flagsFor: 0, flagDiff: 0 });
+      if (!stats.has(id)) stats.set(id, { points: 0, flagsFor: 0, foulsAgainst: 0, warnings: 0 });
     }
     if (!f.completed) continue;
 
@@ -143,25 +153,34 @@ function computeTiebreakOrder(tbFights: FightEntry[]): string[] {
     const fr = f.flagsRed ?? 0;
     const fb = f.flagsBlue ?? 0;
     rs.flagsFor += fr;
-    rs.flagDiff += fr - fb;
+    rs.foulsAgainst += f.foulsRed ?? 0;
     bs.flagsFor += fb;
-    bs.flagDiff += fb - fr;
+    bs.foulsAgainst += f.foulsBlue ?? 0;
+    rs.warnings += f.warningsRed ?? 0;
+    bs.warnings += f.warningsBlue ?? 0;
 
     if (f.winner === "red") {
-      rs.points += 3;
+      rs.points += POINTS_WIN;
     } else if (f.winner === "blue") {
-      bs.points += 3;
+      bs.points += POINTS_WIN;
     } else {
-      rs.points += 1;
-      bs.points += 1;
+      rs.points += POINTS_DRAW;
+      bs.points += POINTS_DRAW;
     }
   }
+
+  return stats;
+}
+
+function computeTiebreakOrder(tbFights: FightEntry[]): string[] {
+  const stats = buildTbStats(tbFights);
 
   return [...stats.entries()]
     .sort(([, a], [, b]) => {
       if (b.points !== a.points) return b.points - a.points;
       if (b.flagsFor !== a.flagsFor) return b.flagsFor - a.flagsFor;
-      return b.flagDiff - a.flagDiff;
+      if (a.foulsAgainst !== b.foulsAgainst) return a.foulsAgainst - b.foulsAgainst;
+      return a.warnings - b.warnings;
     })
     .map(([id]) => id);
 }
@@ -175,12 +194,12 @@ function getTiebreakInfo(
   if (tiedIds.length < 2) return { status: "none", tiedIds: [], fights: [] };
 
   const tbFights = allFights.filter(
-    (f) => f.isTiebreakExtra && f.groupId === groupId,
+    (f) => (f.isTiebreakExtra || f.isGoldenPointFight) && f.groupId === groupId,
   );
 
   if (tbFights.length === 0) {
     const groupFights = allFights.filter(
-      (f) => !f.isTiebreakExtra && f.groupId === groupId,
+      (f) => !f.isTiebreakExtra && !f.isGoldenPointFight && f.groupId === groupId,
     );
     const allComplete = groupFights.every((f) => f.completed);
     return {
@@ -195,11 +214,58 @@ function getTiebreakInfo(
     return { status: "in_progress", tiedIds, fights: tbFights };
   }
 
+  // Caso crítico: desempate entre 2 competidores.
+  // Un empate NO puede resolverse por banderas: se necesita ganador real.
+  if (tiedIds.length === 2) {
+    const completedDraws = tbFights.filter((f) => f.completed && f.winner === "draw").length;
+    const decisive = [...tbFights]
+      .filter((f) => f.completed && (f.winner === "red" || f.winner === "blue"))
+      .at(-1);
+
+    if (!decisive) {
+      return {
+        status: "needed",
+        tiedIds,
+        fights: tbFights,
+        goldenPoint: completedDraws >= 1,
+      };
+    }
+
+    const winnerId = decisive.winner === "red" ? decisive.red.id : decisive.blue.id;
+    const loserId = decisive.winner === "red" ? decisive.blue.id : decisive.red.id;
+    return {
+      status: "resolved",
+      tiedIds,
+      fights: tbFights,
+      resolvedOrder: [winnerId, loserId],
+    };
+  }
+
+  const resolvedOrder = computeTiebreakOrder(tbFights);
+
+  // Check if tie is actually broken — if top 2 are still equal, need another fight
+  if (resolvedOrder.length >= 2) {
+    const stats = buildTbStats(tbFights);
+    const s1 = stats.get(resolvedOrder[0]);
+    const s2 = stats.get(resolvedOrder[1]);
+    const stillTied =
+      s1?.points === s2?.points &&
+      s1?.flagsFor === s2?.flagsFor &&
+      s1?.foulsAgainst === s2?.foulsAgainst &&
+      s1?.warnings === s2?.warnings &&
+      s1 != null && s2 != null;
+    if (stillTied) {
+      // Count completed draws to determine if next fight must be golden point
+      const completedDraws = tbFights.filter((f) => f.completed && f.winner === "draw").length;
+      return { status: "needed", tiedIds, fights: tbFights, goldenPoint: completedDraws >= 1 };
+    }
+  }
+
   return {
     status: "resolved",
     tiedIds,
     fights: tbFights,
-    resolvedOrder: computeTiebreakOrder(tbFights),
+    resolvedOrder,
   };
 }
 
@@ -223,11 +289,11 @@ function applyTiebreakOrder(
 }
 
 function exportCsv(byGroup: Map<string, StandingRow[]>, categoryName: string) {
-  const header = "Llave,Pos,Nombre,Equipo,PJ,PG,PE,PP,Pts,BF,BC,Dif";
+  const header = "Llave,Pos,Nombre,Equipo,PJ,PG,PE,PP,Pts,Banderas,PtContra,Adv";
   const rows: string[] = [];
   for (const [gid, standings] of byGroup) {
     for (const [i, s] of standings.entries()) {
-      rows.push([gid, i + 1, `"${s.name}"`, `"${s.team ?? ""}"`, s.played, s.wins, s.draws, s.losses, s.points, s.flagsFor, s.flagsAgainst, s.flagDiff].join(","));
+      rows.push([gid, i + 1, `"${s.name}"`, `"${s.team ?? ""}"`, s.played, s.wins, s.draws, s.losses, s.points, s.flagsFor, s.foulsAgainst, s.warnings].join(","));
     }
   }
   const csv = [header, ...rows].join("\n");
@@ -244,14 +310,8 @@ function exportCsv(byGroup: Map<string, StandingRow[]>, categoryName: string) {
 
 const MEDALS = ["🥇", "🥈", "🥉"] as const;
 
-function flagDiffClass(diff: number): string {
-  if (diff > 0) return "text-green-400";
-  if (diff < 0) return "text-red-400";
-  return "text-muted-foreground";
-}
-
 function GroupCard({
-  groupId, rows, tiebreak, onResolve, label, groupFights,
+  groupId, rows, tiebreak, onResolve, label, groupFights, finalistId, isTul, eliminationMode,
 }: Readonly<{
   groupId: string;
   rows: StandingRow[];
@@ -259,12 +319,69 @@ function GroupCard({
   onResolve: () => void;
   label?: string;
   groupFights?: FightEntry[];
+  finalistId?: string;
+  isTul?: boolean;
+  /** En eliminación pura (ej. Fase Final): si el desempate quedó resuelto,
+   *  el ganador del desempate cuenta como ganador real del combate y las peleas
+   *  de desempate no se muestran como peleas aparte. */
+  eliminationMode?: boolean;
 }>) {
   const displayRows = tiebreak.status === "resolved" && tiebreak.resolvedOrder
     ? applyTiebreakOrder(rows, tiebreak.tiedIds, tiebreak.resolvedOrder)
     : rows;
 
   const tbCompleted = tiebreak.fights.filter((f) => f.completed).length;
+
+  // Full stats for display — tiebreak/GP sequences count as 1 jugado, excluded from W/D/L/points/flags/fouls
+  // En eliminationMode: el desempate es detalle interno y el ganador del desempate cuenta como
+  // ganador real del combate (3 pts, 0 empate) en vez de empate.
+  const fullStats = React.useMemo(() => {
+    const map = new Map<string, StandingRow>();
+    for (const row of rows) {
+      map.set(row.id, { ...row, played: 0, wins: 0, draws: 0, losses: 0, points: 0, flagsFor: 0, foulsAgainst: 0, warnings: 0 });
+    }
+    const tbWinnerId =
+      eliminationMode && tiebreak.status === "resolved" && tiebreak.resolvedOrder
+        ? tiebreak.resolvedOrder[0]
+        : null;
+    const countedTbSeqs = new Set<string>();
+    for (const f of (groupFights ?? [])) {
+      if (!f.completed) continue;
+      const red = map.get(f.red.id);
+      const blue = map.get(f.blue.id);
+      if (!red || !blue) continue;
+      // Tiebreak/GP: en eliminación no se cuentan; en grupos cuenta toda la secuencia como 1 jugado.
+      if (f.isTiebreakExtra || f.isGoldenPointFight) {
+        if (eliminationMode) continue;
+        const seqKey = `${f.groupId ?? ""}|${[f.red.id, f.blue.id].sort().join("|")}`;
+        if (!countedTbSeqs.has(seqKey)) {
+          countedTbSeqs.add(seqKey);
+          red.played++; blue.played++;
+        }
+        continue;
+      }
+      red.played++; blue.played++;
+      red.flagsFor += f.flagsRed ?? 0;
+      blue.flagsFor += f.flagsBlue ?? 0;
+      red.foulsAgainst += f.foulsRed ?? 0;
+      blue.foulsAgainst += f.foulsBlue ?? 0;
+      red.warnings += f.warningsRed ?? 0;
+      blue.warnings += f.warningsBlue ?? 0;
+      // Si fue empate y hubo desempate resuelto a favor de uno de los dos, reescribir como victoria.
+      let effectiveWinner: "red" | "blue" | "draw" | undefined = f.winner;
+      if (
+        tbWinnerId &&
+        f.winner === "draw" &&
+        (f.red.id === tbWinnerId || f.blue.id === tbWinnerId)
+      ) {
+        effectiveWinner = f.red.id === tbWinnerId ? "red" : "blue";
+      }
+      if (effectiveWinner === "red") { red.wins++; red.points += POINTS_WIN; blue.losses++; }
+      else if (effectiveWinner === "blue") { blue.wins++; blue.points += POINTS_WIN; red.losses++; }
+      else { red.draws++; red.points += POINTS_DRAW; blue.draws++; blue.points += POINTS_DRAW; }
+    }
+    return map;
+  }, [rows, groupFights, eliminationMode, tiebreak.status, tiebreak.resolvedOrder]);
 
   return (
     <Card>
@@ -274,9 +391,14 @@ function GroupCard({
           {label ?? `Llave ${groupId}`}
           <Badge variant="secondary">{rows.length} competidores</Badge>
           {tiebreak.status === "needed" && (
-            <Badge variant="outline" className="border-orange-600 text-orange-400 gap-1">
+            <Badge
+              variant="outline"
+              className={tiebreak.goldenPoint
+                ? "border-yellow-400 text-yellow-300 gap-1"
+                : "border-orange-600 text-orange-400 gap-1"}
+            >
               <AlertTriangle className="size-3" />
-              Desempate pendiente
+              {tiebreak.goldenPoint ? "Punto de Oro pendiente" : "Desempate pendiente"}
             </Badge>
           )}
           {tiebreak.status === "in_progress" && (
@@ -300,13 +422,14 @@ function GroupCard({
             <TableRow>
               <TableHead className="w-8">Pos</TableHead>
               <TableHead>Nombre</TableHead>
-              <TableHead className="text-center">Ganados</TableHead>
-              <TableHead className="text-center hidden sm:table-cell">Empates</TableHead>
-              <TableHead className="text-center hidden sm:table-cell">Perdidos</TableHead>
-              <TableHead className="text-center text-white font-black text-sm bg-white/5 border-b-2 border-white/20">Puntos</TableHead>
-              <TableHead className="text-center text-amber-400/80 font-semibold hidden sm:table-cell">Banderines a favor</TableHead>
-              <TableHead className="text-center hidden sm:table-cell">Banderines en contra</TableHead>
-              <TableHead className="text-center hidden sm:table-cell">Diferencia</TableHead>
+              {!isTul && <TableHead className="text-center">Ganados</TableHead>}
+              {!isTul && <TableHead className="text-center hidden sm:table-cell">Empates</TableHead>}
+              {!isTul && <TableHead className="text-center hidden sm:table-cell">Perdidos</TableHead>}
+              {!isTul && <TableHead className="text-center hidden sm:table-cell">Peleas</TableHead>}
+              {!isTul && <TableHead className="text-center text-white font-black text-sm bg-white/5 border-b-2 border-white/20">Puntos</TableHead>}
+              {!isTul && <TableHead className="text-center text-amber-400/80 font-semibold hidden sm:table-cell">Banderas</TableHead>}
+              {!isTul && <TableHead className="text-center hidden sm:table-cell">Pt. contra</TableHead>}
+              {!isTul && <TableHead className="text-center hidden sm:table-cell">Adv</TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -314,41 +437,68 @@ function GroupCard({
               const medal = MEDALS[i] ?? null;
               const isTied = tiebreak.status !== "resolved" && tiebreak.tiedIds.includes(s.id);
               const isFirst = i === 0;
+              const isSecond = i === 1;
+              const isFinalist = !!finalistId && s.id === finalistId;
+              const ds = fullStats.get(s.id) ?? s; // display stats (includes tiebreak fights)
               return (
-                <TableRow key={s.id} className={cn(isTied && "bg-orange-950/20", isFirst && "bg-white/3")}>
-                  <TableCell className="text-muted-foreground font-medium">
+                <TableRow key={s.id} className={cn(
+                  "transition-colors",
+                  isTied && "bg-orange-950/20",
+                  isFirst && !isTied && "bg-yellow-500/10 border-l-4 border-yellow-400",
+                  isSecond && !isTied && "bg-sky-900/20 border-l-4 border-sky-400/60",
+                  isFinalist && "border-l-4 border-emerald-500",
+                )}>
+                  <TableCell className="font-bold text-base">
                     {medal ?? `${i + 1}`}
                   </TableCell>
-                  <TableCell className={cn("font-medium", isFirst && "font-bold")}>
+                  <TableCell className={cn(
+                    "font-medium",
+                    isFirst && "font-black text-yellow-200 text-base",
+                    isSecond && "font-bold text-sky-100",
+                  )}>
                     {s.name}
                     {s.team && <span className="text-xs text-muted-foreground ml-1.5">{s.team}</span>}
                     {isTied && <span className="ml-1.5 text-xs text-orange-400">⚡ Empate</span>}
+                    {isFirst && !isTied && <span className="ml-2 text-[10px] font-bold text-yellow-300 bg-yellow-700/50 border border-yellow-500/60 px-1.5 py-0.5 rounded-sm">🥇 1° PUESTO</span>}
+                    {isSecond && !isTied && <span className="ml-2 text-[10px] font-bold text-sky-200 bg-sky-800/50 border border-sky-500/50 px-1.5 py-0.5 rounded-sm">🥈 2° PUESTO</span>}
+                    {isFinalist && (
+                      <span className="ml-2 text-[10px] font-bold text-emerald-300 bg-emerald-900/60 border border-emerald-600/50 px-1.5 py-0.5 rounded-sm">→ Fase Final</span>
+                    )}
                   </TableCell>
-                  <TableCell className="text-center font-bold text-green-400">{s.wins}</TableCell>
-                  <TableCell className="text-center text-yellow-400 hidden sm:table-cell">{s.draws}</TableCell>
-                  <TableCell className="text-center text-red-400 hidden sm:table-cell">{s.losses}</TableCell>
-                  <TableCell className="text-center bg-white/5">
-                    <span className={cn(
-                      "inline-block tabular-nums font-black rounded px-2 py-0.5",
-                      isFirst
-                        ? "text-2xl text-white bg-white/10"
-                        : "text-lg text-white/60",
-                    )}>
-                      {s.points}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-center hidden sm:table-cell">
-                    <span className={cn(
-                      "font-bold tabular-nums",
-                      isFirst ? "text-amber-400 text-base" : "text-amber-400/50",
-                     )}>
-                      {s.flagsFor}
-                    </span>
-                  </TableCell>
-                  <TableCell className="text-center text-muted-foreground hidden sm:table-cell">{s.flagsAgainst}</TableCell>
-                  <TableCell className={cn("text-center font-medium hidden sm:table-cell", flagDiffClass(s.flagDiff))}>
-                    {s.flagDiff > 0 ? `+${s.flagDiff}` : s.flagDiff}
-                  </TableCell>
+                  {!isTul && <TableCell className="text-center font-bold text-green-400">{ds.wins}</TableCell>}
+                  {!isTul && <TableCell className="text-center text-yellow-400 hidden sm:table-cell">{ds.draws}</TableCell>}
+                  {!isTul && <TableCell className="text-center text-red-400 hidden sm:table-cell">{ds.losses}</TableCell>}
+                  {!isTul && <TableCell className="text-center text-muted-foreground/60 hidden sm:table-cell">{ds.played}</TableCell>}
+                  {!isTul && (
+                    <TableCell className="text-center bg-white/5">
+                      <span className={cn(
+                        "inline-block tabular-nums font-black rounded px-2 py-0.5",
+                        isFirst ? "text-3xl text-yellow-300 bg-yellow-800/50 ring-1 ring-yellow-500/50" :
+                        isSecond ? "text-2xl text-sky-200 bg-sky-800/30" :
+                        "text-lg text-white/40",
+                      )}>
+                        {ds.points}
+                      </span>
+                    </TableCell>
+                  )}
+                  {!isTul && (
+                    <TableCell className="text-center hidden sm:table-cell">
+                      <span className={cn(
+                        "font-bold tabular-nums",
+                        isFirst ? "text-amber-300 text-base" :
+                        isSecond ? "text-amber-400/70" :
+                        "text-amber-400/30",
+                       )}>
+                        {ds.flagsFor}
+                      </span>
+                    </TableCell>
+                  )}
+                  {!isTul && <TableCell className="text-center text-muted-foreground hidden sm:table-cell">{ds.foulsAgainst}</TableCell>}
+                  {!isTul && (
+                    <TableCell className="text-center text-xs text-muted-foreground hidden sm:table-cell">
+                      {ds.warnings > 0 ? <span className="text-yellow-400 font-medium">{ds.warnings}</span> : "—"}
+                    </TableCell>
+                  )}
                 </TableRow>
               );
             })}
@@ -359,11 +509,15 @@ function GroupCard({
         {tiebreak.status === "needed" && (
           <Button
             variant="outline"
-            className="w-full border-orange-600/50 text-orange-400 hover:bg-orange-950/30"
+            className={tiebreak.goldenPoint
+              ? "w-full border-yellow-400/60 text-yellow-300 hover:bg-yellow-950/30"
+              : "w-full border-orange-600/50 text-orange-400 hover:bg-orange-950/30"}
             onClick={onResolve}
           >
             <Zap className="size-4" />
-            Resolver desempate — {tiebreak.tiedIds.length} competidores empatados
+            {tiebreak.goldenPoint
+              ? `Iniciar Punto de Oro — ${tiebreak.tiedIds.length} competidores`
+              : `Resolver desempate — ${tiebreak.tiedIds.length} competidores empatados`}
           </Button>
         )}
 
@@ -423,7 +577,7 @@ function isFinalReady(
   if (groupIds.length < 2) return false;
   if (allFights.some((f) => f.isFinalFight)) return false;
   const groupFights = allFights.filter(
-    (f) => !f.isTiebreakExtra && !f.isFinalFight && groupIds.includes(f.groupId ?? ""),
+    (f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight && groupIds.includes(f.groupId ?? ""),
   );
   if (!groupFights.every((f) => f.completed)) return false;
   for (const gid of groupIds) {
@@ -448,8 +602,21 @@ export function StandingsPage() {
   const finalRows = byGroup.get("FINAL");
   const finalTiebreak = finalRows ? getTiebreakInfo("FINAL", finalRows, fights) : null;
   const canStartFinal = isFinalReady(byGroup, fights);
-  const completed = fights.filter((f) => f.completed && !f.isTiebreakExtra && !f.isFinalFight).length;
-  const total = fights.filter((f) => !f.isTiebreakExtra && !f.isFinalFight).length;
+
+  const finalistIds = React.useMemo(() => {
+    if (!canStartFinal) return new Map<string, string>();
+    const map = new Map<string, string>();
+    for (const gid of regularGroupIds) {
+      const rows = byGroup.get(gid) ?? [];
+      const winner = getGroupWinner(gid, rows, fights);
+      if (winner) map.set(gid, winner.id);
+    }
+    return map;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canStartFinal]);
+
+  const completed = fights.filter((f) => f.completed && !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight).length;
+  const total = fights.filter((f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight).length;
 
   // Campeón: llave única sin fase final
   const singleGroupChampion: CompetitorEntry | null = (() => {
@@ -458,7 +625,7 @@ export function StandingsPage() {
     const rows = byGroup.get(gid) ?? [];
     const info = getTiebreakInfo(gid, rows, fights);
     if (info.status === "needed" || info.status === "in_progress") return null;
-    const gFights = fights.filter((f) => !f.isTiebreakExtra && !f.isFinalFight && f.groupId === gid);
+    const gFights = fights.filter((f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight && f.groupId === gid);
     if (gFights.length === 0 || !gFights.every((f) => f.completed)) return null;
     return getGroupWinner(gid, rows, fights);
   })();
@@ -497,7 +664,16 @@ export function StandingsPage() {
       .map((id) => competitorMap.get(id))
       .filter((c): c is CompetitorEntry => c != null);
     if (tiedCompetitors.length < 2) return;
-    const tbFights = generateTiebreakFights(tiedCompetitors, groupId);
+    // Si ya hubo al menos 1 desempate en empate → siguiente pelea es Punto de Oro
+    const completedDraws = fights.filter(
+      (f) => (f.isTiebreakExtra || f.isGoldenPointFight) && f.groupId === groupId && f.completed && f.winner === "draw",
+    ).length;
+    const isGoldenPoint = completedDraws >= 1;
+
+    let tbFights = generateTiebreakFights(tiedCompetitors, groupId);
+    if (isGoldenPoint) {
+      tbFights = tbFights.map((f) => ({ ...f, isTiebreakExtra: true, isGoldenPointFight: true as const }));
+    }
     addTiebreakFights(tbFights);
     navigate("/fight");
   }
@@ -596,6 +772,8 @@ export function StandingsPage() {
             rows={rows}
             tiebreak={tiebreak}
             groupFights={gFights}
+            finalistId={finalistIds.get(gid)}
+            isTul={config.matchType === 'tul'}
             onResolve={() => handleResolve(gid, tiebreak.tiedIds)}
           />
         );
@@ -627,6 +805,8 @@ export function StandingsPage() {
           groupFights={fights.filter((f) => f.isFinalFight)}
           onResolve={() => handleResolve("FINAL", finalTiebreak.tiedIds)}
           label="🏆 Fase Final"
+          isTul={config.matchType === 'tul'}
+          eliminationMode
         />
       )}
     </div>
