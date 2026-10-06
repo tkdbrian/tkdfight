@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/dialog";
 import { RotateCcw, AlertTriangle, Check, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isTimePresetActive } from "@/lib/category-age";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
@@ -128,14 +129,14 @@ export function SettingsPage() {
   const [presetError, setPresetError] = useState("");
 
   function isPresetActive(p: TimePreset): boolean {
-    return (
-      roundCount === p.roundCount &&
-      roundDuration === p.durationSeconds &&
-      config.finalRounds === p.finalRounds &&
-      config.finalSeconds === p.finalSeconds &&
-      config.tiebreakerSeconds === p.tiebreakerSeconds &&
-      config.maxTiebreakers === p.maxTiebreakers
-    );
+    return isTimePresetActive(p, {
+      roundCount,
+      durationSeconds: roundDuration,
+      finalRounds: config.finalRounds,
+      finalSeconds: config.finalSeconds,
+      tiebreakerSeconds: config.tiebreakerSeconds,
+      maxTiebreakers: config.maxTiebreakers,
+    }, config.categoryName);
   }
 
   useEffect(() => {

@@ -23,7 +23,7 @@ import { generateGroupsTournament, generateEliminationBracket, getGroupDistribut
 import { cn } from "@/lib/utils";
 import { buildCategoryName, GUP_GRADE_OPTIONS, type GradeSystem } from "@/lib/category-name";
 import { availableCategoryFormats, defaultCategoryFormat, isCategoryFormatAllowed } from "@/lib/category-mode";
-import { ageSelectionFromPreset, isMatchingAgePreset, formatCategoryAge } from "@/lib/category-age";
+import { ageSelectionFromPreset, formatCategoryAge, isTimePresetActive } from "@/lib/category-age";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
 import { COPA_DANES_26, fetchPresets, type TimePreset } from "@/lib/tournament-presets";
@@ -651,15 +651,14 @@ export function SetupPage() {
 
   function isPresetActive(p: TimePreset): boolean {
     const rules = config.ruleSet?.mode === "sparring" ? (config.ruleSet as RuleSetSparring) : BASE;
-    return (
-      rules.rounds.count === p.roundCount &&
-      rules.rounds.duration_seconds === p.durationSeconds &&
-      config.finalRounds === p.finalRounds &&
-      config.finalSeconds === p.finalSeconds &&
-      config.tiebreakerSeconds === p.tiebreakerSeconds &&
-      config.maxTiebreakers === p.maxTiebreakers &&
-      (p.ageFrom === undefined || isMatchingAgePreset(p, cat))
-    );
+    return isTimePresetActive(p, {
+      roundCount: rules.rounds.count,
+      durationSeconds: rules.rounds.duration_seconds,
+      finalRounds: config.finalRounds,
+      finalSeconds: config.finalSeconds,
+      tiebreakerSeconds: config.tiebreakerSeconds,
+      maxTiebreakers: config.maxTiebreakers,
+    }, config.categoryName);
   }
 
   // Resumen de la config actual para mostrar en el chip editor
