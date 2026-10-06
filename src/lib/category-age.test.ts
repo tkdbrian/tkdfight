@@ -3,7 +3,7 @@ import { ageSelectionFromCategoryName, ageSelectionFromPreset, categoryNameMatch
 import { COPA_DANES_26, type TimePreset } from "./tournament-presets";
 
 describe("age preset selection", () => {
-  it.each([["Kids (4-5)","4","5"],["Infantiles (6-7)","6","7"],["Infantiles A (8-9)","8","9"],["Infantiles B (10-11)","10","11"],["Pre-Junior (12-14)","12","14"],["Junior (15-17)","15","17"],["Adultos (18-35)","18","35"],["Seniors (36-45)","36","45"]])("applies %s range", (name, from, to) => {
+  it.each([["Kids (4-5)","4","5"],["Infantiles A (6-7)","6","7"],["Infantiles B (8-9)","8","9"],["Infantiles C (10-11)","10","11"],["Pre-Junior (12-14)","12","14"],["Junior (15-17)","15","17"],["Adultos (18-35)","18","35"],["Seniors (36-45)","36","45"]])("applies %s range", (name, from, to) => {
     const preset = COPA_DANES_26.find((item) => item.name === name)!;
     expect(ageSelectionFromPreset(preset)).toEqual({ ageFrom: from, ageTo: to, ageOpenEnded: false });
   });
@@ -23,7 +23,7 @@ describe("age preset selection", () => {
   it("highlights exactly the selected age when rule timing is shared", () => {
     const current = { roundCount: 1, durationSeconds: 60, finalRounds: 1, finalSeconds: undefined, tiebreakerSeconds: 60, maxTiebreakers: 1 };
     const category = "Mediano A \u00b7 GUPS \u00b7 M \u00b7 8-9 a\u00f1os";
-    expect(COPA_DANES_26.filter((preset) => isTimePresetActive(preset, current, category)).map((preset) => preset.name)).toEqual(["Infantiles A (8-9)"]);
+    expect(COPA_DANES_26.filter((preset) => isTimePresetActive(preset, current, category)).map((preset) => preset.name)).toEqual(["Infantiles B (8-9)"]);
   });
   it("does not mark ambiguous age presets active without category age metadata", () => {
     const current = { roundCount: 1, durationSeconds: 60, finalRounds: 1, finalSeconds: 120, tiebreakerSeconds: 60, maxTiebreakers: 1 };

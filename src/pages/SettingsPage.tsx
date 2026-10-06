@@ -22,6 +22,7 @@ import type { RuleSetSparring } from "@/engine/types";
 import {
   type TimePreset,
   COPA_DANES_26,
+  getPresetForCategoryFormat,
   fetchPresets,
   savePreset,
   deleteServerPreset,
@@ -146,13 +147,18 @@ export function SettingsPage() {
   }, []);
 
   function applyPreset(p: TimePreset) {
-    update({ count: p.roundCount, duration_seconds: p.durationSeconds });
-    setConfig({
-      finalRounds: p.finalRounds,
-      finalSeconds: p.finalSeconds,
-      tiebreakerSeconds: p.tiebreakerSeconds,
-      maxTiebreakers: p.maxTiebreakers,
-    });
+    const isAgePreset = p.ageFrom !== undefined;
+    const presetFormat = config.mode === "round-robin" ? "round-robin" : "elimination";
+    const applied = getPresetForCategoryFormat(p, presetFormat);
+    update({ count: applied.roundCount, duration_seconds: applied.durationSeconds });
+    if (!isAgePreset || presetFormat !== "round-robin") {
+      setConfig({
+        finalRounds: p.finalRounds,
+        finalSeconds: p.finalSeconds,
+        tiebreakerSeconds: p.tiebreakerSeconds,
+        maxTiebreakers: p.maxTiebreakers,
+      });
+    }
   }
 
   async function handleSavePreset() {

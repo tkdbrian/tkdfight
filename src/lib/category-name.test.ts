@@ -27,6 +27,10 @@ describe("buildCategoryName", () => {
     ).toBe("Mediano B \u00b7 " + gupBand + " \u00b7 M \u00b7 18-35 a\u00f1os");
   });
 
+  it.each(["Masculino", "Femenino", "Mixto"])("includes the sex division %s in the name", (gender) => {
+    expect(buildCategoryName({ ...baseCategory, gender })).toContain(" · " + gender + " · ");
+  });
+
   it("does not leak a previous DAN range into a GUPS category", () => {
     expect(
       buildCategoryName({

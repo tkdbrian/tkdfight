@@ -33,7 +33,7 @@ export const COPA_DANES_26: TimePreset[] = [
     maxTiebreakers: 1,
   },
   {
-    name: 'Infantiles (6-7)',
+    name: 'Infantiles A (6-7)',
     ageFrom: 6,
     ageTo: 7,
     roundCount: 1,
@@ -44,7 +44,7 @@ export const COPA_DANES_26: TimePreset[] = [
     maxTiebreakers: 1,
   },
   {
-    name: 'Infantiles A (8-9)',
+    name: 'Infantiles B (8-9)',
     ageFrom: 8,
     ageTo: 9,
     roundCount: 1,
@@ -55,7 +55,7 @@ export const COPA_DANES_26: TimePreset[] = [
     maxTiebreakers: 1,
   },
   {
-    name: 'Infantiles B (10-11)',
+    name: 'Infantiles C (10-11)',
     ageFrom: 10,
     ageTo: 11,
     roundCount: 1,
@@ -70,7 +70,7 @@ export const COPA_DANES_26: TimePreset[] = [
     ageFrom: 12,
     ageTo: 14,
     roundCount: 1,
-    durationSeconds: 60,
+    durationSeconds: 120,
     finalRounds: 1,
     finalSeconds: 120,
     tiebreakerSeconds: 60,
@@ -81,7 +81,7 @@ export const COPA_DANES_26: TimePreset[] = [
     ageFrom: 15,
     ageTo: 17,
     roundCount: 1,
-    durationSeconds: 60,
+    durationSeconds: 120,
     finalRounds: 1,
     finalSeconds: 120,
     tiebreakerSeconds: 60,
@@ -92,7 +92,7 @@ export const COPA_DANES_26: TimePreset[] = [
     ageFrom: 18,
     ageTo: 35,
     roundCount: 1,
-    durationSeconds: 60,
+    durationSeconds: 120,
     finalRounds: 1,
     finalSeconds: 120,
     tiebreakerSeconds: 60,
@@ -103,7 +103,7 @@ export const COPA_DANES_26: TimePreset[] = [
     ageFrom: 36,
     ageTo: 45,
     roundCount: 1,
-    durationSeconds: 60,
+    durationSeconds: 90,
     finalRounds: 1,
     finalSeconds: 120,
     tiebreakerSeconds: 60,
@@ -113,13 +113,36 @@ export const COPA_DANES_26: TimePreset[] = [
     name: 'Veteranos (46+)',
     ageFrom: 46,
     roundCount: 1,
-    durationSeconds: 60,
+    durationSeconds: 90,
     finalRounds: 1,
     finalSeconds: 120,
     tiebreakerSeconds: 60,
     maxTiebreakers: 1,
   },
 ]
+
+export type CategoryFormat = "round-robin" | "elimination";
+
+export function getPresetForCategoryAge(ageFrom: string): TimePreset | null {
+  const age = Number(ageFrom);
+  if (ageFrom.trim() === "" || !Number.isFinite(age) || age < 0) return null;
+  const preset = age < 12
+    ? COPA_DANES_26[0]
+    : age < 36
+      ? COPA_DANES_26[4]
+      : age < 46
+        ? COPA_DANES_26[7]
+        : COPA_DANES_26[8];
+  return { ...preset };
+}
+
+export function getPresetForCategoryFormat(
+  preset: TimePreset,
+  format: CategoryFormat,
+): TimePreset {
+  if (preset.ageFrom === undefined || format !== "round-robin") return { ...preset };
+  return { ...preset, roundCount: 1, durationSeconds: 60 };
+}
 
 // ── Helpers HTTP ──────────────────────────────────────────────────────────────
 

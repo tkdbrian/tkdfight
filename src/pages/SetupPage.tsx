@@ -26,7 +26,7 @@ import { availableCategoryFormats, defaultCategoryFormat, isCategoryFormatAllowe
 import { ageSelectionFromPreset, formatCategoryAge, isTimePresetActive } from "@/lib/category-age";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
-import { COPA_DANES_26, fetchPresets, type TimePreset } from "@/lib/tournament-presets";
+import { COPA_DANES_26, fetchPresets, getPresetForCategoryAge, getPresetForCategoryFormat, type TimePreset } from "@/lib/tournament-presets";
 
 const BASE = itfRules as RuleSetSparring;
 
@@ -418,7 +418,7 @@ function FixturePreview({ fights, mode, roundLabels }: Readonly<{
 }
 
 const PESO_OPTIONS = ["Liviano A", "Liviano B", "Mediano A", "Mediano B", "Pesado A", "Pesado B"];
-const GENERO_OPTIONS = ["M", "F"];
+const GENERO_OPTIONS = ["Masculino", "Femenino", "Mixto"];
 
 type CatState = { weight: string; gradeSystem: GradeSystem; beltFrom: string; beltTo: string; gupBand: string; gender: string; ageFrom: string; ageTo: string; ageOpenEnded: boolean; ageMode: "preset" | "custom" };
 const EMPTY_CAT: CatState = { weight: "", gradeSystem: "DAN", beltFrom: "", beltTo: "", gupBand: "", gender: "", ageFrom: "", ageTo: "", ageOpenEnded: false, ageMode: "custom" };
@@ -628,25 +628,38 @@ export function SetupPage() {
     fetchPresets().then(setServerPresets).catch(() => {});
   }, []);
 
-  function applyPreset(p: TimePreset) {
+  function applyPreset(p: TimePreset, format = config.mode) {
+    const isAgePreset = p.ageFrom !== undefined;
+    const presetFormat = format === "round-robin" ? "round-robin" : "elimination";
+    const applied = getPresetForCategoryFormat(p, presetFormat);
     const rules = config.ruleSet?.mode === "sparring" ? (config.ruleSet as RuleSetSparring) : BASE;
     const judges = config.judgesCount ?? BASE.judgesCount;
     const updated: RuleSetSparring = {
       ...BASE,
       ...rules,
       judgesCount: judges,
-      rounds: { ...rules.rounds, count: p.roundCount, duration_seconds: p.durationSeconds },
+      rounds: {
+        ...rules.rounds,
+        count: applied.roundCount,
+        duration_seconds: applied.durationSeconds,
+      },
     };
     const age = ageSelectionFromPreset(p);
     if (age) updateCat({ ...age, ageMode: "preset" });
-    setConfig({
+    const nextConfig: Partial<typeof config> = {
+      mode: format,
       ruleSet: updated,
       judgesCount: updated.judgesCount,
-      finalRounds: p.finalRounds,
-      finalSeconds: p.finalSeconds,
-      tiebreakerSeconds: p.tiebreakerSeconds,
-      maxTiebreakers: p.maxTiebreakers,
-    });
+    };
+    // Round Robin preset changes only its single round; final and tie settings remain untouched.
+    // Saved server presets remain custom, time-only presets and can still be applied as-is.
+    if (!isAgePreset || format !== "round-robin") {
+      nextConfig.finalRounds = p.finalRounds;
+      nextConfig.finalSeconds = p.finalSeconds;
+      nextConfig.tiebreakerSeconds = p.tiebreakerSeconds;
+      nextConfig.maxTiebreakers = p.maxTiebreakers;
+    }
+    setConfig(nextConfig);
   }
 
   function isPresetActive(p: TimePreset): boolean {
@@ -1167,7 +1180,30 @@ export function SetupPage() {
                       key={m}
                       type="button"
                       onClick={() => {
-                        if (isCategoryFormatAllowed(config.matchType ?? "sparring", m)) setConfig({ mode: m });
+                        if (!isCategoryFormatAllowed(config.matchType ?? "sparring", m)) return;
+                        if (m === "round-robin") {
+                          const rules = config.ruleSet?.mode === "sparring"
+                            ? (config.ruleSet as RuleSetSparring)
+                            : BASE;
+                          const judges = config.judgesCount ?? BASE.judgesCount;
+                          setConfig({
+                            mode: m,
+                            ruleSet: {
+                              ...BASE,
+                              ...rules,
+                              judgesCount: judges,
+                              rounds: {
+                                ...rules.rounds,
+                                count: 1,
+                                duration_seconds: 60,
+                              },
+                            },
+                          });
+                          return;
+                        }
+                        const agePreset = getPresetForCategoryAge(cat.ageFrom);
+                        if (agePreset) applyPreset(agePreset, m);
+                        else setConfig({ mode: m });
                       }}
                       className={cn(
                         "rounded-full border font-medium transition-all duration-150",
