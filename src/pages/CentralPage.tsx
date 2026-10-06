@@ -47,6 +47,7 @@ interface QueueEntry {
   position: number;
   fight: {
     id: string;
+    categoryId?: string | null;
     red: { id: string; name: string };
     blue: { id: string; name: string };
     sourceRing: string | null;
@@ -325,6 +326,7 @@ export function CentralPage() {
             competitors: [fight.red, fight.blue],
             sourceRingLabel: srcAlias,
             sourceRingAddress: sourceKey,
+            sourceCategoryId: fight.categoryId,
           }),
           signal: AbortSignal.timeout(5000),
         },
@@ -338,7 +340,7 @@ export function CentralPage() {
       await fetch(`http://${srcIp}:${srcPortStr}/api/ring/remove-fights`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: [fight.id] }),
+        body: JSON.stringify({ ids: [fight.id], categoryId: fight.categoryId }),
         signal: AbortSignal.timeout(5000),
       });
       const dstAlias = destRing.state?.ringAlias ?? destKey;
@@ -406,7 +408,13 @@ export function CentralPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ fights, competitors, sourceRingLabel: srcAlias, sourceRingAddress: moveState.sourceKey }),
+          body: JSON.stringify({
+            fights,
+            competitors,
+            sourceRingLabel: srcAlias,
+            sourceRingAddress: moveState.sourceKey,
+            sourceCategoryId: selectedEntries[0]?.fight.categoryId,
+          }),
           signal: AbortSignal.timeout(5000),
         },
       );
@@ -423,7 +431,7 @@ export function CentralPage() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ids: fights.map((f) => f.id) }),
+          body: JSON.stringify({ ids: fights.map((f) => f.id), categoryId: selectedEntries[0]?.fight.categoryId }),
           signal: AbortSignal.timeout(5000),
         },
       );
@@ -1439,7 +1447,7 @@ function exportConsolidatedHTML(ringResults: RingResults[], standings: Consolida
 <h2>📋 Combates por tatami</h2>
 ${tatamisSections}
 
-<p style="margin-top:3rem;color:#475569;font-size:0.75rem;text-align:center">TKD Tournament System — Mesa Central</p>
+<p style="margin-top:3rem;color:#475569;font-size:0.75rem;text-align:center">TKD Fight — Mesa Central</p>
 </body>
 </html>`;
 

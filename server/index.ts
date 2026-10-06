@@ -9,9 +9,19 @@ import { existsSync } from 'node:fs'
 import { getLocalIp } from './helpers.js'
 import { setServerUrl } from './broadcast.js'
 import { registerSocketHandlers } from './socket/handlers.js'
-import { createTournament, getLatestTournament, loadMatchSnapshot, isFightPending } from './db/index.js'
+import {
+  createTournament,
+  getActiveMatchLock,
+  getCategoryTournamentId,
+  getLatestTournament,
+  getMatchResult,
+  isFightPending,
+  loadMatchSnapshot,
+} from './db/index.js'
 import { state } from './state.js'
 import { createMatch } from '../src/engine/match-machine.js'
+import type { RuleSetSparring, WinReason } from '../src/engine/types.js'
+import type { MatchInfo } from './state.js'
 import { registerJudgeRoute } from './routes/judge.js'
 import { registerTvRoute } from './routes/tv.js'
 import { registerQrRoute } from './routes/qr.js'
@@ -76,22 +86,65 @@ if (!latestTournament) {
 
 try {
   const snapshot = loadMatchSnapshot()
-  if (snapshot && snapshot.tournamentId === state.activeTournamentId && isFightPending(snapshot.fightId)) {
-    const { match, rules, roundFlags } = snapshot.data
+  const lock = getActiveMatchLock()
+  if (snapshot && lock && lock.fightId === snapshot.fightId) {
+    if (!snapshot.categoryId || !snapshot.data || snapshot.corrupted) {
+      state.matchCategoryId = snapshot.categoryId
+      state.matchTournamentId = snapshot.tournamentId
+      state.legacyMatchAssociationWarning = snapshot.categoryId === null
+        ? `El combate ${snapshot.fightId} conserva un lock histórico sin categoryId; no se reasignó.`
+        : `El snapshot del combate ${snapshot.fightId} está dañado; no se liberó automáticamente.`
+      logger.warn({ fightId: snapshot.fightId, categoryId: snapshot.categoryId, corrupted: snapshot.corrupted }, '[startup] Snapshot no recuperable; nuevas cargas bloqueadas')
+    } else if (getCategoryTournamentId(snapshot.categoryId) === snapshot.tournamentId && isFightPending(snapshot.fightId, snapshot.tournamentId)) {
+    const { match, rules, roundFlags, pendingResult } = snapshot.data
+    const restoredRules = rules as RuleSetSparring
+    const restoredMatch = { ...match, categoryId: snapshot.categoryId } as MatchInfo
     const completedRounds = roundFlags.length
-    const totalRounds = (rules as { rounds?: { count?: number } }).rounds?.count ?? 2
-    const restSeconds = (rules as { rounds?: { rest_seconds?: number } }).rounds?.rest_seconds ?? 30
-    state.match = match as typeof state.match
-    state.rules = rules as typeof state.rules
-    state.roundFlags = roundFlags
+    const totalRounds = restoredRules.rounds?.count ?? 2
+    const restSeconds = restoredRules.rounds?.rest_seconds ?? 30
+    state.activeTournamentId = snapshot.tournamentId
+    state.match = restoredMatch
+    state.matchCategoryId = snapshot.categoryId
+    state.matchTournamentId = snapshot.tournamentId
+    state.resultConfirmed = false
+    state.legacyMatchAssociationWarning = null
+    state.rules = restoredRules
+    state.roundFlags = roundFlags.map((flag) => ({
+      ...flag,
+      draw: flag.draw ?? 0,
+      winner: flag.winner as 'red' | 'blue' | 'draw',
+      votes: flag.votes ?? {},
+    }))
+    const baseMatchState = createMatch(restoredRules)
+    const storedResult = getMatchResult(snapshot.categoryId, snapshot.fightId)
     state.matchState = {
-      ...createMatch(rules as typeof state.rules),
-      phase: completedRounds > 0 ? 'rest' : 'idle',
+      ...baseMatchState,
+      phase: pendingResult || storedResult?.status === 'pending_confirmation'
+        ? 'finished'
+        : completedRounds > 0 ? 'rest' : 'idle',
       currentRound: Math.min(completedRounds + 1, totalRounds),
-      timeLeft: completedRounds > 0 ? restSeconds : 0,
+      timeLeft: pendingResult || storedResult?.status === 'pending_confirmation'
+        ? 0
+        : completedRounds > 0 ? restSeconds : 0,
+      result: pendingResult
+        ? { winner: pendingResult.winner, reason: pendingResult.reason as WinReason }
+        : storedResult?.status === 'pending_confirmation'
+          ? { winner: storedResult.winner, reason: storedResult.reason as WinReason }
+          : null,
     }
     state.matchPaused = true
-    logger.info({ fightId: snapshot.fightId, completedRounds }, '[startup] Combate restaurado desde snapshot de emergencia')
+    logger.info({ fightId: snapshot.fightId, categoryId: snapshot.categoryId, completedRounds }, '[startup] Combate restaurado desde snapshot de emergencia')
+    } else {
+      state.matchCategoryId = snapshot.categoryId
+      state.matchTournamentId = snapshot.tournamentId
+      state.legacyMatchAssociationWarning = `No se pudo verificar la categoría del combate ${snapshot.fightId}; el lock se conserva.`
+      logger.warn({ fightId: snapshot.fightId, categoryId: snapshot.categoryId }, '[startup] Asociación de categoría inválida; nuevas cargas bloqueadas')
+    }
+  } else if (lock) {
+    state.matchCategoryId = lock.categoryId
+    state.matchTournamentId = lock.tournamentId
+    state.legacyMatchAssociationWarning = `El combate ${lock.fightId} conserva un lock durable sin snapshot recuperable; no se liberó automáticamente.`
+    logger.warn({ fightId: lock.fightId, categoryId: lock.categoryId, resultStatus: lock.resultStatus }, '[startup] Lock durable sin snapshot; nuevas cargas bloqueadas')
   }
 } catch (err) {
   logger.warn({ err }, '[startup] No se pudo restaurar snapshot — arrancando limpio')

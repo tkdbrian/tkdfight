@@ -2,6 +2,7 @@ import type { MatchState, RuleSetSparring } from "@/engine/types";
 
 export interface MatchInfo {
   id: string;
+  categoryId?: string;
   ringId: string;
   category?: string;
   matchMode?: 'sparring' | 'patterns' | 'tul';
@@ -42,6 +43,16 @@ export interface RoundFlagResult {
 export interface ServerState {
   rules: RuleSetSparring | null;
   match: MatchInfo | null;
+  categoryId?: string | null;
+  tournamentId?: number | null;
+  activeMatchLock?: {
+    fightId: string;
+    categoryId: string | null;
+    tournamentId: number;
+    resultStatus: string | null;
+  } | null;
+  resultConfirmed?: boolean;
+  legacyMatchAssociationWarning?: string | null;
   matchState: MatchState | null;
   matchPaused: boolean;
   judges: string[];

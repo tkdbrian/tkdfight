@@ -115,6 +115,8 @@ export function registerJudgeRoute(router: Router) {
   const TOKEN = new URLSearchParams(location.search).get('token') || '';
   const socket = io(location.origin);
   let connected = false;
+  let activeCategoryId = null;
+  let activeMatchId = null;
   let myRed = 0, myBlue = 0;
   const scoreHistory = [];
   const PHASE_LABELS = {idle:'\u2014',round:'Round',rest:'Descanso',overtime:'Pr\u00f3rroga',golden_point:'\u2605 Punto de Oro',penalties:'Penalidades',finished:'Finalizado'};
@@ -134,6 +136,8 @@ export function registerJudgeRoute(router: Router) {
   socket.on('disconnect', () => { connected = false; statusEl.textContent = '\u26a0\ufe0f Reconectando...'; statusEl.style.color = '#f90'; });
   socket.on('state:update', (data) => {
     const m = data.match, ms = data.matchState;
+    activeCategoryId = data.categoryId || (m && m.categoryId) || null;
+    activeMatchId = m ? m.id : null;
     if (m) {
       subtitleEl.textContent = m.red.name + ' vs ' + m.blue.name;
       document.getElementById('hdr-red').textContent = m.red.name;
@@ -185,16 +189,20 @@ export function registerJudgeRoute(router: Router) {
     waitMsg.style.display = idle ? 'block' : 'none';
     document.querySelectorAll('.s-btn').forEach(b => b.disabled = idle);
   });
+  function emitMatchCommand(event, payload) {
+    if (!connected || !activeCategoryId || !activeMatchId) return;
+    socket.emit(event, Object.assign({}, payload, { categoryId: activeCategoryId, matchId: activeMatchId }));
+  }
   function tulVote(competitor) {
-    if (!connected) return;
-    socket.emit('judge:vote', { judgeId: JUDGE_ID, vote: competitor });
+    if (!connected || !activeCategoryId || !activeMatchId) return;
+    emitMatchCommand('judge:vote', { judgeId: JUDGE_ID, vote: competitor });
     document.getElementById('tul-red-btn').disabled = true;
     document.getElementById('tul-blue-btn').disabled = true;
     document.getElementById('tul-voted').style.display = 'block';
   }
   function score(competitor, type, pts) {
-    if (!connected) return;
-    socket.emit('match:event', { judgeId: JUDGE_ID, competitor, type });
+    if (!connected || !activeCategoryId || !activeMatchId) return;
+    emitMatchCommand('match:event', { judgeId: JUDGE_ID, competitor, type });
     if (competitor === 'red') { myRed += pts; myRedEl.textContent = myRed; }
     else { myBlue += pts; myBlueEl.textContent = myBlue; }
     scoreHistory.push({ competitor, pts, action: '+' });
@@ -202,10 +210,10 @@ export function registerJudgeRoute(router: Router) {
     document.getElementById('undo-btn').disabled = false;
   }
   function unscore(competitor, pts) {
-    if (!connected) return;
+    if (!connected || !activeCategoryId || !activeMatchId) return;
     const current = competitor === 'red' ? myRed : myBlue;
     if (current < pts) return;
-    socket.emit('match:event', { judgeId: JUDGE_ID, competitor, type: 'subtract_' + pts });
+    emitMatchCommand('match:event', { judgeId: JUDGE_ID, competitor, type: 'subtract_' + pts });
     if (competitor === 'red') { myRed -= pts; myRedEl.textContent = myRed; }
     else { myBlue -= pts; myBlueEl.textContent = myBlue; }
     scoreHistory.push({ competitor, pts, action: '-' });
@@ -213,8 +221,8 @@ export function registerJudgeRoute(router: Router) {
     document.getElementById('undo-btn').disabled = false;
   }
   function undoLast() {
-    if (!connected || scoreHistory.length === 0) return;
-    socket.emit('match:undo', { judgeId: JUDGE_ID });
+    if (!connected || !activeCategoryId || !activeMatchId || scoreHistory.length === 0) return;
+    emitMatchCommand('match:undo', { judgeId: JUDGE_ID });
     const last = scoreHistory.pop();
     if (last.action === '+') {
       if (last.competitor === 'red') { myRed = Math.max(0, myRed - last.pts); myRedEl.textContent = myRed; }

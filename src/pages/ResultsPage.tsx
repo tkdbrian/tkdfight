@@ -17,6 +17,7 @@ import { Trophy, RotateCcw, Download, Crown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { WIN_REASON_LABELS } from "@/lib/fight-utils";
 import { exportTournamentHTML } from "@/lib/export";
+import { BracketView } from "@/components/BracketView";
 
 interface Standing {
   competitor: { id: string; name: string; team?: string };
@@ -212,6 +213,8 @@ export function ResultsPage() {
     useShallow((s) => ({ fights: s.fights, competitors: s.competitors, config: s.config, reset: s.reset, bracketMatches: s.bracketMatches }))
   );
   const isTul = config.matchType === 'tul';
+  const isElimination = config.mode === "elimination";
+  const isDoubleBracket = bracketMatches.some((match) => match.bracketGroup === "B");
 
   // Merge Golden Point sequences: hide GP fights, patch original with GP winner
   const displayFights = useMemo(() => {
@@ -306,7 +309,7 @@ export function ResultsPage() {
               {podium[1].competitor.team && (
                 <p className="text-xs text-muted-foreground text-center truncate w-full">{podium[1].competitor.team}</p>
               )}
-              {!isTul && <Badge variant="secondary">{podium[1].points} pts</Badge>}
+              {!isTul && !isElimination && <Badge variant="secondary">{podium[1].points} pts</Badge>}
             </div>
           ) : <div />}
           <div className="flex flex-col items-center gap-2 rounded-xl border border-yellow-700/40 bg-yellow-950/20 p-5">
@@ -315,7 +318,7 @@ export function ResultsPage() {
             {podium[0].competitor.team && (
               <p className="text-xs text-yellow-600 text-center truncate w-full">{podium[0].competitor.team}</p>
             )}
-            {!isTul && <Badge className="bg-yellow-600 text-yellow-950 border-0 hover:bg-yellow-600">{podium[0].points} pts</Badge>}
+            {!isTul && !isElimination && <Badge className="bg-yellow-600 text-yellow-950 border-0 hover:bg-yellow-600">{podium[0].points} pts</Badge>}
           </div>
           {isTul ? <div /> : podium[2] ? (
             <div className="flex flex-col items-center gap-2 rounded-xl border border-border bg-secondary/20 p-4 mt-4">
@@ -324,10 +327,34 @@ export function ResultsPage() {
               {podium[2].competitor.team && (
                 <p className="text-xs text-muted-foreground text-center truncate w-full">{podium[2].competitor.team}</p>
               )}
-              {!isTul && <Badge variant="secondary">{podium[2].points} pts</Badge>}
+              {!isTul && !isElimination && <Badge variant="secondary">{podium[2].points} pts</Badge>}
             </div>
           ) : <div />}
         </div>
+      )}
+
+      {isElimination && bracketMatches.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Llave completa</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-6 overflow-hidden">
+            {isDoubleBracket ? (
+              <>
+                <section className="space-y-2">
+                  <h3 className="text-sm font-semibold text-muted-foreground">Grilla A</h3>
+                  <BracketView matches={bracketMatches.filter((match) => match.bracketGroup !== "B")} competitors={competitors} />
+                </section>
+                <section className="space-y-2">
+                  <h3 className="text-sm font-semibold text-muted-foreground">Grilla B</h3>
+                  <BracketView matches={bracketMatches.filter((match) => match.bracketGroup === "B")} competitors={competitors} />
+                </section>
+              </>
+            ) : (
+              <BracketView matches={bracketMatches} competitors={competitors} />
+            )}
+          </CardContent>
+        </Card>
       )}
 
       {/* Standings */}
@@ -339,11 +366,12 @@ export function ResultsPage() {
               title={groupLabel(gid)}
               standings={gStandings}
               isTul={isTul}
+              hidePoints={isElimination}
             />
           ))}
         </div>
       ) : (
-        <StandingsCard title="Clasificación" standings={standings} isTul={isTul} />
+        <StandingsCard title="Clasificación" standings={standings} isTul={isTul} hidePoints={isElimination} />
       )}
 
       {/* Fight log */}
@@ -485,7 +513,8 @@ function StandingsCard({
   title,
   standings,
   isTul,
-}: Readonly<{ title: string; standings: Standing[]; isTul: boolean }>) {
+  hidePoints,
+}: Readonly<{ title: string; standings: Standing[]; isTul: boolean; hidePoints: boolean }>) {
   return (
     <Card>
       <CardHeader>
@@ -498,7 +527,7 @@ function StandingsCard({
               <TableRow>
                 <TableHead className="w-10">#</TableHead>
                 <TableHead>Competidor</TableHead>
-                {!isTul && <TableHead className="text-center font-bold text-yellow-400">Puntos</TableHead>}
+                {!isTul && !hidePoints && <TableHead className="text-center font-bold text-yellow-400">Puntos</TableHead>}
                 {!isTul && <TableHead className="text-center">Ganados</TableHead>}
                 {!isTul && <TableHead className="text-center hidden sm:table-cell">Empates</TableHead>}
                 {!isTul && <TableHead className="text-center">Perdidos</TableHead>}
@@ -528,7 +557,7 @@ function StandingsCard({
                       )}
                     </div>
                   </TableCell>
-                  {!isTul && <TableCell className="text-center font-black text-yellow-400 text-base">{s.points}</TableCell>}
+                  {!isTul && !hidePoints && <TableCell className="text-center font-black text-yellow-400 text-base">{s.points}</TableCell>}
                   {!isTul && <TableCell className="text-center text-green-400 font-bold">{s.wins}</TableCell>}
                   {!isTul && <TableCell className="text-center text-muted-foreground hidden sm:table-cell">{s.draws}</TableCell>}
                   {!isTul && <TableCell className="text-center text-red-400 font-bold">{s.losses}</TableCell>}

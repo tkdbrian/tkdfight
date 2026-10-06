@@ -19,6 +19,7 @@ const DEFAULT_STATE: ServerState = {
 export function useSocket() {
   const socketRef = useRef<Socket | null>(null);
   const [connected, setConnected] = useState(false);
+  const [stateReady, setStateReady] = useState(false);
   const [state, setState] = useState<ServerState>(DEFAULT_STATE);
   const [socket, setSocket] = useState<Socket | null>(null);
 
@@ -29,7 +30,10 @@ export function useSocket() {
 
     sock.on("connect", () => setConnected(true));
     sock.on("disconnect", () => setConnected(false));
-    sock.on("state:update", (data: ServerState) => setState((prev) => ({ ...prev, ...data })));
+    sock.on("state:update", (data: ServerState) => {
+      setState((prev) => ({ ...prev, ...data }));
+      setStateReady(true);
+    });
     sock.on("ring:config-updated", (data: { alias: string; name: string }) =>
       setState((prev) => ({ ...prev, ringAlias: data.alias, ringName: data.name }))
     );
@@ -44,5 +48,20 @@ export function useSocket() {
     socketRef.current?.emit(event, data);
   }
 
-  return { connected, state, emit, socket };
+  function request<T>(event: string, data: unknown, timeoutMs = 5000): Promise<T | null> {
+    return new Promise((resolve) => {
+      const currentSocket = socketRef.current;
+      if (!currentSocket?.connected) {
+        resolve(null);
+        return;
+      }
+      const timeout = window.setTimeout(() => resolve(null), timeoutMs);
+      currentSocket.emit(event, data, (response: T) => {
+        window.clearTimeout(timeout);
+        resolve(response);
+      });
+    });
+  }
+
+  return { connected, stateReady, state, emit, request, socket };
 }

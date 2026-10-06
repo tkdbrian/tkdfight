@@ -47,6 +47,28 @@ import type { ServerState } from "@/lib/socket-types";
 import type { FightEntry } from "@/store/tournament";
 
 const DEFAULT_RULES = itfRules as RuleSetSparring;
+const MATCH_CONTEXT_EVENTS = new Set([
+  "match:start", "match:event", "match:finishRound", "match:confirmPenalties",
+  "match:resolveJury", "match:reset", "judge:vote", "match:undo",
+  "match:undoArbiter", "match:pause", "match:resume", "match:dq",
+  "match:medical", "match:saveFallo", "timer:addSeconds",
+  "match:skipToFlags", "mesa:flagVote", "mesa:confirmRound",
+  "mesa:undoRound", "tul:finish", "tul:reset",
+]);
+
+interface MatchResultRecord {
+  fightId: string;
+  categoryId: string;
+  winner: "red" | "blue" | "draw";
+  reason: string;
+  flagsRed: number;
+  flagsBlue: number;
+  warningsRed: number;
+  warningsBlue: number;
+  foulsRed: number;
+  foulsBlue: number;
+  status: "pending_confirmation" | "confirmed";
+}
 
 function judgesLabel(count: number): string {
   return count === 1 ? "1 juez" : `${count} jueces`;
@@ -952,7 +974,7 @@ function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
     refs.current[currentIndex]?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
   }, [currentIndex]);
 
-  const groupIds = [...new Set(fights.map((f) => f.groupId))];
+  const groupIds = [...new Set(fights.map((f) => f.groupId).filter((id): id is string => Boolean(id)))];
   const hasMultipleGroups = groupIds.length > 1;
 
   function groupLabel(groupId: string | undefined): string {
@@ -975,7 +997,7 @@ function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
   let lastGroupId: string | null = null;
   for (let i = 0; i < fights.length; i++) {
     const fight = fights[i];
-    if (hasMultipleGroups && fight.groupId !== lastGroupId) {
+    if (hasMultipleGroups && fight.groupId && fight.groupId !== lastGroupId) {
       items.push({ type: "label", groupId: fight.groupId, first: lastGroupId === null });
       lastGroupId = fight.groupId;
     }
@@ -1645,7 +1667,7 @@ function FlagCounterField({
 }
 
 export function FightPage() {
-  const { connected, state, emit, socket } = useSocket();
+  const { connected, stateReady, state: socketState, emit: emitSocket, request, socket } = useSocket();
   const navigate = useNavigate();
   const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights, addTiebreakFights, postponeFight, resetFight, reset, addGuestFight } =
     useTournamentStore(
@@ -1667,6 +1689,22 @@ export function FightPage() {
       }))
     );
 
+  const state = socketState.categoryId && socketState.categoryId !== config.id
+    ? {
+        ...socketState,
+        rules: null,
+        match: null,
+        matchState: null,
+        matchPaused: false,
+        judges: [],
+        judgeVotes: {},
+        judgeTotals: {},
+        penaltyCounts: { warnings: { red: 0, blue: 0 }, fouls: { red: 0, blue: 0 } },
+        roundFlags: [],
+        tulPhase: "idle" as const,
+      }
+    : socketState;
+
   const [loaded, setLoaded] = React.useState(false);
   const [confirmRedo, setConfirmRedo] = React.useState(false);
   const [bottomTab, setBottomTab] = React.useState<"mesa" | "porjuez" | "remotos">(
@@ -1674,6 +1712,7 @@ export function FightPage() {
   );
   const [showFightList, setShowFightList] = React.useState(false);
   const [resultDialogOpen, setResultDialogOpen] = React.useState(false);
+  const [isConfirmingResult, setIsConfirmingResult] = React.useState(false);
   const [resultFlagsRed, setResultFlagsRed] = React.useState(0);
   const [resultFlagsBlue, setResultFlagsBlue] = React.useState(0);
   const [winnerOverlayOpen, setWinnerOverlayOpen] = React.useState(false);
@@ -1688,6 +1727,16 @@ export function FightPage() {
   const prevPhaseRef = React.useRef<string>("idle");
 
   const currentFight = fights[currentFightIndex];
+  function emit(event: string, data?: unknown) {
+    if (!MATCH_CONTEXT_EVENTS.has(event) || !currentFight) {
+      emitSocket(event, data);
+      return;
+    }
+    const payload = data && typeof data === "object" && !Array.isArray(data)
+      ? data as Record<string, unknown>
+      : {};
+    emitSocket(event, { ...payload, categoryId: config.id, matchId: currentFight.id });
+  }
   const { matchState, matchPaused, judges } = state;
   const penaltyCounts = state.penaltyCounts ?? { warnings: { red: 0, blue: 0 }, fouls: { red: 0, blue: 0 } };
   const phase = matchState?.phase ?? "idle";
@@ -1777,7 +1826,8 @@ export function FightPage() {
   // The server emits 'fights:imported' after a successful import-fights call.
   React.useEffect(() => {
     if (!socket) return;
-    function onFightsImported(payload: { fights: Array<{ id: string; red: { id: string; name: string }; blue: { id: string; name: string }; completed: boolean; groupId?: string }>; sourceRingLabel?: string | null }) {
+    function onFightsImported(payload: { categoryId?: string | null; fights: Array<{ id: string; red: { id: string; name: string }; blue: { id: string; name: string }; completed: boolean; groupId?: string }>; sourceRingLabel?: string | null }) {
+      if (payload.categoryId !== config.id) return;
       const srcLabel = payload.sourceRingLabel ?? "Mesa Central";
       addImportedFights(
         payload.fights.map((f) => ({
@@ -1791,13 +1841,12 @@ export function FightPage() {
       );
       toast.warning(
         `📥 ${payload.fights.length} pelea${payload.fights.length !== 1 ? "s" : ""} de ${srcLabel}`,
-        { description: "Revisalas en el panel \"Peleas reasignadas\" de la página de combate.", duration: 8000 }
+        { description: "Las peleas se agregaron a la lista de este tatami.", duration: 8000 }
       );
-      setShowImportedPanel(true);
     }
     socket.on('fights:imported', onFightsImported);
     return () => { socket.off('fights:imported', onFightsImported); };
-  }, [socket, addImportedFights]);
+  }, [socket, addImportedFights, config.id]);
 
   // Listen 'fight:remote-completed': el tatami destino terminó una pelea reasignada
   // y nos notifica el resultado para que podamos completarla en nuestro Zustand.
@@ -1805,17 +1854,20 @@ export function FightPage() {
     if (!socket) return;
     function onRemoteCompleted(payload: {
       fightId: string;
+      categoryId?: string | null;
       winner: string;
       flagsRed: number;
       flagsBlue: number;
       completedIn: string;
     }) {
+      if (payload.categoryId !== config.id) return;
+      const localFight = useTournamentStore.getState().fights.find((fight) => fight.id === payload.fightId);
+      if (!localFight || localFight.completed) return;
       completeFight(
         payload.fightId,
         payload.winner as "red" | "blue" | "draw",
         `Jugada en ${payload.completedIn}`,
-        payload.flagsRed,
-        payload.flagsBlue,
+        { flagsRed: payload.flagsRed, flagsBlue: payload.flagsBlue },
       );
       const winnerLabel = payload.winner === "red" ? "Rojo" : payload.winner === "blue" ? "Azul" : "Empate";
       toast.success(`✅ Resultado de ${payload.completedIn}: ${winnerLabel} ganó`, {
@@ -1824,7 +1876,7 @@ export function FightPage() {
     }
     socket.on('fight:remote-completed', onRemoteCompleted);
     return () => { socket.off('fight:remote-completed', onRemoteCompleted); };
-  }, [socket, completeFight]);
+  }, [socket, completeFight, config.id]);
 
   // Strip any leftover 'importedFrom' fights persisted from a previous session.
   // Guest fights (EXT: prefix) are intentional and stay.
@@ -1839,16 +1891,16 @@ export function FightPage() {
   // peleas importadas mientras la FightPage no estaba abierta (socket event perdido).
   // addImportedFights deduplica por ID, así que es seguro llamarlo aunque el store
   // ya tenga peleas de un torneo local.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount to sync imported fights from server DB
+  // biome-ignore lint/correctness/useExhaustiveDependencies: keyed category remounts this page to sync its server queue
   React.useEffect(() => {
-    fetch("/api/ring/queue")
+    fetch(`/api/ring/queue?categoryId=${encodeURIComponent(config.id)}`)
       .then((r) => r.json())
-      .then((queue: Array<{ fight: { id: string; sourceRing: string | null; red: { id: string; name: string }; blue: { id: string; name: string } } }>) => {
+      .then((queue: Array<{ fight: { id: string; categoryId?: string | null; sourceRing: string | null; red: { id: string; name: string }; blue: { id: string; name: string } } }>) => {
         if (!Array.isArray(queue) || queue.length === 0) return;
         // Only import fights that came from another ring (sourceRing != null).
         // Local fights (sourceRing == null) already live in the Zustand store — importing
         // them here would duplicate them and show them as "Reasignadas desde Mesa Central".
-        const fromOtherRing = queue.filter(({ fight }) => !!fight.sourceRing);
+        const fromOtherRing = queue.filter(({ fight }) => fight.categoryId === config.id && !!fight.sourceRing);
         if (fromOtherRing.length === 0) return;
         addImportedFights(
           fromOtherRing.map(({ fight: f }) => ({
@@ -1861,7 +1913,7 @@ export function FightPage() {
         );
       })
       .catch(() => { /* non-critical */ });
-  }, []); // intentional empty deps — run once on mount
+  }, [config.id]);
 
   // Auto-sync: garantiza que el servidor DB tiene todas las peleas pendientes.
   // INSERT OR IGNORE → seguro llamarlo varias veces, no resetea estado.
@@ -1873,7 +1925,7 @@ export function FightPage() {
     if (pending.length === 0) return;
     const uniqueCompetitors = Array.from(
       new Map(
-        pending.flatMap((f) => [
+        fights.flatMap((f) => [
           [f.red.id, { id: f.red.id, name: f.red.name, team: f.red.team }],
           [f.blue.id, { id: f.blue.id, name: f.blue.name, team: f.blue.team }],
         ])
@@ -1883,14 +1935,40 @@ export function FightPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        categoryId: config.id,
+        categoryName: config.categoryName,
+        tournamentName: config.tournamentName,
         competitors: uniqueCompetitors,
-        fights: pending.map((f) => ({ id: f.id, red_id: f.red.id, blue_id: f.blue.id })),
+        fights: fights.map((f) => ({ id: f.id, red_id: f.red.id, blue_id: f.blue.id, completed: f.completed })),
       }),
     }).catch(() => { /* non-critical */ });
-  }, [fights.length]);
+  }, [fights.length, config.id, config.categoryName, config.tournamentName]);
 
-  function handleLoad() {
+  const loadingMatchRef = React.useRef<string | null>(null);
+  function waitForSocketState(predicate: (next: ServerState) => boolean, timeoutMs = 5000): Promise<boolean> {
+    if (predicate(socketState)) return Promise.resolve(true);
+    if (!socket) return Promise.resolve(false);
+    return new Promise((resolve) => {
+      const timeout = window.setTimeout(() => {
+        socket.off("state:update", onStateUpdate);
+        resolve(false);
+      }, timeoutMs);
+      const onStateUpdate = (next: ServerState) => {
+        if (!predicate(next)) return;
+        window.clearTimeout(timeout);
+        socket.off("state:update", onStateUpdate);
+        resolve(true);
+      };
+      socket.on("state:update", onStateUpdate);
+    });
+  }
+
+  async function handleLoad() {
     if (!currentFight) return;
+    const requestKey = `${config.id}:${currentFight.id}`;
+    if (loadingMatchRef.current === requestKey) return;
+    loadingMatchRef.current = requestKey;
+    useTournamentStore.getState().setCategoryOperationReason("Confirmando la carga del combate con el servidor…");
     const baseRules = (config.ruleSet as RuleSetSparring) ?? DEFAULT_RULES;
     // judgingMode must match the UI mode: mobile judges score points, mesa judges vote flags
     let rules: RuleSetSparring = {
@@ -1912,7 +1990,9 @@ export function FightPage() {
     if (currentFight.isGoldenPointFight) {
       rules = { ...rules, rounds: { ...rules.rounds, count: 1, duration_seconds: 1, golden_point: true, overtime_seconds: 0 } };
     }
-    emit("match:load", {
+    const response = await request<{ ok: boolean; error?: string; warning?: string }>("match:load", {
+      categoryId: config.id,
+      tournamentName: config.tournamentName,
       rules,
       match: {
         id: currentFight.id,
@@ -1923,7 +2003,24 @@ export function FightPage() {
         blue: { id: currentFight.blue.id, name: currentFight.blue.name, club: currentFight.blue.team },
       },
     });
-    setLoaded(true);
+    loadingMatchRef.current = null;
+    if (!response?.ok) {
+      useTournamentStore.getState().setCategoryOperationReason(null);
+      toast.error(response?.error ?? "No se pudo confirmar la carga del combate. El estado local no avanzó.");
+      return;
+    }
+    if (response.warning) toast.warning(response.warning);
+    const stateSynced = await waitForSocketState((next) =>
+      next.categoryId === config.id && next.match?.id === currentFight.id && !next.resultConfirmed,
+    );
+    useTournamentStore.getState().setCategoryOperationReason(null);
+    if (!stateSynced) {
+      toast.warning("El servidor aceptó la carga, pero todavía no confirmó su estado en esta pantalla. Se conserva el bloqueo del servidor.");
+    }
+    const selectedFight = useTournamentStore.getState().fights[useTournamentStore.getState().currentFightIndex];
+    if (selectedFight?.id === currentFight.id && useTournamentStore.getState().config.id === config.id) {
+      setLoaded(true);
+    }
   }
 
   // Auto-cargar combates de desempate y Punto de Oro cuando se convierten en el combate activo
@@ -1946,6 +2043,29 @@ export function FightPage() {
     }
   }, [connected, currentFight?.id, currentFight?.completed, state.match?.id, state.matchState, loaded]);
 
+  // Reconcile a durable server result after reload/reconnect before allowing local progression.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reconnect and selected fight identify the recovery request
+  React.useEffect(() => {
+    if (!connected || !stateReady || !currentFight) return;
+    let cancelled = false;
+    void (async () => {
+      const identity = { categoryId: config.id, matchId: currentFight.id };
+      const response = await request<{ ok: boolean; result: MatchResultRecord | null }>("match:result:get", identity);
+      if (cancelled || !response?.ok || !response.result) return;
+      let result = response.result;
+      if (result.status === "pending_confirmation"
+        && (state.match?.id !== currentFight.id || state.categoryId !== config.id)) {
+        const recovered = await requestConfirmedResult(currentFight.id);
+        if (!recovered) return;
+        result = recovered;
+      }
+      if (!cancelled && result.status === "confirmed" && applyConfirmedResult(result)) {
+        advanceAfterConfirmedResult(result.fightId);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [connected, stateReady, config.id, currentFight?.id]);
+
   // When judge mode changes while a fight is loaded in "idle", reload so judgingMode matches.
   // If mid-fight, just warn — change takes effect on next fight.
   // In Tul mode, skip: tab changes don't affect judgingMode (always flags), and reloading would reset tulPhase.
@@ -1962,32 +2082,114 @@ export function FightPage() {
     }
   });
 
-  function handleStartTiebreaker() {
-    if (!currentFight) return;
-    const reason = matchState?.result?.reason ?? "points";
-    completeFight(currentFight.id, "draw", reason, resultFlagsRed, resultFlagsBlue, penaltyCounts.warnings.red, penaltyCounts.warnings.blue, penaltyCounts.fouls.red, penaltyCounts.fouls.blue);
-    const matchId = currentFight.bracketMatchId;
-    const freshFights = useTournamentStore.getState().fights;
-    const completedTbs = freshFights.filter(
-      (f) => f.isTiebreakExtra && f.completed && f.bracketMatchId === matchId
-    ).length;
-    const isGoldenPoint = completedTbs >= (config.maxTiebreakers ?? 1);
+  async function requestConfirmedResult(matchId: string): Promise<MatchResultRecord | null> {
+    const identity = { categoryId: config.id, matchId };
+    const confirmation = await request<{ ok: boolean; error?: string; result?: MatchResultRecord }>(
+      "match:saveFallo",
+      identity,
+    );
+    if (confirmation?.ok && confirmation.result?.status === "confirmed") return confirmation.result;
 
-    const nextFight: FightEntry = {
-      id: crypto.randomUUID(),
-      red: currentFight.red,
-      blue: currentFight.blue,
-      completed: false,
-      isTiebreakExtra: !isGoldenPoint,
-      isGoldenPointFight: isGoldenPoint || undefined,
-      // For tiebreak group fights (no bracketMatchId), store parent's id so GP can be linked back
-      bracketMatchId: currentFight.bracketMatchId ?? currentFight.id,
-      tiebreakerSeconds: isGoldenPoint ? undefined : tiebreakerDuration,
-      groupId: currentFight.groupId,
-    };
-    addTiebreakFights([nextFight]);
-    setResultDialogOpen(false);
+    const recovered = await request<{ ok: boolean; error?: string; result: MatchResultRecord | null }>(
+      "match:result:get",
+      identity,
+    );
+    if (recovered?.ok && recovered.result?.status === "confirmed") return recovered.result;
+    if (confirmation?.error) toast.error(confirmation.error);
+    else toast.error("No se pudo verificar el guardado. El combate sigue bloqueado y podés reintentar.");
+    return null;
+  }
+
+  function applyConfirmedResult(result: MatchResultRecord): boolean {
+    if (result.categoryId !== config.id) return false;
+    const before = useTournamentStore.getState();
+    const target = before.fights.find((fight) => fight.id === result.fightId);
+    if (!target) return false;
+    if (target.completed && target.winner !== result.winner) {
+      toast.error("El resultado durable no coincide con el resultado local; no se sobrescribió la llave.");
+      return false;
+    }
+    if (!target.completed) {
+      completeFight(result.fightId, result.winner, result.reason, {
+        flagsRed: result.flagsRed,
+        flagsBlue: result.flagsBlue,
+        warningsRed: result.warningsRed,
+        warningsBlue: result.warningsBlue,
+        foulsRed: result.foulsRed,
+        foulsBlue: result.foulsBlue,
+      });
+    }
+    if (target.bracketMatchId && result.winner !== "draw") {
+      const bracketMatch = useTournamentStore.getState().bracketMatches.find((match) => match.id === target.bracketMatchId);
+      const winnerId = result.winner === "red" ? target.red.id : target.blue.id;
+      if (bracketMatch?.completed && bracketMatch.winnerId !== winnerId) {
+        toast.error("La llave ya tiene un ganador distinto; se conservó el estado local para revisión.");
+        return false;
+      }
+      if (bracketMatch && !bracketMatch.completed) completeBracketMatch(target.bracketMatchId, winnerId);
+    }
+    return true;
+  }
+
+  function advanceAfterConfirmedResult(matchId: string) {
+    const latest = useTournamentStore.getState();
+    const targetIndex = latest.fights.findIndex((fight) => fight.id === matchId);
+    if (targetIndex === -1 || latest.currentFightIndex !== targetIndex) return;
+    const remainingIncomplete = latest.fights.some((fight) => !fight.completed);
+    if (!remainingIncomplete) {
+      const bracketStillPending = config.mode === "elimination" && latest.bracketMatches.some((match) => !match.completed);
+      if (bracketStillPending) {
+        navigate("/bracket");
+      } else {
+        setPhase("results");
+        navigate("/standings");
+      }
+    } else {
+      const nextIndex = latest.fights.findIndex((fight) => !fight.completed);
+      if (nextIndex !== -1) setCurrentFightIndex(nextIndex);
+    }
     setLoaded(false);
+  }
+
+  async function handleStartTiebreaker() {
+    if (!currentFight) return;
+    if (isConfirmingResult) return;
+    setIsConfirmingResult(true);
+    const operationReason = "Confirmando el empate antes de continuar…";
+    useTournamentStore.getState().setCategoryOperationReason(operationReason);
+    try {
+      const result = await requestConfirmedResult(currentFight.id);
+      setIsConfirmingResult(false);
+      if (!result || result.winner !== "draw" || !applyConfirmedResult(result)) return;
+      const matchId = currentFight.bracketMatchId;
+      const freshFights = useTournamentStore.getState().fights;
+      const completedTbs = freshFights.filter(
+        (f) => f.isTiebreakExtra && f.completed && f.bracketMatchId === matchId
+      ).length;
+      const isGoldenPoint = completedTbs >= (config.maxTiebreakers ?? 1);
+
+      const nextFight: FightEntry = {
+        id: crypto.randomUUID(),
+        red: currentFight.red,
+        blue: currentFight.blue,
+        completed: false,
+        isTiebreakExtra: !isGoldenPoint,
+        isGoldenPointFight: isGoldenPoint || undefined,
+        bracketMatchId: currentFight.bracketMatchId ?? currentFight.id,
+        tiebreakerSeconds: isGoldenPoint ? undefined : tiebreakerDuration,
+        groupId: currentFight.groupId,
+      };
+      addTiebreakFights([nextFight]);
+      setResultDialogOpen(false);
+      setLoaded(false);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo confirmar el empate.");
+    } finally {
+      setIsConfirmingResult(false);
+      if (useTournamentStore.getState().categoryOperationReason === operationReason) {
+        useTournamentStore.getState().setCategoryOperationReason(null);
+      }
+    }
   }
 
   function handleOpenResultDialog() {
@@ -2009,38 +2211,30 @@ export function FightPage() {
     setResultDialogOpen(true);
   }
 
-  function handleConfirmResult() {
+  async function handleConfirmResult() {
     if (!currentFight) return;
+    if (isConfirmingResult) return;
     const winner = matchState?.result?.winner;
-    const reason = matchState?.result?.reason ?? "points";
     if (!winner) return;
     // En eliminación, final, desempate y Punto de Oro: los empates deben seguir peleando — nunca confirmar directo
     const requiresWinner = config.mode === "elimination" || currentFight.isFinalFight || currentFight.isTiebreakExtra || currentFight.isGoldenPointFight;
     if (winner === "draw" && requiresWinner) return;
-    completeFight(currentFight.id, winner, reason, { flagsRed: resultFlagsRed, flagsBlue: resultFlagsBlue, warningsRed: penaltyCounts.warnings.red, warningsBlue: penaltyCounts.warnings.blue, foulsRed: penaltyCounts.fouls.red, foulsBlue: penaltyCounts.fouls.blue });
-    if (currentFight.bracketMatchId && winner !== "draw") {
-      completeBracketMatch(currentFight.bracketMatchId, winner === "red" ? currentFight.red.id : currentFight.blue.id);
-    }
-    setResultDialogOpen(false);
-    // Quedan peleas incompletas (sin contar la que se acaba de completar)?
-    const remainingIncomplete = fights.some((f, i) => i !== currentFightIndex && !f.completed);
-    if (!remainingIncomplete) {
-      // En modo eliminación, leer el estado actualizado del store para ver si quedan rondas del bracket
-      const latestBracketMatches = useTournamentStore.getState().bracketMatches;
-      const bracketStillPending = config.mode === "elimination" && latestBracketMatches.some((m) => !m.completed);
-      if (bracketStillPending) {
-        // Quedan rondas por jugar — volver al bracket para que el árbitro inicie la siguiente
-        navigate("/bracket");
-      } else {
-        setPhase("results");
-        navigate("/standings");
+    setIsConfirmingResult(true);
+    const operationReason = "Guardando el resultado confirmado…";
+    useTournamentStore.getState().setCategoryOperationReason(operationReason);
+    try {
+      const result = await requestConfirmedResult(currentFight.id);
+      if (!result || result.winner !== winner || !applyConfirmedResult(result)) return;
+      setResultDialogOpen(false);
+      advanceAfterConfirmedResult(currentFight.id);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo confirmar el resultado.");
+    } finally {
+      setIsConfirmingResult(false);
+      if (useTournamentStore.getState().categoryOperationReason === operationReason) {
+        useTournamentStore.getState().setCategoryOperationReason(null);
       }
-    } else {
-      // Siguiente incompleta después de la actual, o la primera incompleta si no hay más adelante
-      const nextIdx = fights.findIndex((f, i) => i > currentFightIndex && !f.completed);
-      setCurrentFightIndex(nextIdx !== -1 ? nextIdx : fights.findIndex((f, i) => i !== currentFightIndex && !f.completed));
     }
-    setLoaded(false);
   }
 
   if (fights.length === 0) {
@@ -2077,7 +2271,7 @@ export function FightPage() {
             const { winner, reason } = matchState.result;
             const label = winner === "draw" ? "Empate" : winner === "red" ? redName : blueName;
             const lastRound = state.roundFlags[state.roundFlags.length - 1];
-            const votes = lastRound?.votes ?? state.judgeVotes ?? {};
+            const votes = state.judgeVotes ?? {};
             const hasIndividualVotes = Object.keys(votes).length > 0;
             const judgeIds = Array.from({ length: config.judgesCount ?? 4 }, (_, i) => `J${i + 1}`);
             return (
@@ -3242,7 +3436,7 @@ export function FightPage() {
                   const nextIsGoldenPoint = afterThisCount >= (config.maxTiebreakers ?? 1);
 
                   // Round-robin group fights: draw is valid but referee can optionally tiebreak
-                  const isRoundRobinGroup = config.mode === "roundRobin" && !currentFight?.isFinalFight && !isGPFight && !currentFight?.isTiebreakExtra;
+                  const isRoundRobinGroup = config.mode === "round-robin" && !currentFight?.isFinalFight && !isGPFight && !currentFight?.isTiebreakExtra;
 
                   if (isDraw && isElim) {
                     return (
@@ -3278,6 +3472,7 @@ export function FightPage() {
                           </div>
                         )}
                         <Button
+                          disabled={isConfirmingResult}
                           className={nextIsGoldenPoint
                             ? "w-full bg-yellow-600 hover:bg-yellow-500 text-white"
                             : "w-full bg-orange-700 hover:bg-orange-600 text-white"}
@@ -3285,7 +3480,7 @@ export function FightPage() {
                           onClick={handleStartTiebreaker}
                         >
                           <Zap className="size-4" />
-                          {nextIsGoldenPoint ? "Iniciar Punto de Oro" : "Iniciar desempate"}
+                          {isConfirmingResult ? "Guardando resultado..." : nextIsGoldenPoint ? "Iniciar Punto de Oro" : "Iniciar desempate"}
                         </Button>
                       </>
                     );
@@ -3312,14 +3507,15 @@ export function FightPage() {
                           </div>
                         </div>
                         <Button
+                          disabled={isConfirmingResult}
                           className="w-full bg-orange-700 hover:bg-orange-600 text-white"
                           size="lg"
                           onClick={handleStartTiebreaker}
                         >
                           <Zap className="size-4" />
-                          Iniciar desempate
+                          {isConfirmingResult ? "Guardando resultado..." : "Iniciar desempate"}
                         </Button>
-                        <Button className="w-full" variant="outline" size="lg" onClick={handleConfirmResult}>
+                        <Button disabled={isConfirmingResult} className="w-full" variant="outline" size="lg" onClick={handleConfirmResult}>
                           <ChevronRight className="size-4" />
                           Confirmar empate
                         </Button>
@@ -3327,9 +3523,9 @@ export function FightPage() {
                     );
                   }
                   return (
-                    <Button className="w-full" size="lg" onClick={handleConfirmResult}>
+                    <Button disabled={isConfirmingResult} className="w-full" size="lg" onClick={handleConfirmResult}>
                       <ChevronRight className="size-4" />
-                      Confirmar y continuar
+                      {isConfirmingResult ? "Guardando resultado..." : "Confirmar y continuar"}
                     </Button>
                   );
                 })()}

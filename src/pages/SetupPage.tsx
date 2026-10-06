@@ -21,6 +21,9 @@ import * as XLSX from "xlsx";
 import { Pencil, Trash2, Swords, AlertCircle, Plus, Wifi, Smartphone, Zap, ArrowRight, Trophy, FileSpreadsheet, X, ChevronDown } from "lucide-react";
 import { generateGroupsTournament, generateEliminationBracket, getGroupDistribution } from "@/lib/bracket";
 import { cn } from "@/lib/utils";
+import { buildCategoryName, GUP_GRADE_OPTIONS, type GradeSystem } from "@/lib/category-name";
+import { availableCategoryFormats, defaultCategoryFormat, isCategoryFormatAllowed } from "@/lib/category-mode";
+import { ageSelectionFromPreset, isMatchingAgePreset, formatCategoryAge } from "@/lib/category-age";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
 import { COPA_DANES_26, fetchPresets, type TimePreset } from "@/lib/tournament-presets";
@@ -185,7 +188,7 @@ function parseExcelFile(buffer: ArrayBuffer): ParsedCategory[] {
 
           if (competitors.length >= 2) {
             const catName = [age, gender, weight].filter(Boolean).join(" · ");
-            categories.push({ name: catName, competitors });
+            categories.push({ name: catName, section: age.toUpperCase(), discipline: "combate", competitors });
           }
         }
       }
@@ -417,18 +420,8 @@ function FixturePreview({ fights, mode, roundLabels }: Readonly<{
 const PESO_OPTIONS = ["Liviano A", "Liviano B", "Mediano A", "Mediano B", "Pesado A", "Pesado B"];
 const GENERO_OPTIONS = ["M", "F"];
 
-type CatState = { weight: string; beltFrom: string; beltTo: string; gender: string; ageFrom: string; ageTo: string };
-const EMPTY_CAT: CatState = { weight: "", beltFrom: "", beltTo: "", gender: "", ageFrom: "", ageTo: "" };
-
-function buildCategoryName(c: CatState): string {
-  const parts: string[] = [];
-  if (c.weight) parts.push(c.weight);
-  if (c.beltFrom || c.beltTo) parts.push(`${c.beltFrom || "?"}-${c.beltTo || "?"} Dan`);
-  if (c.gender) parts.push(c.gender);
-  if (c.ageFrom || c.ageTo) parts.push(`${c.ageFrom || "?"}-${c.ageTo || "?"} a\u00f1os`);
-  return parts.join(" \u00b7 ");
-}
-
+type CatState = { weight: string; gradeSystem: GradeSystem; beltFrom: string; beltTo: string; gupBand: string; gender: string; ageFrom: string; ageTo: string; ageOpenEnded: boolean; ageMode: "preset" | "custom" };
+const EMPTY_CAT: CatState = { weight: "", gradeSystem: "DAN", beltFrom: "", beltTo: "", gupBand: "", gender: "", ageFrom: "", ageTo: "", ageOpenEnded: false, ageMode: "custom" };
 function ChipGroup({ label, options, value, onChange }: Readonly<{
   label: string;
   options: string[];
@@ -503,6 +496,11 @@ export function SetupPage() {
   const { socket } = useSocket();
   const [cat, setCat] = useState<CatState>(EMPTY_CAT);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
+  useEffect(() => {
+    if (config.matchType === "tul" && !isCategoryFormatAllowed("tul", config.mode as "round-robin" | "elimination")) {
+      setConfig({ mode: defaultCategoryFormat("tul") });
+    }
+  }, [config.matchType, config.mode, setConfig]);
   const showWelcome = competitors.length === 0 && !setupStarted && !welcomeDismissed;
 
   // Confirmación de 2 pasos para no borrar categoría activa por accidente
@@ -527,7 +525,8 @@ export function SetupPage() {
   // Cuando Mesa Central reasigna peleas a este tatami, navegar automáticamente a /fight.
   useEffect(() => {
     if (!socket) return;
-    function onFightsImported(payload: { fights: Array<{ id: string; red: { id: string; name: string }; blue: { id: string; name: string }; completed: boolean; groupId?: string }>; sourceRingLabel?: string | null }) {
+    function onFightsImported(payload: { categoryId?: string | null; fights: Array<{ id: string; red: { id: string; name: string }; blue: { id: string; name: string }; completed: boolean; groupId?: string }>; sourceRingLabel?: string | null }) {
+      if (payload.categoryId !== config.id) return;
       addImportedFights(
         payload.fights.map((f) => ({
           id: f.id,
@@ -546,29 +545,32 @@ export function SetupPage() {
     }
     socket.on("fights:imported", onFightsImported);
     return () => { socket.off("fights:imported", onFightsImported); };
-  }, [socket, addImportedFights, navigate]);
+  }, [socket, addImportedFights, navigate, config.id]);
 
   // Cuando el tatami destino termina una pelea reasignada, recibir el resultado.
   useEffect(() => {
     if (!socket) return;
     function onRemoteCompleted(payload: {
       fightId: string;
+      categoryId?: string | null;
       winner: string;
       flagsRed: number;
       flagsBlue: number;
       completedIn: string;
     }) {
+      if (payload.categoryId && payload.categoryId !== config.id) return;
+      const localFight = useTournamentStore.getState().fights.find((fight) => fight.id === payload.fightId);
+      if (!localFight || localFight.completed) return;
       completeFight(
         payload.fightId,
         payload.winner as "red" | "blue" | "draw",
         `Jugada en ${payload.completedIn}`,
-        payload.flagsRed,
-        payload.flagsBlue,
+        { flagsRed: payload.flagsRed, flagsBlue: payload.flagsBlue },
       );
     }
     socket.on("fight:remote-completed", onRemoteCompleted);
     return () => { socket.off("fight:remote-completed", onRemoteCompleted); };
-  }, [socket, completeFight]);
+  }, [socket, completeFight, config.id]);
 
   function updateCat(patch: Partial<CatState>) {
     const next = { ...cat, ...patch };
@@ -635,6 +637,8 @@ export function SetupPage() {
       judgesCount: judges,
       rounds: { ...rules.rounds, count: p.roundCount, duration_seconds: p.durationSeconds },
     };
+    const age = ageSelectionFromPreset(p);
+    if (age) updateCat({ ...age, ageMode: "preset" });
     setConfig({
       ruleSet: updated,
       judgesCount: updated.judgesCount,
@@ -653,7 +657,8 @@ export function SetupPage() {
       config.finalRounds === p.finalRounds &&
       config.finalSeconds === p.finalSeconds &&
       config.tiebreakerSeconds === p.tiebreakerSeconds &&
-      config.maxTiebreakers === p.maxTiebreakers
+      config.maxTiebreakers === p.maxTiebreakers &&
+      (p.ageFrom === undefined || isMatchingAgePreset(p, cat))
     );
   }
 
@@ -805,7 +810,9 @@ export function SetupPage() {
               blue_id: f.blue.id,
               group_id: f.groupId,
             })),
+            categoryId: config.id,
             categoryName: config.categoryName,
+            tournamentName: config.tournamentName,
             newCategory: true,
           }),
         });
@@ -1073,46 +1080,60 @@ export function SetupPage() {
 
             <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
             <div className="flex flex-wrap gap-4 items-end">
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Grado (Dan)</span>
-                <div className="flex items-center gap-1.5">
-                  <Input
-                    type="number"
-                    placeholder="Desde"
-                    value={cat.beltFrom}
-                    onChange={(e) => updateCat({ beltFrom: e.target.value })}
-                    className="w-24 h-9 text-sm"
+              <div className="space-y-3 min-w-[16rem]">
+                <ChipGroup
+                  label="Sistema de grado"
+                  options={["DAN", "GUPS"]}
+                  value={cat.gradeSystem}
+                  onChange={(value) => {
+                    if (value === "DAN" || value === "GUPS") updateCat({ gradeSystem: value });
+                  }}
+                />
+                {cat.gradeSystem === "DAN" ? (
+                  <div className="space-y-2">
+                    <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Grado (Dan)</span>
+                    <div className="flex items-center gap-1.5">
+                      <Input
+                        type="number"
+                        placeholder="Desde"
+                        value={cat.beltFrom}
+                        onChange={(e) => updateCat({ beltFrom: e.target.value })}
+                        className="w-24 h-9 text-sm"
+                      />
+                      <span className="text-xs text-muted-foreground/50">—</span>
+                      <Input
+                        type="number"
+                        placeholder="Hasta"
+                        value={cat.beltTo}
+                        onChange={(e) => updateCat({ beltTo: e.target.value })}
+                        className="w-24 h-9 text-sm"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <ChipGroup
+                    label="Rango GUP"
+                    options={[...GUP_GRADE_OPTIONS]}
+                    value={cat.gupBand}
+                    onChange={(value) => updateCat({ gupBand: value })}
                   />
-                  <span className="text-xs text-muted-foreground/50">—</span>
-                  <Input
-                    type="number"
-                    placeholder="Hasta"
-                    value={cat.beltTo}
-                    onChange={(e) => updateCat({ beltTo: e.target.value })}
-                    className="w-24 h-9 text-sm"
-                  />
-                </div>
+                )}
               </div>
               <ChipGroup label="Género" options={GENERO_OPTIONS} value={cat.gender} onChange={(v) => updateCat({ gender: v })} />
               <div className="space-y-2">
                 <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Edad</span>
-                <div className="flex items-center gap-1.5">
-                  <Input
-                    type="number"
-                    placeholder="Desde"
-                    value={cat.ageFrom}
-                    onChange={(e) => updateCat({ ageFrom: e.target.value })}
-                    className="w-24 h-9 text-sm"
-                  />
-                  <span className="text-xs text-muted-foreground/50">—</span>
-                  <Input
-                    type="number"
-                    placeholder="Hasta"
-                    value={cat.ageTo}
-                    onChange={(e) => updateCat({ ageTo: e.target.value })}
-                    className="w-24 h-9 text-sm"
-                  />
-                </div>
+                {cat.ageMode === "preset" ? (
+                  <div className="flex h-9 items-center gap-2">
+                    <span className="text-sm font-medium">{formatCategoryAge(cat)}</span>
+                    <button type="button" className="text-xs text-primary underline-offset-4 hover:underline" onClick={() => updateCat({ ageMode: "custom" })}>Personalizada</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <Input type="number" placeholder="Desde" value={cat.ageFrom} onChange={(e) => updateCat({ ageFrom: e.target.value, ageOpenEnded: false })} className="w-24 h-9 text-sm" />
+                    <span className="text-xs text-muted-foreground/50">?</span>
+                    <Input type="number" placeholder="Hasta" value={cat.ageTo} onChange={(e) => updateCat({ ageTo: e.target.value, ageOpenEnded: false })} className="w-24 h-9 text-sm" />
+                  </div>
+                )}
               </div>
               <div className="space-y-2">
                 <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Disciplina</span>
@@ -1124,7 +1145,7 @@ export function SetupPage() {
                       onClick={() => {
                         const updates: Partial<typeof config> = { matchType: t };
                         // Defaults por disciplina: tul → eliminación; sparring → round-robin
-                        updates.mode = t === "tul" ? "elimination" : "round-robin";
+                        updates.mode = defaultCategoryFormat(t);
                         setConfig(updates);
                       }}
                       className={cn(
@@ -1142,11 +1163,13 @@ export function SetupPage() {
               <div className="space-y-2">
                 <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Formato</span>
                 <div className="flex gap-2">
-                  {(["round-robin", "elimination"] as TournamentMode[]).map((m) => (
+                  {availableCategoryFormats(config.matchType ?? "sparring").map((m) => (
                     <button
                       key={m}
                       type="button"
-                      onClick={() => setConfig({ mode: m })}
+                      onClick={() => {
+                        if (isCategoryFormatAllowed(config.matchType ?? "sparring", m)) setConfig({ mode: m });
+                      }}
                       className={cn(
                         "rounded-full border font-medium transition-all duration-150",
                         config.mode === m

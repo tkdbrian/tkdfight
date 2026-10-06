@@ -7,6 +7,7 @@ export const MAX_FALLOS_IN_MEMORY = 500
 
 export type MatchInfo = {
   id: string
+  categoryId?: string
   ringId: string
   category?: string
   matchMode?: 'sparring' | 'patterns' | 'tul'
@@ -22,6 +23,8 @@ export type FalloEntry = {
   redScore: number
   blueScore: number
   winner: string
+  matchId?: string
+  categoryId?: string
 }
 
 export type JudgeTotals = Record<
@@ -51,6 +54,10 @@ export const state = {
   roundFlags: [] as Array<{ red: number; blue: number; draw: number; winner: 'red' | 'blue' | 'draw'; votes: Record<string, string> }>,
   tickInterval: null as ReturnType<typeof setInterval> | null,
   activeTournamentId: 1 as number,
+  matchTournamentId: null as number | null,
+  matchCategoryId: null as string | null,
+  resultConfirmed: false,
+  legacyMatchAssociationWarning: null as string | null,
   /** Fase de votación para modo Tul (no usa el engine de sparring) */
   tulPhase: 'idle' as 'idle' | 'voting' | 'finished',
 }

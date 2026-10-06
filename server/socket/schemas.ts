@@ -21,6 +21,8 @@ export const judgeConnectSchema = z
   .nullable()
 
 export const matchLoadSchema = z.object({
+  categoryId: z.string().min(1).max(128),
+  tournamentName: z.string().max(128).default('Torneo'),
   rules: z.unknown(), // engine validates internally; trust shape from setup
   match: z.object({
     id: fightIdSchema,
@@ -39,6 +41,15 @@ export const matchLoadSchema = z.object({
     }),
   }),
 })
+
+export const matchCommandContextSchema = z.object({
+  categoryId: z.string().min(1).max(128),
+  matchId: fightIdSchema,
+})
+
+export const matchResultConfirmationSchema = matchCommandContextSchema
+
+export const matchResultQuerySchema = matchCommandContextSchema
 
 export const matchEventSchema = z.object({
   judgeId: judgeIdSchema,

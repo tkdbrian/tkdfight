@@ -63,6 +63,7 @@ export interface BracketMatch {
 }
 
 export interface TournamentConfig {
+  id: string;
   tournamentName: string;
   categoryName: string;
   tableChief: string;
@@ -90,7 +91,20 @@ interface TournamentState {
   currentFightIndex: number;
   bracketMatches: BracketMatch[];
   bracketSeeds: (string | null)[];
+  categoryRevision: number;
+  categoryOperationReason: string | null;
 
+  setCategoryOperationReason: (reason: string | null) => void;
+  getCategoryEntries: () => TournamentCategoryEntry[];
+  hasValidCategoryRegistry: () => boolean;
+  createCategory: () => string | null;
+  selectCategory: (categoryId: string) => boolean;
+  hideCategory: (categoryId: string, fallbackCategoryId?: string) => boolean;
+  reopenCategory: (categoryId: string) => boolean;
+  cancelCategoryCreation: (categoryId: string) => boolean;
+  restoreSavedCategorySelection: () => boolean;
+  saveCategorySnapshot: () => boolean;
+  restoreCategorySnapshot: (categoryId: string) => boolean;
   setPhase: (phase: TournamentPhase) => void;
   setConfig: (config: Partial<TournamentConfig>) => void;
   addCompetitor: (competitor: Omit<CompetitorEntry, "id">) => void;
@@ -117,7 +131,166 @@ interface TournamentState {
   reset: () => void;
 }
 
+export interface TournamentCategorySnapshot {
+  phase: TournamentPhase;
+  config: TournamentConfig;
+  competitors: CompetitorEntry[];
+  fights: FightEntry[];
+  groups: TournamentGroup[];
+  currentFightIndex: number;
+  bracketMatches: BracketMatch[];
+  bracketSeeds: (string | null)[];
+  setupStarted: boolean;
+}
+
+interface TournamentCategoryRegistry {
+  version: 2;
+  categories: Record<string, TournamentCategorySnapshot>;
+  visibleCategoryIds: string[];
+  selectedCategoryId: string | null;
+  draftCategoryId: string | null;
+  draftReturnCategoryId: string | null;
+}
+
+export interface TournamentCategoryEntry {
+  id: string;
+  name: string;
+  tournamentName: string;
+  matchType?: "sparring" | "tul";
+  mode?: TournamentMode;
+  visible: boolean;
+  isDraft: boolean;
+  fightIds: string[];
+}
+
+export const TOURNAMENT_CATEGORY_STORAGE_KEY = "tkd-tournament-categories";
+
+function createCategoryId(): string {
+  return globalThis.crypto.randomUUID();
+}
+
+function cloneSnapshot(snapshot: TournamentCategorySnapshot): TournamentCategorySnapshot {
+  return JSON.parse(JSON.stringify(snapshot)) as TournamentCategorySnapshot;
+}
+
+function isSnapshot(value: unknown, categoryId: string): value is TournamentCategorySnapshot {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value as Partial<TournamentCategorySnapshot>;
+  return snapshot.config?.id === categoryId
+    && (snapshot.phase === "setup" || snapshot.phase === "fighting" || snapshot.phase === "results")
+    && Array.isArray(snapshot.competitors)
+    && Array.isArray(snapshot.fights)
+    && Array.isArray(snapshot.groups)
+    && Array.isArray(snapshot.bracketMatches)
+    && Array.isArray(snapshot.bracketSeeds)
+    && Number.isInteger(snapshot.currentFightIndex)
+    && typeof snapshot.setupStarted === "boolean";
+}
+
+function readCategoryRegistry(): TournamentCategoryRegistry | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(TOURNAMENT_CATEGORY_STORAGE_KEY);
+    if (raw === null) {
+      return {
+        version: 2,
+        categories: {},
+        visibleCategoryIds: [],
+        selectedCategoryId: null,
+        draftCategoryId: null,
+        draftReturnCategoryId: null,
+      };
+    }
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const registry = parsed as {
+      version?: number;
+      categories?: Record<string, TournamentCategorySnapshot>;
+      visibleCategoryIds?: string[];
+      selectedCategoryId?: string | null;
+      draftCategoryId?: string | null;
+      draftReturnCategoryId?: string | null;
+    };
+    if ((registry.version !== 1 && registry.version !== 2)
+      || !registry.categories
+      || typeof registry.categories !== "object"
+      || Array.isArray(registry.categories)) return null;
+    if (Object.entries(registry.categories).some(([id, snapshot]) => !isSnapshot(snapshot, id))) return null;
+    const categoryIds = Object.keys(registry.categories);
+    if (registry.version === 1) {
+      return {
+        version: 2,
+        categories: registry.categories,
+        visibleCategoryIds: categoryIds,
+        selectedCategoryId: categoryIds[0] ?? null,
+        draftCategoryId: null,
+        draftReturnCategoryId: null,
+      };
+    }
+    if (!Array.isArray(registry.visibleCategoryIds)
+      || registry.visibleCategoryIds.some((id) => typeof id !== "string" || !registry.categories?.[id])
+      || (registry.selectedCategoryId !== null && (typeof registry.selectedCategoryId !== "string" || !registry.categories[registry.selectedCategoryId] || !registry.visibleCategoryIds.includes(registry.selectedCategoryId)))
+      || (registry.draftCategoryId !== null && (typeof registry.draftCategoryId !== "string" || !registry.categories[registry.draftCategoryId]))
+      || (registry.draftReturnCategoryId !== null && (typeof registry.draftReturnCategoryId !== "string" || !registry.categories[registry.draftReturnCategoryId]))) return null;
+    return registry as TournamentCategoryRegistry;
+  } catch {
+    return null;
+  }
+}
+
+function writeCategoryRegistry(registry: TournamentCategoryRegistry): boolean {
+  try {
+    if (typeof localStorage === "undefined") return false;
+    localStorage.setItem(TOURNAMENT_CATEGORY_STORAGE_KEY, JSON.stringify(registry));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function saveSnapshot(snapshot: TournamentCategorySnapshot): boolean {
+  const registry = readCategoryRegistry();
+  if (!registry) return false;
+  if (!registry.categories[snapshot.config.id]) registry.visibleCategoryIds.push(snapshot.config.id);
+  registry.categories[snapshot.config.id] = cloneSnapshot(snapshot);
+  if (!registry.selectedCategoryId) registry.selectedCategoryId = snapshot.config.id;
+  if (registry.draftCategoryId === snapshot.config.id && snapshot.phase !== "setup" && snapshot.fights.length > 0) {
+    registry.draftCategoryId = null;
+    registry.draftReturnCategoryId = null;
+  }
+  return writeCategoryRegistry(registry);
+}
+
+function categoryEntries(registry: TournamentCategoryRegistry): TournamentCategoryEntry[] {
+  const visibleIds = new Set(registry.visibleCategoryIds);
+  return Object.entries(registry.categories).map(([id, snapshot]) => ({
+    id,
+    name: snapshot.config.categoryName.trim() || "Nueva categoría",
+    tournamentName: snapshot.config.tournamentName,
+    matchType: snapshot.config.matchType ?? "sparring",
+    mode: snapshot.config.mode ?? "round-robin",
+    visible: visibleIds.has(id),
+    isDraft: registry.draftCategoryId === id,
+    fightIds: snapshot.fights.map((fight) => fight.id),
+  }));
+}
+
+function getSnapshot(state: TournamentState): TournamentCategorySnapshot {
+  return cloneSnapshot({
+    phase: state.phase,
+    config: state.config,
+    competitors: state.competitors,
+    fights: state.fights,
+    groups: state.groups,
+    currentFightIndex: state.currentFightIndex,
+    bracketMatches: state.bracketMatches,
+    bracketSeeds: state.bracketSeeds,
+    setupStarted: state.setupStarted,
+  });
+}
+
 const initialConfig: TournamentConfig = {
+  id: createCategoryId(),
   tournamentName: "",
   categoryName: "",
   tableChief: "",
@@ -127,7 +300,7 @@ const initialConfig: TournamentConfig = {
   matchType: "sparring",
 };
 
-export const useTournamentStore = create<TournamentState>()(persist((set) => ({
+export const useTournamentStore = create<TournamentState>()(persist((set, get) => ({
   phase: "setup",
   config: initialConfig,
   competitors: [],
@@ -137,7 +310,145 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
   setupStarted: false,
   bracketMatches: [],
   bracketSeeds: [],
+  categoryRevision: 0,
+  categoryOperationReason: null,
 
+  getCategoryEntries: () => {
+    const registry = readCategoryRegistry();
+    return registry
+      ? categoryEntries(registry)
+      : [{
+          id: get().config.id,
+          name: get().config.categoryName.trim() || "Nueva categoría",
+          tournamentName: get().config.tournamentName,
+          matchType: get().config.matchType ?? "sparring",
+          mode: get().config.mode ?? "round-robin",
+          visible: true,
+          isDraft: false,
+          fightIds: get().fights.map((fight) => fight.id),
+        }];
+  },
+
+  hasValidCategoryRegistry: () => readCategoryRegistry() !== null,
+
+  createCategory: () => {
+    const current = get();
+    const registry = readCategoryRegistry();
+    if (!registry) return null;
+    registry.categories[current.config.id] = getSnapshot(current);
+    if (!registry.visibleCategoryIds.includes(current.config.id)) {
+      registry.visibleCategoryIds.push(current.config.id);
+    }
+
+    const categoryId = createCategoryId();
+    const config = { ...current.config, id: categoryId, categoryName: "" };
+    const snapshot: TournamentCategorySnapshot = {
+      phase: "setup",
+      config,
+      competitors: [],
+      fights: [],
+      groups: [],
+      currentFightIndex: 0,
+      bracketMatches: [],
+      bracketSeeds: [],
+      setupStarted: true,
+    };
+    registry.categories[categoryId] = snapshot;
+    registry.visibleCategoryIds.push(categoryId);
+    registry.selectedCategoryId = categoryId;
+    registry.draftCategoryId = categoryId;
+    registry.draftReturnCategoryId = current.config.id;
+    if (!writeCategoryRegistry(registry)) return null;
+    set({ ...cloneSnapshot(snapshot), categoryRevision: current.categoryRevision + 1 });
+    return categoryId;
+  },
+
+  selectCategory: (categoryId) => {
+    const current = get();
+    if (categoryId === current.config.id) return true;
+    const registry = readCategoryRegistry();
+    const snapshot = registry?.categories[categoryId];
+    if (!registry || !snapshot || !registry.visibleCategoryIds.includes(categoryId) || !isSnapshot(snapshot, categoryId)) return false;
+    registry.categories[current.config.id] = getSnapshot(current);
+    if (!registry.visibleCategoryIds.includes(current.config.id)) {
+      registry.visibleCategoryIds.push(current.config.id);
+    }
+    registry.selectedCategoryId = categoryId;
+    if (!writeCategoryRegistry(registry)) return false;
+    set({ ...cloneSnapshot(snapshot), categoryRevision: current.categoryRevision + 1 });
+    return true;
+  },
+
+  hideCategory: (categoryId, fallbackCategoryId) => {
+    const current = get();
+    const registry = readCategoryRegistry();
+    if (!registry || !registry.visibleCategoryIds.includes(categoryId) || registry.visibleCategoryIds.length <= 1) return false;
+    const remainingIds = registry.visibleCategoryIds.filter((id) => id !== categoryId);
+    const isSelected = current.config.id === categoryId;
+    const nextId = isSelected
+      ? (fallbackCategoryId && remainingIds.includes(fallbackCategoryId) ? fallbackCategoryId : remainingIds[0])
+      : registry.selectedCategoryId;
+    if (isSelected && !nextId) return false;
+    const nextSnapshot = isSelected && nextId ? registry.categories[nextId] : undefined;
+    if (isSelected && nextId && (!nextSnapshot || !isSnapshot(nextSnapshot, nextId))) return false;
+    registry.categories[current.config.id] = getSnapshot(current);
+    registry.visibleCategoryIds = remainingIds;
+    if (isSelected && nextId) registry.selectedCategoryId = nextId;
+    if (!writeCategoryRegistry(registry)) return false;
+    if (isSelected && nextSnapshot) {
+      set({ ...cloneSnapshot(nextSnapshot), categoryRevision: current.categoryRevision + 1 });
+    } else {
+      set({ categoryRevision: current.categoryRevision + 1 });
+    }
+    return true;
+  },
+
+  reopenCategory: (categoryId) => {
+    const registry = readCategoryRegistry();
+    if (!registry || !registry.categories[categoryId]) return false;
+    if (registry.visibleCategoryIds.includes(categoryId)) return true;
+    registry.visibleCategoryIds.push(categoryId);
+    if (!writeCategoryRegistry(registry)) return false;
+    set((current) => ({ categoryRevision: current.categoryRevision + 1 }));
+    return true;
+  },
+
+  cancelCategoryCreation: (categoryId) => {
+    const current = get();
+    const registry = readCategoryRegistry();
+    if (!registry || registry.draftCategoryId !== categoryId) return false;
+    const returnId = registry.draftReturnCategoryId;
+    delete registry.categories[categoryId];
+    registry.visibleCategoryIds = registry.visibleCategoryIds.filter((id) => id !== categoryId);
+    registry.draftCategoryId = null;
+    registry.draftReturnCategoryId = null;
+    const isSelected = current.config.id === categoryId;
+    const fallbackId = returnId && registry.visibleCategoryIds.includes(returnId)
+      ? returnId
+      : registry.visibleCategoryIds[0];
+    const fallback = isSelected && fallbackId ? registry.categories[fallbackId] : undefined;
+    if (isSelected && (!fallback || !isSnapshot(fallback, fallbackId!))) return false;
+    if (isSelected) registry.selectedCategoryId = fallbackId!;
+    if (!writeCategoryRegistry(registry)) return false;
+    if (isSelected && fallback) {
+      set({ ...cloneSnapshot(fallback), categoryRevision: current.categoryRevision + 1 });
+    } else {
+      set({ categoryRevision: current.categoryRevision + 1 });
+    }
+    return true;
+  },
+
+  restoreSavedCategorySelection: () => {
+    const current = get();
+    const registry = readCategoryRegistry();
+    const categoryId = registry?.selectedCategoryId;
+    const snapshot = categoryId ? registry?.categories[categoryId] : undefined;
+    if (!registry || !categoryId || !registry.visibleCategoryIds.includes(categoryId) || !snapshot || !isSnapshot(snapshot, categoryId)) return false;
+    set({ ...cloneSnapshot(snapshot), categoryRevision: current.categoryRevision + 1 });
+    return true;
+  },
+
+  setCategoryOperationReason: (categoryOperationReason) => set({ categoryOperationReason }),
   setPhase: (phase) => set({ phase }),
   setSetupStarted: (v) => set({ setupStarted: v }),
 
@@ -273,6 +584,22 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
       if (!matchA || !matchB) return {};
       const compA = aSlot === "red" ? matchA.red.competitor : matchA.blue.competitor;
       const compB = bSlot === "red" ? matchB.red.competitor : matchB.blue.competitor;
+      if (aMatchId === bMatchId) {
+        return {
+          bracketMatches: s.bracketMatches.map((m) => {
+            if (m.id !== aMatchId) return m;
+            return {
+              ...m,
+              red: aSlot === "red"
+                ? { ...m.red, competitor: compB }
+                : bSlot === "red" ? { ...m.red, competitor: compA } : m.red,
+              blue: aSlot === "blue"
+                ? { ...m.blue, competitor: compB }
+                : bSlot === "blue" ? { ...m.blue, competitor: compA } : m.blue,
+            };
+          }),
+        };
+      }
       return {
         bracketMatches: s.bracketMatches.map((m) => {
           if (m.id === aMatchId) {
@@ -304,10 +631,15 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
       return { fights: newFights };
     }),
 
-  reset: () =>
+  saveCategorySnapshot: () => saveSnapshot(getSnapshot(get())),
+
+  restoreCategorySnapshot: (categoryId) => get().selectCategory(categoryId),
+
+  reset: () => {
+    const config = get().config;
     set({
       phase: "setup",
-      config: initialConfig,
+      config: { ...initialConfig, ...config, id: config.id, categoryName: "" },
       competitors: [],
       fights: [],
       groups: [],
@@ -315,5 +647,30 @@ export const useTournamentStore = create<TournamentState>()(persist((set) => ({
       bracketMatches: [],
       bracketSeeds: [],
       setupStarted: false,
-    }),
-}), { name: "tkd-tournament" }));
+    });
+  },
+}), {
+  name: "tkd-tournament",
+  version: 1,
+  migrate: (persistedState) => {
+    const persisted = (persistedState ?? {}) as Partial<TournamentState>;
+    const config = { ...initialConfig, ...persisted.config };
+    if (typeof config.id !== "string" || !config.id.trim()) config.id = createCategoryId();
+    return { ...persisted, config };
+  },
+  merge: (persistedState, currentState) => {
+    const persisted = (persistedState ?? {}) as Partial<TournamentState>;
+    const config = { ...currentState.config, ...persisted.config };
+    if (typeof config.id !== "string" || !config.id.trim()) config.id = createCategoryId();
+    return { ...currentState, ...persisted, config, categoryOperationReason: null };
+  },
+  onRehydrateStorage: () => (state) => {
+    if (!state?.restoreSavedCategorySelection()) state?.saveCategorySnapshot();
+  },
+}));
+
+useTournamentStore.subscribe((state, previousState) => {
+  if (state !== previousState) state.saveCategorySnapshot();
+});
+
+useTournamentStore.getState().saveCategorySnapshot();

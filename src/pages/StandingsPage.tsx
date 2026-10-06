@@ -654,6 +654,17 @@ export function StandingsPage() {
     frame();
   }, [champion?.id]);
 
+  if (config.mode === "elimination") {
+    return (
+      <div className="flex-1 p-6 flex flex-col items-center justify-center gap-3 text-muted-foreground">
+        <p>La clasificación por puntos no aplica en eliminación directa.</p>
+        <Button variant="outline" onClick={() => navigate("/bracket")}>
+          Ver bracket
+        </Button>
+      </div>
+    );
+  }
+
   function handleResolve(groupId: string, tiedIds: string[]) {
     const competitorMap = new Map<string, CompetitorEntry>();
     for (const f of fights) {

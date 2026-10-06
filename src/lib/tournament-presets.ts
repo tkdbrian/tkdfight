@@ -3,6 +3,8 @@
 export interface TimePreset {
   id?: number          // undefined = preset hardcodeado (no viene del servidor)
   name: string
+  ageFrom?: number
+  ageTo?: number
   roundCount: number
   durationSeconds: number
   finalRounds?: number
@@ -20,7 +22,31 @@ export interface TimePreset {
 
 export const COPA_DANES_26: TimePreset[] = [
   {
+    name: 'Kids (4-5)',
+    ageFrom: 4,
+    ageTo: 5,
+    roundCount: 1,
+    durationSeconds: 60,
+    finalRounds: 1,
+    finalSeconds: undefined,
+    tiebreakerSeconds: 60,
+    maxTiebreakers: 1,
+  },
+  {
+    name: 'Infantiles (6-7)',
+    ageFrom: 6,
+    ageTo: 7,
+    roundCount: 1,
+    durationSeconds: 60,
+    finalRounds: 1,
+    finalSeconds: undefined,
+    tiebreakerSeconds: 60,
+    maxTiebreakers: 1,
+  },
+  {
     name: 'Infantiles A (8-9)',
+    ageFrom: 8,
+    ageTo: 9,
     roundCount: 1,
     durationSeconds: 60,
     finalRounds: 1,
@@ -30,6 +56,8 @@ export const COPA_DANES_26: TimePreset[] = [
   },
   {
     name: 'Infantiles B (10-11)',
+    ageFrom: 10,
+    ageTo: 11,
     roundCount: 1,
     durationSeconds: 60,
     finalRounds: 1,
@@ -39,6 +67,8 @@ export const COPA_DANES_26: TimePreset[] = [
   },
   {
     name: 'Pre-Junior (12-14)',
+    ageFrom: 12,
+    ageTo: 14,
     roundCount: 1,
     durationSeconds: 60,
     finalRounds: 1,
@@ -48,6 +78,8 @@ export const COPA_DANES_26: TimePreset[] = [
   },
   {
     name: 'Junior (15-17)',
+    ageFrom: 15,
+    ageTo: 17,
     roundCount: 1,
     durationSeconds: 60,
     finalRounds: 1,
@@ -57,6 +89,8 @@ export const COPA_DANES_26: TimePreset[] = [
   },
   {
     name: 'Adultos (18-35)',
+    ageFrom: 18,
+    ageTo: 35,
     roundCount: 1,
     durationSeconds: 60,
     finalRounds: 1,
@@ -66,6 +100,8 @@ export const COPA_DANES_26: TimePreset[] = [
   },
   {
     name: 'Seniors (36-45)',
+    ageFrom: 36,
+    ageTo: 45,
     roundCount: 1,
     durationSeconds: 60,
     finalRounds: 1,
@@ -75,6 +111,7 @@ export const COPA_DANES_26: TimePreset[] = [
   },
   {
     name: 'Veteranos (46+)',
+    ageFrom: 46,
     roundCount: 1,
     durationSeconds: 60,
     finalRounds: 1,

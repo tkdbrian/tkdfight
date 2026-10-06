@@ -86,7 +86,7 @@ export function TVPage() {
       {/* Top bar */}
       <div className="flex items-center justify-between px-6 py-3 bg-gray-900/80 border-b border-white/5">
         <span className="font-bold tracking-widest text-sm uppercase text-gray-400">
-          TKD Tournament
+          TKD Fight
         </span>
         <div className={cn("flex items-center gap-1.5 text-xs", connected ? "text-green-400" : "text-red-400")}>
           {connected ? <Wifi className="size-3" /> : <WifiOff className="size-3" />}

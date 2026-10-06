@@ -6,6 +6,7 @@ import { resolve } from "node:path";
 import { readFileSync } from "node:fs";
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, "package.json"), "utf-8")) as { version: string };
+const apiTarget = `http://localhost:${process.env.API_PORT ?? "3001"}`;
 
 export default defineConfig({
   plugins: [
@@ -52,9 +53,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      "/api": "http://localhost:3001",
+      "/api": apiTarget,
       "/socket.io": {
-        target: "http://localhost:3001",
+        target: apiTarget,
         ws: true,
       },
     },

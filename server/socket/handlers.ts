@@ -13,7 +13,22 @@ import { state, MAX_FALLOS_IN_MEMORY } from '../state.js'
 import { broadcast, serverUrl } from '../broadcast.js'
 import { startTicker, stopTicker } from '../timer.js'
 import { computeJudgeTotals, computePenaltyCounts, nowTimeStr } from '../helpers.js'
-import { completeFight, insertFightIfNew, upsertCompetitor, getSourceRing, saveMatchSnapshot, clearMatchSnapshot } from '../db/index.js'
+import {
+  confirmMatchResult,
+  getActiveMatchLock,
+  getCategoryTournamentId,
+  getMatchResult,
+  getSourceCategoryId,
+  getSourceRing,
+  insertFightIfNew,
+  isFightPending,
+  resolveCategoryTournament,
+  saveMatchSnapshot,
+  savePendingMatchResult,
+  upsertCompetitor,
+  type MatchResultInput,
+  type StoredMatchResult,
+} from '../db/index.js'
 import { getRingConfig } from '../ring-config.js'
 import { logger } from '../logger.js'
 import {
@@ -24,6 +39,9 @@ import {
   mesaFlagVoteSchema,
   matchUndoSchema,
   matchResolveJurySchema,
+  matchCommandContextSchema,
+  matchResultConfirmationSchema,
+  matchResultQuerySchema,
   matchDqSchema,
   matchMedicalSchema,
   matchDeleteFalloSchema,
@@ -32,6 +50,15 @@ import {
 } from './schemas.js'
 
 type FightWinner = Competitor | 'draw'
+
+const MATCH_CONTEXT_EVENTS = new Set([
+  'match:start', 'match:event', 'match:finishRound', 'match:confirmPenalties',
+  'match:resolveJury', 'match:reset', 'judge:vote', 'match:undo',
+  'match:undoArbiter', 'match:pause', 'match:resume', 'match:dq',
+  'match:medical', 'match:saveFallo', 'timer:addSeconds',
+  'match:skipToFlags', 'mesa:flagVote', 'mesa:confirmRound',
+  'mesa:undoRound', 'tul:finish', 'tul:reset',
+])
 
 function tallyFlagWinner(votes: Map<string, string>, n: number): { red: number; blue: number; draw: number; winner: FightWinner } {
   let red = 0, blue = 0, draw = 0
@@ -68,6 +95,11 @@ export function registerSocketHandlers(io: Server) {
     socket.emit('state:update', {
       rules: state.rules,
       match: state.match,
+      categoryId: state.matchCategoryId,
+      tournamentId: state.matchTournamentId,
+      activeMatchLock: getActiveMatchLock(),
+      resultConfirmed: state.resultConfirmed,
+      legacyMatchAssociationWarning: state.legacyMatchAssociationWarning,
       matchState: state.matchState,
       matchPaused: state.matchPaused,
       judges: Array.from(state.judges.values()),
@@ -80,6 +112,31 @@ export function registerSocketHandlers(io: Server) {
       ringToken: state.ringToken, // enviado solo en el connect inicial, no en cada broadcast
       ringAlias: ringConfig.alias,
       ringName: ringConfig.name,
+    })
+
+    socket.use(([event, raw], next) => {
+      if (!MATCH_CONTEXT_EVENTS.has(event)) return next()
+      const context = matchCommandContextSchema.safeParse(raw)
+      if (!context.success) {
+        next(new Error('stale_match_context'))
+        return
+      }
+      const activeMatchMatches = context.data.categoryId === state.matchCategoryId
+        && context.data.matchId === state.match?.id
+      const pendingResultLock = event === 'match:saveFallo' && state.match === null
+        ? getActiveMatchLock()
+        : null
+      const pendingResultMatches = event === 'match:saveFallo'
+        && state.match === null
+        && context.data.categoryId === state.matchCategoryId
+        && pendingResultLock?.fightId === context.data.matchId
+        && pendingResultLock.categoryId === context.data.categoryId
+        && getMatchResult(context.data.categoryId, context.data.matchId)?.status === 'pending_confirmation'
+      if (!activeMatchMatches && !pendingResultMatches) {
+        next(new Error('stale_match_context'))
+        return
+      }
+      next()
     })
 
     socket.on('judge:connect', (raw: unknown, callback: (r: { judgeId?: string; error?: string }) => void) => {
@@ -114,28 +171,107 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('match:load', (raw: unknown) => {
+    socket.on('match:load', (raw: unknown, callback?: (response: {
+      ok: boolean
+      error?: string
+      code?: string
+      warning?: string
+      tournamentId?: number
+      alreadyLoaded?: boolean
+    }) => void) => {
+      const respond = (response: Parameters<NonNullable<typeof callback>>[0]) => callback?.(response)
       const data = safeParse(matchLoadSchema, raw, 'match:load')
-      if (!data) return
-      state.rules = data.rules as RuleSetSparring
-      state.match = data.match as MatchInfo
-      state.matchState = createMatch(data.rules as RuleSetSparring)
-      state.tulPhase = 'idle'
-      state.nextJudgeNum = 1
-      state.judges.clear()
-      state.judgeVotes.clear()
-      state.roundFlags = []
-      stopTicker()
-      // Persist to SQLite
-      const tid = state.activeTournamentId
+      if (!data) {
+        respond({ ok: false, code: 'invalid_payload', error: 'Datos de carga inválidos' })
+        return
+      }
+
+      const activeLock = getActiveMatchLock()
+      if (activeLock && (activeLock.categoryId !== data.categoryId || activeLock.fightId !== data.match.id)) {
+        const legacy = activeLock.categoryId === null
+        respond({
+          ok: false,
+          code: legacy ? 'legacy_match_unassigned' : 'match_in_progress',
+          error: legacy
+            ? `Hay un combate histórico ${activeLock.fightId} sin categoría asociable; no se reasignó ni se liberó automáticamente.`
+            : `El combate ${activeLock.fightId} sigue pendiente de confirmación. Resolvelo antes de cargar otro.`,
+        })
+        return
+      }
+      if (activeLock && (!state.match || !state.matchState)) {
+        respond({
+          ok: false,
+          code: 'active_match_unrecoverable',
+          error: state.legacyMatchAssociationWarning ?? 'El combate operativo tiene un snapshot no recuperable; no se reemplazó.',
+        })
+        return
+      }
+      if (state.match && state.matchState && !state.resultConfirmed) {
+        if (state.matchCategoryId === data.categoryId && state.match.id === data.match.id) {
+          respond({ ok: true, tournamentId: state.matchTournamentId ?? undefined, alreadyLoaded: true })
+          return
+        }
+        respond({ ok: false, code: 'match_in_progress', error: 'Hay otro combate operativo pendiente de resolución.' })
+        return
+      }
+
+      let nextMatchState
       try {
-        upsertCompetitor({ id: data.match.red.id, tournament_id: tid, name: data.match.red.name, team: data.match.red.club })
-        upsertCompetitor({ id: data.match.blue.id, tournament_id: tid, name: data.match.blue.name, team: data.match.blue.club })
-        insertFightIfNew({ id: data.match.id, tournament_id: tid, red_id: data.match.red.id, blue_id: data.match.blue.id })
-        // Emergency save: snapshot inicial (sin rounds completados todavía)
-        saveMatchSnapshot(data.match.id, tid, { match: data.match, rules: data.rules, roundFlags: [] })
+        nextMatchState = createMatch(data.rules as RuleSetSparring)
       } catch (err) {
-        logger.error({ err }, '[match:load] DB persist error')
+        logger.warn({ err }, '[match:load] rules rejected')
+        respond({ ok: false, code: 'invalid_rules', error: 'Las reglas del combate no son válidas.' })
+        return
+      }
+
+      try {
+        const association = resolveCategoryTournament({
+          categoryId: data.categoryId,
+          tournamentName: data.tournamentName,
+          categoryName: data.match.category ?? '',
+          preferredTournamentId: state.activeTournamentId,
+        })
+        const tournamentId = association.tournamentId
+        upsertCompetitor({ id: data.match.red.id, tournament_id: tournamentId, name: data.match.red.name, team: data.match.red.club })
+        upsertCompetitor({ id: data.match.blue.id, tournament_id: tournamentId, name: data.match.blue.name, team: data.match.blue.club })
+        const inserted = insertFightIfNew({
+          id: data.match.id,
+          tournament_id: tournamentId,
+          red_id: data.match.red.id,
+          blue_id: data.match.blue.id,
+        })
+        if (!inserted && !isFightPending(data.match.id, tournamentId)) {
+          respond({ ok: false, code: 'fight_already_completed', error: 'Este combate ya tiene un resultado confirmado.' })
+          return
+        }
+        const match: MatchInfo = { ...data.match, categoryId: data.categoryId } as MatchInfo
+        saveMatchSnapshot(data.match.id, tournamentId, { match, rules: data.rules as Record<string, unknown>, roundFlags: [] }, data.categoryId)
+
+        state.activeTournamentId = tournamentId
+        state.matchTournamentId = tournamentId
+        state.matchCategoryId = data.categoryId
+        state.resultConfirmed = false
+        state.legacyMatchAssociationWarning = association.legacyHistoryUnassigned
+          ? 'El historial anterior no tenía una identidad de categoría fiable; quedó intacto y no se reasignó.'
+          : null
+        state.rules = data.rules as RuleSetSparring
+        state.match = match
+        state.matchState = nextMatchState
+        state.tulPhase = 'idle'
+        state.nextJudgeNum = 1
+        state.judges.clear()
+        state.judgeVotes.clear()
+        state.roundFlags = []
+        stopTicker()
+        respond({
+          ok: true,
+          tournamentId,
+          warning: state.legacyMatchAssociationWarning ?? undefined,
+        })
+      } catch (err) {
+        logger.error({ err, categoryId: data.categoryId, matchId: data.match.id }, '[match:load] DB persist error')
+        respond({ ok: false, code: 'persistence_failed', error: 'No se pudo persistir la carga; el combate no se inició.' })
+        return
       }
       broadcast(io)
     })
@@ -214,13 +350,25 @@ export function registerSocketHandlers(io: Server) {
     })
 
     socket.on('match:reset', () => {
-      if (!state.rules) return
-      state.matchState = createMatch(state.rules)
+      if (!state.rules || !state.match || state.resultConfirmed) return
+      if (state.matchState?.phase === 'finished' && state.matchState.result) return
+      const resetState = createMatch(state.rules)
+      try {
+        saveMatchSnapshot(
+          state.match.id,
+          state.matchTournamentId ?? state.activeTournamentId,
+          { match: state.match, rules: state.rules, roundFlags: [] },
+          state.matchCategoryId ?? undefined,
+        )
+      } catch (err) {
+        logger.error({ err, matchId: state.match.id }, '[match:reset] snapshot persist error')
+        return
+      }
+      state.matchState = resetState
       state.judgeVotes.clear()
       state.roundFlags = []
       state.tulPhase = 'idle'
       stopTicker()
-      try { clearMatchSnapshot() } catch { /* non-critical */ }
       broadcast(io)
     })
 
@@ -289,9 +437,60 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('match:saveFallo', () => {
-      saveFallo()
-      broadcast(io)
+    socket.on('match:result:get', (raw: unknown, callback?: (response: {
+      ok: boolean
+      error?: string
+      result: StoredMatchResult | null
+    }) => void) => {
+      const data = safeParse(matchResultQuerySchema, raw, 'match:result:get')
+      if (!data) {
+        callback?.({ ok: false, error: 'Consulta de resultado inválida', result: null })
+        return
+      }
+      callback?.({ ok: true, result: getMatchResult(data.categoryId, data.matchId) })
+    })
+
+    socket.on('match:saveFallo', (raw: unknown, callback?: (response: {
+      ok: boolean
+      error?: string
+      result?: StoredMatchResult
+    }) => void) => {
+      const data = safeParse(matchResultConfirmationSchema, raw, 'match:saveFallo')
+      if (!data) {
+        callback?.({ ok: false, error: 'Confirmación de resultado inválida' })
+        return
+      }
+      const existing = getMatchResult(data.categoryId, data.matchId)
+      const input: MatchResultInput | null = existing
+        ? {
+            fightId: existing.fightId,
+            categoryId: existing.categoryId,
+            tournamentId: existing.tournamentId,
+            winner: existing.winner,
+            reason: existing.reason,
+            flagsRed: existing.flagsRed,
+            flagsBlue: existing.flagsBlue,
+            warningsRed: existing.warningsRed,
+            warningsBlue: existing.warningsBlue,
+            foulsRed: existing.foulsRed,
+            foulsBlue: existing.foulsBlue,
+          }
+        : buildMatchResultInput(data.categoryId, data.matchId)
+      if (!input) {
+        callback?.({ ok: false, error: 'No hay resultado final disponible para guardar.' })
+        return
+      }
+      try {
+        if (!existing) savePendingMatchResult(input)
+        const result = confirmMatchResult(input)
+        state.resultConfirmed = true
+        notifySourceRing(result)
+        callback?.({ ok: true, result })
+        broadcast(io)
+      } catch (err) {
+        logger.error({ err, categoryId: data.categoryId, matchId: data.matchId }, '[match:saveFallo] result confirmation failed')
+        callback?.({ ok: false, error: 'No se pudo guardar el resultado; sigue pendiente y podés reintentar.' })
+      }
     })
 
     socket.on('match:deleteFallo', (raw: unknown) => {
@@ -367,11 +566,11 @@ export function registerSocketHandlers(io: Server) {
         // Actualizar snapshot con el round recién completado (guardado intermedio)
         if (state.match?.id) {
           try {
-            saveMatchSnapshot(state.match.id, state.activeTournamentId, {
+            saveMatchSnapshot(state.match.id, state.matchTournamentId ?? state.activeTournamentId, {
               match: state.match,
               rules: state.rules,
               roundFlags: [...state.roundFlags],
-            })
+            }, state.matchCategoryId ?? undefined)
           } catch { /* non-critical */ }
         }
       }
@@ -439,72 +638,105 @@ export function registerSocketHandlers(io: Server) {
   })
 }
 
-function saveFallo(winnerOverride?: 'red' | 'blue' | 'draw') {
-  const jt = computeJudgeTotals()
-  let redTotal = 0, blueTotal = 0
-  for (const v of Object.values(jt)) {
-    redTotal += v.red
-    blueTotal += v.blue
+function buildMatchResultInput(categoryId: string, matchId: string, winnerOverride?: 'red' | 'blue' | 'draw'): MatchResultInput | null {
+  const result = state.matchState?.result
+  if (!state.match
+    || state.match.id !== matchId
+    || state.matchCategoryId !== categoryId
+    || state.matchTournamentId === null
+    || (!winnerOverride && !result?.winner)) return null
+
+  const winner = winnerOverride ?? result?.winner
+  if (!winner) return null
+  const { red: flagsRed, blue: flagsBlue } = state.match.matchMode === "tul"
+    ? tallyFlagWinner(state.judgeVotes, state.rules?.judgesCount ?? 3)
+    : {
+        red: state.roundFlags.reduce((sum, round) => sum + round.red, 0),
+        blue: state.roundFlags.reduce((sum, round) => sum + round.blue, 0),
+      }
+  const penalties = computePenaltyCounts()
+  return {
+    fightId: matchId,
+    categoryId,
+    tournamentId: state.matchTournamentId,
+    winner,
+    reason: result?.reason ?? 'points',
+    flagsRed,
+    flagsBlue,
+    warningsRed: penalties.warnings.red,
+    warningsBlue: penalties.warnings.blue,
+    foulsRed: penalties.fouls.red,
+    foulsBlue: penalties.fouls.blue,
   }
-  let winner: 'red' | 'blue' | 'draw'
-  if (winnerOverride) {
-    winner = winnerOverride
-  } else if (state.matchState?.result?.winner) {
-    // Confiar en el motor: ya aplicó la mayoría estricta de jueces.
-    winner = state.matchState.result.winner
-  } else {
-    // Fallback: misma regla de mesa en base a jueces líderes.
-    let redLeads = 0, blueLeads = 0, tiedLeads = 0
-    for (const v of Object.values(jt)) {
-      if (v.red > v.blue) redLeads++
-      else if (v.blue > v.red) blueLeads++
-      else tiedLeads++
-    }
-    if (tiedLeads > redLeads && tiedLeads > blueLeads) winner = 'draw'
-    else if (redLeads === blueLeads) winner = 'draw'
-    else winner = redLeads > blueLeads ? 'red' : 'blue'
+}
+
+function persistPendingResult(input: MatchResultInput): void {
+  savePendingMatchResult(input)
+  if (state.fallos.some((fallo) => fallo.matchId === input.fightId && fallo.categoryId === input.categoryId)) return
+  const totals = computeJudgeTotals()
+  let redScore = 0, blueScore = 0
+  for (const value of Object.values(totals)) {
+    redScore += value.red
+    blueScore += value.blue
   }
-  // Accumulate flags from all rounds
-  const flagsRed = state.roundFlags.reduce((s, r) => s + r.red, 0)
-  const flagsBlue = state.roundFlags.reduce((s, r) => s + r.blue, 0)
   state.fallos.push({
     id: state.falloSeq++,
     time: nowTimeStr(),
     redName: state.match?.red.name ?? 'Rojo',
     blueName: state.match?.blue.name ?? 'Azul',
-    redScore: redTotal,
-    blueScore: blueTotal,
-    winner,
+    redScore,
+    blueScore,
+    winner: input.winner,
+    matchId: input.fightId,
+    categoryId: input.categoryId,
   })
-  // Cap en memoria: los excedentes ya están persistidos en SQLite via completeFight()
   if (state.fallos.length > MAX_FALLOS_IN_MEMORY) {
     state.fallos.splice(0, state.fallos.length - MAX_FALLOS_IN_MEMORY)
   }
-  // Persist to SQLite if fight has an id
-  if (state.match?.id) {
-    try {
-      completeFight(state.match.id, winner, '', flagsRed, flagsBlue)
-      // Si la pelea fue reasignada desde otro tatami, notificarle el resultado
-      const sourceRing = getSourceRing(state.match.id)
-      if (sourceRing) {
-        const ringAlias = getRingConfig().alias
-        fetch(`http://${sourceRing}/api/ring/remote-result`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            fightId: state.match.id,
-            winner,
-            flagsRed,
-            flagsBlue,
-            completedIn: ringAlias,
-          }),
-          signal: AbortSignal.timeout(5000),
-        }).catch(() => { /* best-effort: si el tatami origen no está online, se pierde */ })
-      }
-      // Pelea completada — eliminar snapshot de emergencia
-      clearMatchSnapshot()
-    } catch {
-      // Not critical — in-memory state is source of truth
+}
+
+function notifySourceRing(result: StoredMatchResult): void {
+  const sourceRing = getSourceRing(result.fightId)
+  if (!sourceRing) return
+  const ringAlias = getRingConfig().alias
+  const sourceCategoryId = getSourceCategoryId(result.fightId)
+  fetch(`http://${sourceRing}/api/ring/remote-result`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fightId: result.fightId,
+      ...(sourceCategoryId ? { categoryId: sourceCategoryId } : {}),
+      winner: result.winner,
+      flagsRed: result.flagsRed,
+      flagsBlue: result.flagsBlue,
+      completedIn: ringAlias,
+    }),
+    signal: AbortSignal.timeout(5000),
+  }).catch(() => { /* best-effort: si el tatami origen no está online, se pierde */ })
+}
+
+function saveFallo(winnerOverride?: 'red' | 'blue' | 'draw'): void {
+  const categoryId = state.matchCategoryId
+  const matchId = state.match?.id
+  if (!categoryId || !matchId) return
+  const input = buildMatchResultInput(categoryId, matchId, winnerOverride)
+  if (!input) return
+  try {
+    if (state.match && state.rules) {
+      saveMatchSnapshot(
+        matchId,
+        input.tournamentId,
+        {
+          match: state.match,
+          rules: state.rules,
+          roundFlags: [...state.roundFlags],
+          pendingResult: { winner: input.winner, reason: input.reason },
+        },
+        categoryId,
+      )
     }
+    persistPendingResult(input)
+  } catch (err) {
+    logger.error({ err, categoryId, matchId }, '[result] pending result persist failed')
   }
 }

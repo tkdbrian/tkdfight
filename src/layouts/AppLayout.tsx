@@ -1,6 +1,7 @@
 import { cn } from "@/lib/utils";
 import { useTournamentStore } from "@/store/tournament";
 import { useSocket } from "@/hooks/useSocket";
+import { CategoryTabs } from "@/components/CategoryTabs";
 import {
   Trophy,
   Users,
@@ -21,7 +22,9 @@ import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { startGlobalTour, continueTourIfPending } from "@/lib/tour";
 
-const NAV_GROUPS = [
+type NavItem = { to: string; icon: typeof Users; label: string; short: string };
+
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   {
     label: "Preparación",
     items: [
@@ -44,22 +47,43 @@ const NAV_GROUPS = [
       { to: "/history", icon: History, label: "Historial", short: "Hist." },
     ],
   },
-] as const;
-
-// Flat list for mobile bottom nav (same order as sidebar)
-const NAV_ITEMS_FLAT = NAV_GROUPS.flatMap((g) => g.items);
+];
 
 export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const phase = useTournamentStore((s) => s.phase);
+  const categoryId = useTournamentStore((s) => s.config.id);
+  const categoryRevision = useTournamentStore((s) => s.categoryRevision);
+  const categoryOperationReason = useTournamentStore((s) => s.categoryOperationReason);
+  const getCategoryEntries = useTournamentStore((s) => s.getCategoryEntries);
   const categoryName = useTournamentStore((s) => s.config.categoryName);
   const matchType = useTournamentStore((s) => s.config.matchType);
+  const tournamentMode = useTournamentStore((s) => s.config.mode);
   const importedPending = useTournamentStore((s) =>
     s.fights.filter((f) => f.importedFrom && !f.completed).length
   );
-  const { state: serverState } = useSocket();
+  const { connected, stateReady, state: serverState } = useSocket();
   const ringAlias = serverState.ringAlias;
   const location = useLocation();
   const navigate = useNavigate();
+  const visibleNavGroups = NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => !(item.to === "/standings" && tournamentMode === "elimination")),
+  }));
+  const visibleNavItemsFlat = visibleNavGroups.flatMap((group) => group.items);
+  const localEntries = getCategoryEntries();
+  const recoveryLock = serverState.activeMatchLock ?? (
+    serverState.match && !serverState.resultConfirmed
+      ? {
+          fightId: serverState.match.id,
+          categoryId: serverState.categoryId ?? serverState.match.categoryId ?? null,
+          tournamentId: serverState.tournamentId ?? 0,
+          resultStatus: null,
+        }
+      : null
+  );
+  const recoveryDataMissing = !!recoveryLock && !localEntries.some((entry) =>
+    entry.id === recoveryLock.categoryId && entry.fightIds.includes(recoveryLock.fightId)
+  );
 
   const [externalOpen, setExternalOpen] = useState(() => {
     try { return localStorage.getItem("tkd-sidebar-external-open") === "1"; } catch { return false; }
@@ -100,7 +124,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
 
         {/* Nav */}
         <nav className="flex-1 px-2 py-3 overflow-y-auto">
-          {NAV_GROUPS.map((group, gi) => (
+          {visibleNavGroups.map((group, gi) => (
             <div key={group.label}>
               {/* Separator + group label (not before the first group) */}
               {gi > 0 && <div className="border-t border-border mx-1 my-2" />}
@@ -242,14 +266,41 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
           </div>
         </header>
 
+        <CategoryTabs connected={connected} stateReady={stateReady} serverState={serverState} />
+
         {/* Page content */}
-        <div className="flex-1 flex flex-col overflow-hidden">
-          {children}
+        <div
+          id="category-panel"
+          role="tabpanel"
+          aria-labelledby={`category-tab-${categoryId}`}
+          key={categoryId}
+          className="relative flex-1 flex flex-col overflow-hidden"
+        >
+          {recoveryDataMissing ? (
+            <div className="flex flex-1 items-center justify-center overflow-auto p-6">
+              <div className="max-w-xl rounded-lg border border-destructive/40 bg-destructive/5 p-5 text-center">
+                <h1 className="text-lg font-bold text-destructive">Recuperación pendiente</h1>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  El servidor conserva el combate {recoveryLock?.fightId ?? "sin identidad verificable"}, pero la llave local no contiene esa pelea. No se aplicó el resultado a otra categoría ni se descartó información.
+                </p>
+                <p className="mt-2 text-sm text-muted-foreground">
+                  No inicies otra categoría desde este tatami hasta recuperar o importar la llave correspondiente.
+                </p>
+              </div>
+            </div>
+          ) : children}
+          {!recoveryDataMissing && categoryOperationReason && (
+            <div role="status" className="absolute inset-0 z-40 flex items-center justify-center bg-background/80 p-6 backdrop-blur-[1px]">
+              <p className="max-w-sm rounded-md border border-border bg-card px-4 py-3 text-center text-sm font-medium shadow-lg">
+                {categoryOperationReason}
+              </p>
+            </div>
+          )}
         </div>
 
         {/* Mobile bottom navigation — hidden md+ */}
         <nav className="md:hidden shrink-0 border-t border-border bg-background flex items-stretch h-14">
-          {NAV_ITEMS_FLAT.map(({ to, icon: Icon, short }) => {
+          {visibleNavItemsFlat.map(({ to, icon: Icon, short }) => {
             const disabled =
               (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
               phase === "setup";

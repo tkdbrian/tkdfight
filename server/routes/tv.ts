@@ -53,7 +53,7 @@ export function registerTvRoute(router: Router) {
 </head>
 <body>
 <div class="tv-header">
-  <div class="tv-title">\ud83e\udd4b TKD Tournament</div>
+  <div class="tv-title">\ud83e\udd4b TKD Fight</div>
   <div class="tv-match" id="tv-match">\u2014</div>
 </div>
 <div class="tv-center">
