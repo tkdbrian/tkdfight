@@ -63,11 +63,12 @@ export class CategoriesPage {
       await new SetupPage(this.page).goto();
     }
     const setup = new SetupPage(this.page);
-    for (const option of ["Adultos (18-35)", "Liviano A", "M", "Tul / Formas", "Round Robin"]) {
+    for (const option of ["ADULTOS (18-35)", "GUPS", "Blancos y Puntas Amarillas", "Liviano A", "M", "Tul / Formas", "Round Robin"]) {
       await setup.selectCategoryOption(option);
     }
     await setup.addCompetitors(names);
     await setup.startCategory();
+    if (new URL(this.page.url()).pathname.endsWith("/standings")) await this.page.getByRole("button", { name: "Ir a Combate", exact: true }).click();
     await expect(this.page.getByRole("button", { name: "Iniciar competencia", exact: true }))
       .toBeVisible();
     return this.activeId();
@@ -95,6 +96,7 @@ export class CategoriesPage {
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Confirmar y continuar", exact: true }).click();
     await expect(dialog).not.toBeVisible();
+    if (new URL(this.page.url()).pathname.endsWith("/standings")) await this.page.getByRole("button", { name: "Ir a Combate", exact: true }).click();
     await expect(this.page.getByRole("button", { name: "Iniciar competencia", exact: true }))
       .toBeVisible();
     await expect(this.page.locator("span.tabular-nums").filter({ hasText: /^2\/3$/ }).first())

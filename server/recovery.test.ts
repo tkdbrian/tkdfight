@@ -41,3 +41,15 @@ describe("RR operational snapshot recovery", () => {
     })).toBeNull();
   });
 });
+
+describe('Tul phase recovery', () => {
+  it('recovers reopened voting instead of idle or the obsolete winner', async () => {
+    const recovery = await import('./recovery');
+    const data: MatchSnapshotData = { match: { matchMode: 'tul' }, rules: {}, roundFlags: [],
+      matchState: { ...createMatch(rules), phase: 'rest', result: null },
+      judgeVotes: { J1: 'red', J2: 'blue' } };
+    expect(recovery.recoverTulPhase(data)).toBe('voting');
+    expect(recovery.recoverTulPhase({ ...data, matchState: { ...createMatch(rules),
+      phase: 'finished', result: { winner: 'blue', reason: 'points' } } })).toBe('finished');
+  });
+});

@@ -97,7 +97,6 @@ describe("human-readable category operation errors", () => {
       fireEvent.click(screen.getByRole("button", { name: "Reiniciar categoría…" }));
       fireEvent.click(screen.getByRole("button", { name: "Archivar y reiniciar" }));
     } else {
-      fireEvent.click(screen.getByText("Más acciones de categoría"));
       fireEvent.click(screen.getByRole("button", { name: "Eliminar categoría…" }));
     }
     const dialog = screen.getByRole("dialog");
@@ -132,7 +131,6 @@ describe("human-readable category operation errors", () => {
       )
     );
     const view = render(<CategoryDeleteButton snapshot={snapshot} {...free} />);
-    fireEvent.click(screen.getByText("Más acciones de categoría"));
     fireEvent.click(screen.getByRole("button", { name: "Eliminar categoría…" }));
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Eliminar definitivamente" })).toBeEnabled()

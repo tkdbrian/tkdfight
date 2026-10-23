@@ -81,8 +81,17 @@ function isLoopbackStatusRequest(req: Request, port: number): boolean {
 }
 
 function isIdle(io: Server): boolean {
+  // Confirming a result retains the finished match for display. It is not an
+  // operational load once durable locks/snapshots and pending results are gone.
+  const hasOnlyConfirmedDisplay = state.resultConfirmed
+    && state.matchState?.phase === "finished"
+    && state.matchState.result !== null
+    && (state.match?.matchMode !== "tul" || state.tulPhase === "finished");
   return (
-    io.sockets.sockets.size === 0 && state.match === null && !getActiveMatchLock() && isSqlIdle()
+    io.sockets.sockets.size === 0
+    && (state.match === null || hasOnlyConfirmedDisplay)
+    && !getActiveMatchLock()
+    && isSqlIdle()
   );
 }
 

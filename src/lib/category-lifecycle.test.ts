@@ -369,3 +369,22 @@ describe("elimination outcome authority", () => {
     expect(resolveEliminationOutcome(snapshot).status).toBe("review");
   });
 });
+
+for (const [mode, count] of [["elimination", 0], ["elimination", 1], ["round-robin", 0], ["round-robin", 1], ["round-robin", 2]] as const) {
+  it(`restarts ${mode} with ${count} current entrants as an untouched-history setup draft`, () => {
+    const previous = recordedCategory(4);
+    previous.config.mode = mode;
+    previous.competitors = previous.competitors.slice(0, count);
+    const before = structuredClone(previous);
+    const next = createRestartReplacement(previous);
+    expect(next).toMatchObject({ phase: "setup", setupStarted: false, currentFightIndex: 0,
+      fights: [], groups: [], bracketMatches: [], bracketSeeds: [] });
+    expect(next.competitors).toHaveLength(count);
+    expect(next.config).toEqual({ ...previous.config, id: next.config.id });
+    expect(next.config.id).not.toBe(previous.config.id);
+    expect(next.competitors.map(({ id: _id, ...entry }) => entry)).toEqual(previous.competitors.map(({ id: _id, ...entry }) => entry));
+    expect(next.competitors.every((entry) => !previous.competitors.some((old) => old.id === entry.id))).toBe(true);
+    expect(previous).toEqual(before);
+    expect(getCategoryPrimaryAction({ snapshot: next, connected: true, stateReady: true, serverState: {} })).toMatchObject({ kind: "start", disabled: true });
+  });
+}

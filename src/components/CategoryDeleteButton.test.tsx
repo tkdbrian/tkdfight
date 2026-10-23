@@ -39,6 +39,14 @@ afterEach(() => {
 });
 
 describe("separate permanent deletion confirmation", () => {
+  it("makes the secondary delete action directly visible without opening a menu", () => {
+    const fetcher = vi.fn();
+    vi.stubGlobal("fetch", fetcher);
+    render(<CategoryDeleteButton snapshot={currentCategoryDeletionSnapshot()} {...free} />);
+    expect(screen.getByRole("button", { name: "Eliminar categoría…" })).toBeVisible();
+    expect(screen.queryByText("Más acciones de categoría")).not.toBeInTheDocument();
+    expect(fetcher).not.toHaveBeenCalled();
+  });
   it("shows one named authoritative dialog, requires exact text and leaves graphs intact until ACK", async () => {
     const snapshot = currentCategoryDeletionSnapshot();
     const sibling = useTournamentStore.getState().createCategory();
@@ -64,7 +72,6 @@ describe("separate permanent deletion confirmation", () => {
     });
     vi.stubGlobal("fetch", fetcher);
     render(<CategoryDeleteButton snapshot={snapshot} {...free} />);
-    fireEvent.click(screen.getByText("Más acciones de categoría"));
     fireEvent.click(screen.getByRole("button", { name: "Eliminar categoría…" }));
     const dialog = await screen.findByRole("dialog", { name: "Eliminar Mayores definitivamente" });
     expect(dialog).toHaveTextContent("3 competidores");
@@ -116,7 +123,6 @@ describe("separate permanent deletion confirmation", () => {
     );
     vi.stubGlobal("fetch", fetcher);
     const view = render(<CategoryDeleteButton snapshot={snapshot} {...free} />);
-    fireEvent.click(screen.getByText("Más acciones de categoría"));
     fireEvent.click(screen.getByRole("button", { name: "Eliminar categoría…" }));
     await screen.findByRole("dialog");
     await waitFor(() =>
@@ -143,7 +149,6 @@ describe("separate permanent deletion confirmation", () => {
         {...connection}
       />
     );
-    fireEvent.click(screen.getByText("Más acciones de categoría"));
     expect(screen.getByRole("button", { name: "Eliminar categoría…" })).toBeDisabled();
     expect(fetcher).not.toHaveBeenCalled();
   });

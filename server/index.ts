@@ -22,7 +22,7 @@ import {
 } from './db/index.js'
 import { state } from './state.js'
 import { createMatch } from '../src/engine/match-machine.js'
-import { recoverIndividualFlagMatchState } from './recovery.js'
+import { recoverIndividualFlagMatchState, recoverTulPhase } from './recovery.js'
 import type { RuleSetSparring, WinReason } from '../src/engine/types.js'
 import type { MatchInfo } from './state.js'
 import { registerJudgeRoute } from './routes/judge.js'
@@ -129,6 +129,7 @@ try {
     state.matchCategoryId = snapshot.categoryId
     state.matchTournamentId = snapshot.tournamentId
     state.resultConfirmed = false
+    state.tulPhase = recoverTulPhase(snapshot.data)
     state.legacyMatchAssociationWarning = null
     state.rules = restoredRules
     state.roundFlags = roundFlags.map((flag) => ({

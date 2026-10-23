@@ -1,3 +1,4 @@
+import { CategoryPrintAction } from "@/components/CategoryPrintAction";
 ﻿import * as React from "react";
 import confetti from "canvas-confetti";
 import { useNavigate } from "react-router-dom";
@@ -137,6 +138,10 @@ function applyTiebreakOrder(
   return result;
 }
 
+function csvString(value: string, alwaysQuote = false): string {
+  return alwaysQuote || /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value;
+}
+
 function exportCsv(
   byGroup: Map<string, StandingRow[]>,
   categoryName: string,
@@ -152,7 +157,7 @@ function exportCsv(
       ? applyTiebreakOrder(standings, resolution.tiedIds, resolution.resolvedOrder)
       : standings;
     for (const [i, s] of ordered.entries()) {
-      rows.push([gid, i + 1, `"${s.name}"`, `"${s.team ?? ""}"`, s.played, s.wins, s.draws, s.losses, s.points, s.flagsFor, s.foulsAgainst, s.warnings].join(","));
+      rows.push([csvString(gid), i + 1, csvString(s.name, true), csvString(s.team ?? "", true), s.played, s.wins, s.draws, s.losses, s.points, s.flagsFor, s.foulsAgainst, s.warnings].join(","));
     }
   }
   const csv = [header, ...rows].join("\n");
@@ -729,6 +734,7 @@ export function StandingsPage() {
         <div className="flex items-center gap-2">
           <CategoryCombatAction connected={connected} stateReady={stateReady} serverState={serverState} resultsVerified={Boolean(officialChampion)} />
           <Badge variant="secondary">{completed}/{total} combates</Badge>
+          <CategoryPrintAction connected={connected} stateReady={stateReady} request={request} tatami={serverState.ringAlias} />
           <Button
             variant="outline"
             size="sm"

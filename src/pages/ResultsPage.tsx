@@ -1,3 +1,4 @@
+import { CategoryPrintAction } from "@/components/CategoryPrintAction";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { POINTS_WIN, POINTS_DRAW } from "@/rules/round-robin";
 import { useTournamentStore, type FightEntry } from "@/store/tournament";
@@ -388,6 +389,7 @@ export function ResultsPage() {
           <span className="text-sm text-muted-foreground">
             {completed} / {total} combates
           </span>
+          <CategoryPrintAction connected={connected} stateReady={stateReady} request={request} tatami={serverState.ringAlias} />
           <Button
             variant="outline"
             size="sm"

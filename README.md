@@ -1,14 +1,36 @@
-# TKD Fight 3.0
+# TKD Fight 4.0.2
 
 Sistema de mesa para torneos de Taekwondo: Round Robin, eliminación, resultados,
 historial y respaldos. React/TypeScript + Vite, servidor Node/Express y SQLite.
+
+## Versión V4
+
+- Combate por banderas y Tul: confirmación durable, corrección de resultados y
+  recuperación del estado confirmado por el servidor.
+- Ajustes previos al combate y **Postergar** seguro: solo una carga sin iniciar,
+  sin actividad; la cola cambia después de la aceptación del servidor.
+- Reinicio con la lista actual: **Archivar y reiniciar** conserva la ejecución
+  actual; **Eliminar y reiniciar** descarta solo esa ejecución, preservando los
+  archivos anteriores. Con participantes insuficientes queda en preparación,
+  sin fixture ni ganador; agregar participantes e iniciar explícitamente.
+- **Eliminar categoría** visible y separado de Reiniciar, con vista previa y
+  confirmación protegida; no borra otras categorías ni archivos anteriores.
+- Impresión de categoría con vista previa, detalle opcional y llave clásica;
+  exportaciones CSV/HTML y respaldo/restauración completos.
+- Persistencia local protegida, recuperación visible y portable de un clic con
+  identidad propia por instalación.
+
+[Notas de entrega y evidencia de 4.0.2](docs/RELEASE_V4.0.2.md).
 
 ## Usar en un torneo
 
 El repositorio contiene **fuentes**, no una instalación lista para usar. Extraer
 el ZIP portable completo y abrir **ABRIR TKD.exe**; no abrir `index.html` mediante
 `file://` ni copiar archivos sueltos. Cada PC funciona de forma independiente y
-sin Internet. El servidor local permanece activo al cerrar el navegador.
+sin Internet en el entorno soportado Windows 10/11 x64, con un navegador
+compatible y carpeta escribible. El servidor local permanece activo al cerrar
+el navegador. El paquete incluye Node; el requisito VC++ incluido puede pedir
+permisos de administrador si falta en esa PC. No se garantiza cualquier equipo.
 
 - [Instrucciones del portable](scripts/release-sunday/template/LEEME_DOMINGO.txt)
 - [Construcción y validación del paquete](scripts/release-sunday/README.md)
@@ -27,31 +49,52 @@ ese runtime; no reutilizar dependencias nativas de otra versión de Node.
 npm ci
 
 # Terminal 1: API local, no utilizar los datos de una instalación real.
-$env:PORT = '3001'
-$env:DATA_DIR = Join-Path $env:TEMP 'tkd-fight-dev'
+$env:PORT = '3399'
+$env:DATA_DIR = Join-Path $env:TEMP ('tkd-fight-dev-' + [guid]::NewGuid())
 npm run server
 
-# Terminal 2: interfaz (Vite indica la dirección disponible).
-npm run dev
+# Terminal 2: interfaz; comprobar antes que ambos puertos estén libres.
+$env:API_PORT = '3399'
+npm run dev -- --host 127.0.0.1 --port 5199 --strictPort
 ```
 
-Vite usa `localhost:5173` y deriva API/socket al puerto 3001; si se cambia la API,
-establecer `API_PORT` en la terminal de Vite. No ejecutar pruebas operativas contra
-los puertos o datos del torneo real.
+Sin estas variables Vite usa el puerto 5173 y deriva API/socket al puerto 3001.
+No ejecutar pruebas operativas contra los puertos o datos del torneo real; no
+detener procesos ajenos para liberar un puerto.
 
 ## Verificaciones
 
 ```powershell
-npx vitest run --maxWorkers 2
+npx vitest run src server --maxWorkers=2
 npx tsc --project tsconfig.json --noEmit
 npx tsc --project tsconfig.server.json --noEmit
-npm run build:prod
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-sunday/Test-OneClick.ps1
+
+# Build de verificación aislado: no reemplaza dist/ ni una instalación activa.
+$stage = Join-Path $env:TEMP ('tkd-build-' + [guid]::NewGuid())
+node node_modules/vite/bin/vite.js build --outDir "$stage/dist"
+node node_modules/esbuild/bin/esbuild server/index.ts --bundle --platform=node --packages=external --format=esm "--outfile=$stage/dist-server/index.mjs"
 ```
 
 Playwright requiere los navegadores y el entorno indicado por cada configuración;
 el modo E2E general no debe apuntarse a una instalación real. Los ensayos del
 portable se realizan sobre copias vacías aisladas, según la guía de construcción.
+
+Flujos dirigidos verificados para V4 (ejecutar **uno por vez**, comparten puertos):
+
+```powershell
+npx playwright test --config playwright.category-buttons.config.ts --grep "draft restart"
+npx playwright test --config playwright.fight-buttons.config.ts
+npx playwright test --config playwright.utility-buttons.config.ts
+```
+
+Categorías usa API 3317/Vite 5174; combate y utilidades API 3397/Vite 5197.
+Cada prueba crea una base temporal y termina únicamente su propio servidor.
+El filtro de categorías corresponde a los 10 casos de reinicio de esta entrega;
+la configuración también contiene otras pruebas de navegación y edición.
+La suite E2E general y las pruebas físicas no se consideran aprobadas por estos
+tres comandos. La instalación de navegadores de Playwright es una preparación
+de desarrollo, no un requisito del portable.
 
 ## Fuentes y archivos generados
 

@@ -30,6 +30,7 @@ export const matchLoadSchema = z.object({
     category: z.string().max(128).optional(),
     matchMode: z.enum(['sparring', 'patterns', 'tul']).optional(),
     goldenPoint: z.boolean().optional(),
+    timingKind: z.enum(['regular', 'elimination-final', 'continuation']).optional(),
     requireIndividualFlags: z.boolean().optional(),
     red: z.object({
       id: competitorIdSchema,
@@ -55,6 +56,11 @@ export const matchResultConfirmationSchema = matchCommandContextSchema.extend({
 
 export const mesaUndoRoundSchema = matchCommandContextSchema.extend({
   // Legacy between-round undo has no result to invalidate; finished correction requires this CAS.
+  expectedRevision: z.number().int().nonnegative().optional(),
+}).strict()
+
+export const tulUndoFinishSchema = matchResultConfirmationSchema
+export const tulFinishSchema = matchCommandContextSchema.extend({
   expectedRevision: z.number().int().nonnegative().optional(),
 }).strict()
 
@@ -129,3 +135,19 @@ export function safeParse<T>(schema: z.ZodType<T>, payload: unknown, event: stri
   }
   return result.data
 }
+
+export const matchConfigureSchema = matchCommandContextSchema.extend({
+  expectedRevision: z.number().int().nonnegative(),
+  durationSeconds: z.number().int().min(1).max(3600),
+  rounds: z.number().int().positive(),
+}).strict()
+
+export const matchStartSchema = matchCommandContextSchema.extend({
+  expectedTimingRevision: z.number().int().nonnegative().optional(),
+}).strict()
+
+export const matchPostponeSchema = matchCommandContextSchema.extend({
+  requestId: z.string().min(1).max(128),
+  expectedRevision: z.number().int().nonnegative(),
+  expectedLoadId: z.string().min(1).max(128),
+}).strict()

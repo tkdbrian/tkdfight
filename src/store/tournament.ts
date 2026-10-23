@@ -1,6 +1,7 @@
 import { swapInitialBracketSlots } from "@/lib/bracket-seeding";
 import { create } from "zustand";
-import { persist } from "zustand/middleware";
+import { createJSONStorage, persist } from "zustand/middleware";
+import { commitTournamentAuthorities, recoverTournamentAuthorities, reportTournamentPersistenceFailure, tournamentPersistenceBlocked } from "@/lib/tournament-persistence";
 import type { RuleSet } from "@/engine/types";
 import type { CategoryDimensions } from "@/lib/yusan-profile";
 import type { CategoryArchiveMetadata, RestartCategorySuccess } from "@/lib/category-restart-contract";
@@ -313,16 +314,23 @@ function readCategoryRegistry(includeUnavailable = false): TournamentCategoryReg
 function writeCategoryRegistry(registry: TournamentCategoryRegistry): boolean {
   try {
     if (typeof localStorage === "undefined") return false;
-    localStorage.setItem(TOURNAMENT_CATEGORY_STORAGE_KEY, JSON.stringify(sanitizeCategoryRegistry(registry)));
-    return true;
+    const safe = sanitizeCategoryRegistry(registry);
+    const selected = safe.selectedCategoryId ? safe.categories[safe.selectedCategoryId] : undefined;
+    if (!selected) return false;
+    const current = useTournamentStore.getState();
+    const next = { ...current, ...snapshotWithEventProfile(selected, current.eventProfiles),
+      categoryRevision: current.categoryRevision + 1 };
+    safe.categories[next.config.id] = getSnapshot(next);
+    return commitTournamentAuthorities(JSON.stringify({ state: next, version: 1 }), JSON.stringify(safe));
   } catch {
     return false;
   }
 }
 
-function saveSnapshot(snapshot: TournamentCategorySnapshot): boolean {
+function saveSnapshot(snapshot: TournamentCategorySnapshot, mainState: TournamentState): boolean {
   const registry = readCategoryRegistry();
-  if (!registry || registry.archives?.[snapshot.config.id] || categoryRestartInteractionBlocked()
+  if (!registry) return reportTournamentPersistenceFailure("No se puede leer el registro de categorías; no se sobrescribió ninguna copia");
+  if (registry.archives?.[snapshot.config.id] || categoryRestartInteractionBlocked()
     || categoryExecutionUnavailable(snapshot.config.id)) return false;
   if (!registry.categories[snapshot.config.id]) {
     registry.visibleCategoryIds.push(snapshot.config.id);
@@ -331,12 +339,13 @@ function saveSnapshot(snapshot: TournamentCategorySnapshot): boolean {
     }
   }
   registry.categories[snapshot.config.id] = cloneSnapshot(snapshot);
-  if (!registry.selectedCategoryId) registry.selectedCategoryId = snapshot.config.id;
+  registry.selectedCategoryId = snapshot.config.id;
   if (registry.draftCategoryId === snapshot.config.id && snapshot.phase !== "setup" && snapshot.fights.length > 0) {
     registry.draftCategoryId = null;
     registry.draftReturnCategoryId = null;
   }
-  return writeCategoryRegistry(registry);
+  return commitTournamentAuthorities(JSON.stringify({ state: mainState, version: 1 }),
+    JSON.stringify(sanitizeCategoryRegistry(registry)));
 }
 
 function categoryEntries(registry: TournamentCategoryRegistry): TournamentCategoryEntry[] {
@@ -597,6 +606,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   },
 
   restoreSavedCategorySelection: () => {
+    if (tournamentPersistenceBlocked()) return false;
     const current = get();
     const registry = readCategoryRegistry();
     const categoryId = registry?.selectedCategoryId;
@@ -759,7 +769,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
       return { fights: newFights };
     }),
 
-  saveCategorySnapshot: () => saveSnapshot(getSnapshot(get())),
+  saveCategorySnapshot: () => saveSnapshot(getSnapshot(get()), get()),
 
   restoreCategorySnapshot: (categoryId) => get().selectCategory(categoryId),
 
@@ -992,6 +1002,16 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
 };
 }, {
   name: TOURNAMENT_STORAGE_KEY,
+  // The subscriber commits main + registry together. Zustand must not issue a second,
+  // independent main write after a failed category-registry write.
+  storage: createJSONStorage(() => ({
+    getItem: (key: string) => {
+      recoverTournamentAuthorities();
+      return localStorage.getItem(key);
+    },
+    setItem: () => {},
+    removeItem: (key: string) => localStorage.removeItem(key),
+  })),
   version: 1,
   migrate: (persistedState) => {
     const persisted = (persistedState ?? {}) as Partial<TournamentState>;

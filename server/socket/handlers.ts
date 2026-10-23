@@ -1,4 +1,6 @@
 import type { Server, Socket } from 'socket.io'
+import { randomUUID } from 'node:crypto'
+import { hasPostponeReceipt, releaseNeverStartedMatch } from '../db/match-postpone.js'
 import {
   createMatch,
   createGoldenPointMatch,
@@ -53,6 +55,9 @@ import { logger } from '../logger.js'
 import {
   judgeConnectSchema,
   matchLoadSchema,
+  matchConfigureSchema,
+  matchPostponeSchema,
+  matchStartSchema,
   matchEventSchema,
   judgeVoteSchema,
   mesaFlagVoteSchema,
@@ -64,6 +69,8 @@ import {
   matchCommandContextSchema,
   matchResultConfirmationSchema,
   mesaUndoRoundSchema,
+  tulUndoFinishSchema,
+  tulFinishSchema,
   matchResultQuerySchema,
   matchDqSchema,
   matchMedicalSchema,
@@ -83,7 +90,7 @@ const MATCH_CONTEXT_EVENTS = new Set([
   'tul:finish', 'tul:reset',
 ])
 
-const EXECUTION_WRITE_EVENTS = new Set([...MATCH_CONTEXT_EVENTS, 'match:load',
+const EXECUTION_WRITE_EVENTS = new Set([...MATCH_CONTEXT_EVENTS, 'match:load', 'match:configure', 'match:postpone',
   'mesa:setSanctionCount', 'mesa:undoRound', 'golden:vote', 'mesa:goldenVote',
   'mesa:confirmGoldenOutcome', 'match:deleteFallo', 'match:clearFallos',
   'tul:retry', 'tul:undoFinish'])
@@ -93,22 +100,33 @@ function persistIndividualFlagState(
   nextState: MatchState,
   nextRoundFlags = state.roundFlags,
   nextJudgeVotes = state.judgeVotes,
+  nextMatch = state.match,
 ): boolean {
   if (!state.match) return false
   if (!state.rules || !state.matchTournamentId || !state.matchCategoryId) return false
   try {
     saveMatchSnapshot(state.match.id, state.matchTournamentId, {
-      match: state.match,
+      match: nextMatch!,
       rules: state.rules,
       roundFlags: [...nextRoundFlags],
       judgeVotes: Object.fromEntries(nextJudgeVotes),
       matchState: nextState,
+      ...(state.match.matchMode === 'tul' ? { tulPhase: nextState.phase === 'finished'
+        ? 'finished' as const : nextState.phase === 'rest' ? 'voting' as const : state.tulPhase } : {}),
     }, state.matchCategoryId)
     return true
   } catch (err) {
     logger.error({ err, matchId: state.match.id }, '[rr] operational snapshot persist failed')
     return false
   }
+}
+
+function hasPreFightActivity(): boolean {
+  const current = state.matchState
+  return !current || current.phase !== 'idle' || current.currentRound !== 0 || !!current.result
+    || current.firstPoint !== null || state.roundFlags.length > 0 || state.judgeVotes.size > 0
+    || current.rounds.some(round => round.events.length > 0)
+    || current.timeLeft !== state.rules?.rounds.duration_seconds
 }
 
 function tallyFlagWinner(votes: Map<string, string>, n: number): { red: number; blue: number; draw: number; winner: FightWinner } {
@@ -337,6 +355,14 @@ export function registerSocketHandlers(io: Server) {
 
       let nextMatchState
       try {
+        if (data.match.timingKind) {
+          const rules = data.rules as RuleSetSparring | undefined
+          if (!rules || rules.mode !== 'sparring' || !rules.rounds
+            || !Number.isInteger(rules.rounds.duration_seconds) || rules.rounds.duration_seconds < 1 || rules.rounds.duration_seconds > 3600
+            || !Number.isSafeInteger(rules.rounds.count) || rules.rounds.count < 1
+            || !Number.isInteger(rules.rounds.rest_seconds) || rules.rounds.rest_seconds < 0 || rules.rounds.rest_seconds > 3600
+            || (data.match.requireIndividualFlags && rules.rounds.count !== 1)) throw new Error('Invalid pre-fight timings')
+        }
         if (data.match.goldenPoint && (
           data.match.matchMode !== 'sparring'
           || !Number.isInteger((data.rules as RuleSetSparring)?.judgesCount)
@@ -372,10 +398,12 @@ export function registerSocketHandlers(io: Server) {
           respond({ ok: false, code: 'fight_already_completed', error: 'Este combate ya tiene un resultado confirmado.' })
           return
         }
-        const match: MatchInfo = { ...data.match, categoryId: data.categoryId } as MatchInfo
+        const match: MatchInfo = { ...data.match, categoryId: data.categoryId,
+          ...(data.match.timingKind ? { preFight: { loadId: randomUUID(), revision: 0, started: false, defaultRounds: (data.rules as RuleSetSparring).rounds.count, timingKind: data.match.timingKind } } : {}),
+        } as MatchInfo
         saveMatchSnapshot(data.match.id, tournamentId, {
           match, rules: data.rules as Record<string, unknown>, roundFlags: [],
-           ...(data.match.goldenPoint || data.match.requireIndividualFlags ? { matchState: nextMatchState } : {}),
+          matchState: nextMatchState,
         }, data.categoryId)
 
         setSelectedTournamentId(tournamentId)
@@ -409,11 +437,129 @@ export function registerSocketHandlers(io: Server) {
       broadcast(io)
     })
 
-    socket.on('match:start', () => {
-      if (!state.matchState || !state.rules) return
+    socket.on('match:postpone', (raw: unknown, reply?: (value: {ok:boolean;code?:string;error?:string;alreadyApplied?:boolean}) => void) => {
+      const parsed = matchPostponeSchema.safeParse(raw)
+      if (!parsed.success) { reply?.({ok:false,code:'invalid_payload',error:'Solicitud de postergación inválida.'}); return }
+      const data = parsed.data
+      try {
+        if (state.judges.has(socket.id)) { reply?.({ok:false,code:'unauthorized_judge',error:'Solo el jefe de mesa puede postergar.'}); return }
+        if (hasPostponeReceipt(data)) { reply?.({ok:true,alreadyApplied:true}); broadcast(io); return }
+        if (data.categoryId !== state.matchCategoryId || data.matchId !== state.match?.id) {
+          reply?.({ok:false,code:'stale_match_context',error:'El combate cargado cambió. No se postergó.'}); return
+        }
+        const timing = state.match.preFight
+        if (!timing || timing.loadId !== data.expectedLoadId || timing.revision !== data.expectedRevision) {
+          reply?.({ok:false,code:'stale_revision',error:'La carga o sus ajustes cambiaron. Revisá antes de postergar.'}); return
+        }
+        if (timing.started || hasPreFightActivity() || state.matchPaused || state.resultConfirmed || state.tulPhase !== 'idle') {
+          reply?.({ok:false,code:'match_already_started',error:'Solo se puede postergar un combate sin iniciar ni actividad registrada.'}); return
+        }
+        releaseNeverStartedMatch(data)
+        stopTicker()
+        state.match = null; state.matchState = null; state.rules = null
+        state.matchCategoryId = null; state.matchTournamentId = null
+        state.matchPaused = false; state.resultConfirmed = false
+        state.judgeVotes.clear(); state.judges.clear(); state.nextJudgeNum = 1
+        state.roundFlags = []; state.tulPhase = 'idle'; state.legacyMatchAssociationWarning = null
+        reply?.({ok:true}); broadcast(io)
+      } catch (error) {
+        logger.error({error}, '[match:postpone] release failed')
+        reply?.({ok:false,code:'persistence_failed',error:'No se pudo postergar. El combate y sus datos se conservaron.'})
+      }
+    })
+
+    type ConfigurationReply = {
+      ok: boolean; code?: string; error?: string; alreadyApplied?: boolean
+      preFight?: MatchInfo['preFight']; rules?: RuleSetSparring
+    }
+    const configuration = (): ConfigurationReply => ({ ok: true, preFight: state.match?.preFight,
+      ...(state.rules ? { rules: state.rules } : {}) })
+    socket.on('match:configuration', (raw: unknown, reply?: (value: ConfigurationReply) => void) => {
+      const parsed = matchCommandContextSchema.safeParse(raw)
+      if (!parsed.success || parsed.data.categoryId !== state.matchCategoryId || parsed.data.matchId !== state.match?.id) {
+        reply?.({ ok: false, code: 'stale_match_context', error: 'La pelea seleccionada ya no esta cargada.' })
+        return
+      }
+      reply?.(configuration())
+      broadcast(io)
+    })
+    socket.on('match:configure', (raw: unknown, reply?: (value: ConfigurationReply) => void) => {
+      const parsed = matchConfigureSchema.safeParse(raw)
+      if (!parsed.success) {
+        reply?.({ok: false, code: 'invalid_payload', error: 'Ingresa una duracion valida y uno o dos rounds.'})
+        return
+      }
+      const data = parsed.data
+      if (data.categoryId !== state.matchCategoryId || data.matchId !== state.match?.id) {
+        reply?.({ok: false, code: 'stale_match_context', error: 'La pelea seleccionada ya no esta cargada.'})
+        return
+      }
+      const match = state.match, current = state.matchState, rules = state.rules
+      if (state.judges.has(socket.id)) {
+        reply?.({ok: false, code: 'unauthorized_judge', error: 'Solo el jefe de mesa puede ajustar el combate.'})
+        return
+      }
+      if (!match?.preFight || !current || !rules || rules.mode !== 'sparring' || match.matchMode !== 'sparring'
+        || match.goldenPoint || match.preFight.timingKind === 'continuation' || state.resultConfirmed) {
+        reply?.({ok: false, code: 'configuration_unavailable', error: 'Esta pelea no admite ajustes previos verificables.'})
+        return
+      }
+      if (match.preFight.started || hasPreFightActivity()) {
+        reply?.({ok: false, code: 'match_already_started', error: 'La pelea ya comenzo o tiene actividad registrada; no se cambiaron sus ajustes.'})
+        return
+      }
+      if ((match.requireIndividualFlags && data.rounds !== 1)
+        || (match.preFight.timingKind !== 'elimination-final' && data.rounds !== rules.rounds.count)
+        || (match.preFight.timingKind === 'elimination-final' && data.rounds !== 1 && data.rounds !== 2
+          && data.rounds !== rules.rounds.count && data.rounds !== match.preFight.defaultRounds)) {
+        reply?.({ok: false, code: 'invalid_round_count', error: 'Dos rounds solo estan disponibles en finales de eliminacion.'})
+        return
+      }
+      if (data.expectedRevision !== match.preFight.revision) {
+        if (data.expectedRevision + 1 === match.preFight.revision && data.durationSeconds === rules.rounds.duration_seconds
+          && data.rounds === rules.rounds.count) {
+          reply?.({...configuration(), alreadyApplied: true})
+          return
+        }
+        reply?.({ok: false, code: 'stale_revision', error: 'Los ajustes cambiaron. Revisa la configuracion guardada.'})
+        return
+      }
+      const nextRules = {...rules, rounds: {...rules.rounds, count: data.rounds, duration_seconds: data.durationSeconds}}
+      const nextMatch = {...match, preFight: {...match.preFight, revision: match.preFight.revision + 1}}
+      const nextState = createMatch(nextRules)
+      try {
+        saveMatchSnapshot(match.id, state.matchTournamentId ?? state.activeTournamentId, {
+          match: nextMatch, rules: nextRules, matchState: nextState, roundFlags: [], judgeVotes: {},
+        }, data.categoryId)
+      } catch (err) {
+        logger.error({err, matchId: match.id}, '[match:configure] snapshot persist failed')
+        reply?.({ok: false, code: 'persistence_failed', error: 'No se pudieron guardar los ajustes. No se modifico el combate.'})
+        return
+      }
+      state.match = nextMatch
+      state.rules = nextRules
+      state.matchState = nextState
+      reply?.(configuration())
+      broadcast(io)
+    })
+
+    socket.on('match:start', (raw: unknown, reply?: (value: ConfigurationReply) => void) => {
+      const parsed = matchStartSchema.safeParse(raw)
+      if (!parsed.success || !state.matchState || !state.rules) {
+        reply?.({ok: false, code: 'invalid_payload', error: 'No se puede iniciar este combate.'})
+        return
+      }
+      if (state.match?.preFight && parsed.data.expectedTimingRevision !== state.match.preFight.revision) {
+        reply?.({ok: false, code: 'stale_revision', error: 'Los ajustes cambiaron. Revisalos antes de iniciar.'})
+        broadcast(io)
+        return
+      }
       // Tul: sin timer ni rounds — ir directo a fase de votación
       if (state.match?.matchMode === 'tul') {
         if (state.tulPhase !== 'idle') return
+        const nextState: MatchState = { ...state.matchState, phase: 'rest', result: null }
+        if (!persistIndividualFlagState(nextState, state.roundFlags, new Map<string, string>())) return
+        state.matchState = nextState
         state.tulPhase = 'voting'
         state.judgeVotes.clear()
         broadcast(io)
@@ -422,9 +568,16 @@ export function registerSocketHandlers(io: Server) {
       const phase = state.matchState.phase
       if (phase === 'idle' || phase === 'rest') {
         const nextState = startPhase(state.matchState, state.rules)
-        if (!persistIndividualFlagState(nextState)) return
+        const nextMatch = state.match?.preFight
+          ? {...state.match, preFight: {...state.match.preFight, started: true}} : state.match
+        if (!persistIndividualFlagState(nextState, state.roundFlags, state.judgeVotes, nextMatch)) {
+          reply?.({ok: false, code: 'persistence_failed', error: 'No se pudo guardar el inicio; el reloj no comenzo.'})
+          return
+        }
+        state.match = nextMatch
         state.matchState = nextState
         startTicker(io)
+        reply?.(configuration())
         broadcast(io)
       }
     })
@@ -586,19 +739,21 @@ export function registerSocketHandlers(io: Server) {
     socket.on('match:reset', () => {
       if (!state.rules || !state.match || state.resultConfirmed) return
       if (state.matchState?.phase === 'finished' && state.matchState.result) return
+      const nextMatch = state.match.preFight && hasPreFightActivity()
+        ? {...state.match, preFight: {...state.match.preFight, started: true}} : state.match
       const resetState = state.match.goldenPoint ? createGoldenPointMatch(state.rules) : createMatch(state.rules)
       try {
         saveMatchSnapshot(
           state.match.id,
           state.matchTournamentId ?? state.activeTournamentId,
-          { match: state.match, rules: state.rules, roundFlags: [],
-            ...(state.match.goldenPoint || state.match.requireIndividualFlags ? { matchState: resetState } : {}) },
+          { match: nextMatch, rules: state.rules, roundFlags: [], matchState: resetState },
           state.matchCategoryId ?? undefined,
         )
       } catch (err) {
         logger.error({ err, matchId: state.match.id }, '[match:reset] snapshot persist error')
         return
       }
+      state.match = nextMatch
       state.matchState = resetState
       state.judgeVotes.clear()
       state.roundFlags = []
@@ -617,6 +772,12 @@ export function registerSocketHandlers(io: Server) {
       if (!myJudgeId || myJudgeId !== data.judgeId) return
       // Normaliza 'tie' → 'draw' para consistencia con mesa:flagVote y tallyFlagWinner
       const normalizedVote = data.vote === 'tie' ? 'draw' : data.vote
+      if (state.match?.matchMode === 'tul') {
+        if (!state.matchState || state.tulPhase !== 'voting' || state.resultConfirmed) return
+        const nextVotes = new Map(state.judgeVotes)
+        nextVotes.set(data.judgeId, normalizedVote)
+        if (!persistIndividualFlagState(state.matchState, state.roundFlags, nextVotes)) return
+      }
       state.judgeVotes.set(data.judgeId, normalizedVote)
       broadcast(io)
     })
@@ -931,6 +1092,12 @@ export function registerSocketHandlers(io: Server) {
       const data = safeParse(mesaFlagVoteSchema, raw, 'mesa:flagVote')
       if (!data) return
       if (state.matchState?.phase === 'golden_point') return
+      if (state.match?.matchMode === 'tul') {
+        if (!state.matchState || state.tulPhase !== 'voting' || state.resultConfirmed) return
+        const nextVotes = new Map(state.judgeVotes)
+        nextVotes.set(data.judgeId, data.vote)
+        if (!persistIndividualFlagState(state.matchState, state.roundFlags, nextVotes)) return
+      }
       if (state.match?.requireIndividualFlags) {
         if (!state.rules || !state.matchState || !state.matchTournamentId || !state.matchCategoryId) return
         if (state.judges.has(socket.id)) return
@@ -1091,36 +1258,88 @@ export function registerSocketHandlers(io: Server) {
 
     // ── Tul mode ──────────────────────────────────────────────────────────────
 
-    socket.on('tul:finish', () => {
-      if (!state.matchState || state.match?.matchMode !== 'tul') return
-      if (state.tulPhase !== 'voting') return
+    type TulReply = { ok: boolean; code?: string; error?: string; revision?: number }
+    socket.on('tul:finish', (raw: unknown, reply?: (response: TulReply) => void) => {
+      const reject = (code: string, error: string): void => reply?.({ ok: false, code, error })
+      const data = safeParse(tulFinishSchema, raw, 'tul:finish')
+      if (!data) return reject('invalid_payload', 'Datos de votación inválidos.')
+      if (data.categoryId !== state.matchCategoryId || data.matchId !== state.match?.id)
+        return reject('stale_match_context', 'La categoría o pelea ya no está activa.')
+      if (!state.matchState || state.match?.matchMode !== 'tul' || !state.rules ||
+        state.matchTournamentId === null || state.judges.has(socket.id))
+        return reject('wrong_phase', 'No se puede confirmar esta votación.')
+      if (state.resultConfirmed || getMatchResult(data.categoryId, data.matchId)?.status === 'confirmed')
+        return reject('result_confirmed', 'El resultado ya fue confirmado.')
+      const revision = getMatchResultRevision(data.categoryId, data.matchId)
+      // Legacy first finishes are revision zero, never authority over reopened votes.
+      if ((data.expectedRevision ?? 0) !== revision)
+        return reject('stale_result_revision', 'La votación cambió; revisá el resultado.')
+      if (state.tulPhase !== 'voting') return reject('wrong_phase', 'La votación no está abierta.')
       const judgesCount = state.rules?.judgesCount ?? 3
       const { winner } = tallyFlagWinner(state.judgeVotes, judgesCount)
-      // Actualizar matchState con resultado final (la fase 'finished' ya existe en MatchPhase)
-      // biome-ignore lint/suspicious/noExplicitAny: tul bypass — 'finished' es una MatchPhase válida
-      state.matchState = { ...state.matchState, phase: 'finished', result: { winner, reason: 'points' } } as any
+      if (winner === 'draw') return reject('draw_not_allowed', 'En formas no se permite empate; corregí los votos.')
+      const nextState: MatchState = { ...state.matchState, phase: 'finished',
+        result: { winner, reason: 'points' } }
+      const input = buildMatchResultInput(data.categoryId, data.matchId, winner, nextState)
+      if (!input) return reject('wrong_phase', 'No hay resultado disponible.')
+      try {
+        savePendingMatchResultWithSnapshot(input, { match: state.match, rules: state.rules,
+          roundFlags: [...state.roundFlags], judgeVotes: Object.fromEntries(state.judgeVotes),
+          matchState: nextState, tulPhase: 'finished', pendingResult: { winner, reason: 'points' } })
+      } catch (err) {
+        logger.error({ err, matchId: data.matchId }, '[tul:finish] persistence failed')
+        return reject('persistence_failed', 'No se guardó el resultado; la votación sigue abierta.')
+      }
+      state.matchState = nextState
       state.tulPhase = 'finished'
       stopTicker()
-      saveFallo(winner)
+      appendPendingFallo(input)
+      reply?.({ ok: true, revision })
       broadcast(io)
     })
 
     socket.on('tul:retry', () => {
       if (state.match?.matchMode !== 'tul') return
       if (state.tulPhase !== 'voting') return
+      if (!state.matchState || !persistIndividualFlagState(state.matchState, state.roundFlags,
+        new Map<string, string>())) return
       state.judgeVotes.clear()
       broadcast(io)
     })
 
     // Deshacer el "Confirmar ganador" en tul — vuelve a fase de votación conservando los votos
-    socket.on('tul:undoFinish', () => {
-      if (state.match?.matchMode !== 'tul') return
-      if (state.tulPhase !== 'finished') return
-      state.tulPhase = 'voting'
-      if (state.matchState) {
-        // biome-ignore lint/suspicious/noExplicitAny: tul bypass
-        state.matchState = { ...state.matchState, phase: 'rest', result: null } as any
+    socket.on('tul:undoFinish', (raw: unknown, reply?: (response: TulReply) => void) => {
+      const reject = (code: string, error: string): void => reply?.({ ok: false, code, error })
+      const data = safeParse(tulUndoFinishSchema, raw, 'tul:undoFinish')
+      if (!data) return reject('invalid_payload', 'Datos de corrección inválidos.')
+      if (data.categoryId !== state.matchCategoryId || data.matchId !== state.match?.id)
+        return reject('stale_match_context', 'La categoría o pelea ya no está activa.')
+      if (!state.match || !state.matchState || !state.rules || state.matchTournamentId === null ||
+        state.match.matchMode !== 'tul' || state.judges.has(socket.id))
+        return reject('wrong_phase', 'Este resultado no admite corregir votos.')
+      const stored = getMatchResult(data.categoryId, data.matchId)
+      if (state.resultConfirmed || stored?.status === 'confirmed')
+        return reject('result_confirmed', 'El resultado ya fue confirmado; no se modificó.')
+      if (state.tulPhase !== 'finished' || state.matchState.phase !== 'finished' ||
+        state.matchState.result?.reason !== 'points' || stored?.status !== 'pending_confirmation' ||
+        stored.reason !== 'points') return reject('wrong_phase', 'No hay votación pendiente para corregir.')
+      if (data.expectedRevision !== getMatchResultRevision(data.categoryId, data.matchId))
+        return reject('stale_result_revision', 'El resultado cambió; revisá la pantalla.')
+      const nextState: MatchState = { ...state.matchState, phase: 'rest', result: null }
+      let revision: number
+      try {
+        revision = reopenPendingFlagResult(data.matchId, data.categoryId, state.matchTournamentId,
+          data.expectedRevision, { match: state.match, rules: state.rules, roundFlags: [...state.roundFlags],
+            judgeVotes: Object.fromEntries(state.judgeVotes), matchState: nextState, tulPhase: 'voting' })
+      } catch (err) {
+        logger.error({ err, matchId: data.matchId }, '[tul:undoFinish] persistence failed')
+        return reject('persistence_failed', 'No se guardó la corrección; el resultado sigue intacto.')
       }
+      state.matchState = nextState
+      state.tulPhase = 'voting'
+      state.resultConfirmed = false
+      state.fallos = state.fallos.filter((fallo) => fallo.matchId !== data.matchId || fallo.categoryId !== data.categoryId)
+      reply?.({ ok: true, revision })
       broadcast(io)
     })
   })

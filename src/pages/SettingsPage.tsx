@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
+import { z } from "zod";
 import { useNavigate } from "react-router-dom";
 import { useTournamentStore } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
@@ -30,6 +31,7 @@ import {
 } from "@/lib/tournament-presets";
 
 const BASE = itfRules as RuleSetSparring;
+const ringNameResponseSchema = z.object({ alias: z.string(), name: z.string() }).strict();
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -99,24 +101,47 @@ export function SettingsPage() {
   const [tatamiName, setTatamiName] = useState("");
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveNameError, setSaveNameError] = useState<string | null>(null);
+  const saveNamePending = useRef(false);
 
   useEffect(() => {
+    if (!saved) return;
+    const timer = setTimeout(() => setSaved(false), 2000);
+    return () => clearTimeout(timer);
+  }, [saved]);
+
+  useEffect(() => {
+    if (saveNamePending.current) return;
     if (serverState.ringAlias) setAlias(serverState.ringAlias);
     if (serverState.ringName) setTatamiName(serverState.ringName);
   }, [serverState.ringAlias, serverState.ringName]);
 
-  async function handleSaveName() {
-    if (!alias.trim()) return;
+  async function handleSaveName(): Promise<void> {
+    if (!alias.trim() || saveNamePending.current) return;
+    const requested = { alias: alias.trim(), name: tatamiName.trim() || alias.trim() };
+    saveNamePending.current = true;
     setSaving(true);
+    setSaved(false);
+    setSaveNameError(null);
     try {
-      await fetch("/api/ring/config", {
+      const response = await fetch("/api/ring/config", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alias: alias.trim(), name: tatamiName.trim() || alias.trim() }),
+        body: JSON.stringify(requested),
       });
+      if (!response.ok) throw new Error("El servidor rechazó el cambio.");
+      const body: unknown = await response.json();
+      const accepted = ringNameResponseSchema.safeParse(body);
+      if (!accepted.success || accepted.data.alias !== requested.alias || accepted.data.name !== requested.name) {
+        throw new Error("El servidor no confirmó el nombre solicitado.");
+      }
+      setAlias(accepted.data.alias);
+      setTatamiName(accepted.data.name);
       setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
+    } catch {
+      setSaveNameError("No se pudo guardar el nombre. Revisá la conexión o los permisos y volvé a intentar.");
     } finally {
+      saveNamePending.current = false;
       setSaving(false);
     }
   }
@@ -541,7 +566,8 @@ export function SettingsPage() {
                   <Input
                     id="ring-alias"
                     value={alias}
-                    onChange={(e) => setAlias(e.target.value.slice(0, 4))}
+                    disabled={saving}
+                    onChange={(e) => { setAlias(e.target.value.slice(0, 4)); setSaved(false); setSaveNameError(null); }}
                     placeholder="T1"
                     className="font-mono"
                   />
@@ -552,7 +578,8 @@ export function SettingsPage() {
                   <Input
                     id="ring-name"
                     value={tatamiName}
-                    onChange={(e) => setTatamiName(e.target.value)}
+                    disabled={saving}
+                    onChange={(e) => { setTatamiName(e.target.value); setSaved(false); setSaveNameError(null); }}
                     placeholder="Cuadrilátero 1"
                   />
                 </div>
@@ -565,6 +592,7 @@ export function SettingsPage() {
               >
                 {saved ? <><Check className="size-4" /> Guardado</> : saving ? "Guardando…" : "Guardar nombre"}
               </Button>
+              {saveNameError && <p role="alert" className="text-sm text-destructive">{saveNameError}</p>}
             </CardContent>
           </Card>
 

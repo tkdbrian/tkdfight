@@ -1,3 +1,4 @@
+import { CategoryPrintAction } from "@/components/CategoryPrintAction";
 import { canReseedBracket } from "@/lib/bracket-seeding";
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
@@ -252,6 +253,7 @@ export function BracketPage() {
           )}
         </div>
         <div className="flex gap-2 flex-wrap">
+          <CategoryPrintAction connected={connected} stateReady={stateReady} request={request} tatami={serverState.ringAlias} />
           {initialized && <CategoryCombatAction connected={connected} stateReady={stateReady} serverState={serverState} />}
           {!initialized ? (
             <Button onClick={handleGenerateBracket} disabled={competitors.length < 2}>

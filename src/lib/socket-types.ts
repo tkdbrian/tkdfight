@@ -7,6 +7,8 @@ export interface MatchInfo {
   ringId: string;
   category?: string;
   matchMode?: 'sparring' | 'patterns' | 'tul';
+  timingKind?: 'regular' | 'elimination-final' | 'continuation';
+  preFight?: { loadId?: string; revision: number; started: boolean; defaultRounds?: number; timingKind: 'regular' | 'elimination-final' | 'continuation' };
   goldenPoint?: boolean;
   red: { id: string; name: string; club?: string };
   blue: { id: string; name: string; club?: string };

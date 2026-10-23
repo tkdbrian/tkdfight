@@ -119,7 +119,8 @@ describe("dual-mode restart controller", () => {
     expect(localStorage.getItem("tkd-pending-category-restart-v1")).toBeNull();
   });
 
-  it("recovers lost ACK/503 via the new canonical GET without a second destructive POST", async () => {
+  it.each([false, true])("recovers lost ACK/503 via canonical GET without a second destructive POST (draft=%s)", async (draft) => {
+    if (draft) { previous.competitors = []; useTournamentStore.setState(previous); }
     let committed: CategoryDeleteAndRestartSuccess | undefined;
     const fetcher = vi.fn(async (_url: string, init?: RequestInit) => {
       if (init?.method === "POST") {

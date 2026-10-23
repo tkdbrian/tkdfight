@@ -1046,3 +1046,336 @@ describe("flag correction durability guards", () => {
       .toMatchObject({ ok: true, result: { status: "confirmed" } });
   });
 });
+
+describe('pre-fight configuration protocol', () => {
+  async function loaded(timingKind: string | undefined = 'elimination-final', individual = false, count = 1) {
+    const setup = await setupSocketClient();
+    setup.activeState.activeTournamentId = setup.db.createTournament('Pre-fight test', '');
+    const identity = { categoryId: 'pre-category', matchId: 'pre-match' };
+    const payload = { categoryId: identity.categoryId, tournamentName: 'Pre-fight test',
+      rules: { ...baselineRules, rounds: { ...baselineRules.rounds, count, duration_seconds: 60 } },
+      match: { id: identity.matchId, ringId: 'ring-1', matchMode: 'sparring', timingKind,
+        requireIndividualFlags: individual,
+        red: { id: 'pre-red', name: 'Rojo' }, blue: { id: 'pre-blue', name: 'Azul' } } };
+    expect(await emitAck(setup.socket, 'match:load', payload)).toMatchObject({ ok: true });
+    const configure = (expectedRevision = 0, durationSeconds = 90, rounds = 2) =>
+      emitAck<{ok: boolean; code?: string; preFight?: {revision: number; started: boolean}}>(setup.socket,
+        'match:configure', { ...identity, expectedRevision, durationSeconds, rounds });
+    return { ...setup, identity, configure, payload };
+  }
+  it('persists final settings before applying, preserves rest and recovers repeated requests', async () => {
+    const { activeState, db, socket, identity, configure, payload } = await loaded();
+    expect(activeState.match).toMatchObject({ preFight: { revision: 0, started: false, timingKind: 'elimination-final' } });
+    expect(await configure()).toMatchObject({ ok: true, preFight: {revision: 1} });
+    expect(activeState.rules?.rounds).toMatchObject({ count: 2, duration_seconds: 90, rest_seconds: baselineRules.rounds.rest_seconds });
+    expect(activeState.matchState?.timeLeft).toBe(90);
+    expect(db.loadMatchSnapshot()?.data?.match).toMatchObject({ preFight: {revision: 1, started: false} });
+    expect(await configure()).toMatchObject({ok: true, alreadyApplied: true});
+    expect(await configure(0, 120)).toMatchObject({ok: false, code: 'stale_revision'});
+    expect(await emitAck(socket, 'match:configuration', identity)).toMatchObject({ok: true, preFight: {revision: 1}});
+    expect(await emitAck(socket, 'match:load', payload)).toMatchObject({ok: true, alreadyLoaded: true});
+    expect(activeState.rules?.rounds.duration_seconds).toBe(90);
+  });
+  it.each([40, 60, 90, 120])('supports %i seconds and locks persistently after start and reset', async (seconds) => {
+    const {activeState, db, socket, identity, configure} = await loaded();
+    expect(await configure(0, seconds, 1)).toMatchObject({ok: true});
+    socket.emit('match:start', {...identity, expectedTimingRevision: 1});
+    await vi.waitFor(() => expect(activeState.matchState?.phase).toBe('round'));
+    expect(db.loadMatchSnapshot()?.data?.match).toMatchObject({preFight: {started: true}});
+    socket.emit('match:reset', identity);
+    await vi.waitFor(() => expect(activeState.matchState?.phase).toBe('idle'));
+    expect(await configure(1, 120, 1)).toMatchObject({ok: false, code: 'match_already_started'});
+    expect(db.loadMatchSnapshot()?.data?.match).toMatchObject({preFight: {started: true}});
+  });
+  it('rejects regular RR second rounds and permits duration-only without modifying flags mode', async () => {
+    const {activeState, configure} = await loaded('regular', true);
+    expect(await configure()).toMatchObject({ok: false, code: 'invalid_round_count'});
+    expect(await configure(0, 40, 1)).toMatchObject({ok: true});
+    expect(activeState.match?.requireIndividualFlags).toBe(true);
+  });
+  it('rejects continuation and legacy state, stale identities and invalid inputs', async () => {
+    const {activeState, socket, identity, configure} = await loaded('continuation');
+    expect(await configure(0, 60, 1)).toMatchObject({ok: false, code: 'configuration_unavailable'});
+    expect(await emitAck(socket, 'match:configure', {...identity, matchId: 'other', expectedRevision: 0, durationSeconds: 60, rounds: 1}))
+      .toMatchObject({ok: false, code: 'stale_match_context'});
+    expect(await emitAck(socket, 'match:configure', {...identity, expectedRevision: 0, durationSeconds: 0, rounds: 1}))
+      .toMatchObject({ok: false, code: 'invalid_payload'});
+    if (activeState.match) delete activeState.match.preFight;
+    expect(await configure(0, 60, 1)).toMatchObject({ok: false, code: 'configuration_unavailable'});
+  });
+  it('fails atomically on durable write failure including the first-start marker', async () => {
+    const {activeState, db, socket, identity, configure} = await loaded();
+    db.default.exec(`CREATE TRIGGER reject_pre_config BEFORE INSERT ON match_snapshot
+      BEGIN SELECT RAISE(ABORT, 'pre config failure'); END`);
+    expect(await configure()).toMatchObject({ok: false, code: 'persistence_failed'});
+    expect(activeState.rules?.rounds.duration_seconds).toBe(60);
+    expect(await emitAck(socket, 'match:start', {...identity, expectedTimingRevision: 0}))
+      .toMatchObject({ok: false, code: 'persistence_failed'});
+    expect(activeState.matchState?.phase).toBe('idle');
+    expect(activeState.match?.preFight?.started).toBe(false);
+  });
+  it('preserves existing two-round regular elimination while changing duration only', async () => {
+    const {activeState, configure} = await loaded('regular');
+    if (activeState.rules) activeState.rules.rounds.count = 2;
+    expect(await configure(0, 120, 2)).toMatchObject({ok: true});
+    expect(await configure(1, 40, 1)).toMatchObject({ok: false, code: 'invalid_round_count'});
+  });
+  it('rejects malformed load timings and RR second rounds before replacing anything', async () => {
+    const {activeState, db, socket, payload} = await loaded();
+    activeState.resultConfirmed = true;
+    db.clearMatchSnapshot();
+    const bad = {...payload, match: {...payload.match, id: 'other-fight', requireIndividualFlags: true},
+      rules: {...payload.rules, rounds: {...payload.rules.rounds, count: 2}}};
+    expect(await emitAck(socket, 'match:load', bad)).toMatchObject({ok: false, code: 'invalid_rules'});
+    expect(activeState.match?.id).toBe('pre-match');
+  });
+  it('seals activity evidence across reset and denies remote judge edits', async () => {
+    const {activeState, socket, identity, configure} = await loaded();
+    expect(await emitAck(socket, 'judge:connect', {token: activeState.ringToken, requestedId: 'J1'}))
+      .toMatchObject({judgeId: 'J1'});
+    expect(await configure()).toMatchObject({ok: false, code: 'unauthorized_judge'});
+    activeState.judges.clear();
+    socket.emit('mesa:flagVote', {...identity, judgeId: 'J1', vote: 'red'});
+    await vi.waitFor(() => expect(activeState.judgeVotes.size).toBe(1));
+    expect(await configure()).toMatchObject({ok: false, code: 'match_already_started'});
+    socket.emit('match:reset', identity);
+    await vi.waitFor(() => expect(activeState.judgeVotes.size).toBe(0));
+    expect(await configure()).toMatchObject({ok: false, code: 'match_already_started'});
+  });
+
+  it('rejects stale and missing timing revisions at Start before changing clock or durable marker', async () => {
+    const {socket, activeState, db, identity, configure} = await loaded();
+    expect(await configure()).toMatchObject({ok: true});
+    expect(await emitAck(socket, 'match:start', {...identity, expectedTimingRevision: 0}))
+      .toMatchObject({ok: false, code: 'stale_revision'});
+    expect(await emitAck(socket, 'match:start', identity)).toMatchObject({ok: false, code: 'stale_revision'});
+    expect(activeState.matchState?.phase).toBe('idle');
+    expect(db.loadMatchSnapshot()?.data?.match).toMatchObject({preFight: {started: false}});
+    expect(await emitAck(socket, 'match:start', {...identity, expectedTimingRevision: 1})).toMatchObject({ok: true});
+    expect(activeState.matchState?.phase).toBe('round');
+  });
+
+  it('recovers authoritative settings and sticky started evidence from the saved startup snapshot', async () => {
+    const {socket, activeState, db, identity, configure} = await loaded();
+    expect(await configure(0, 90, 2)).toMatchObject({ok: true});
+    expect(await emitAck(socket, 'match:start', {...identity, expectedTimingRevision: 1})).toMatchObject({ok: true});
+    const {stopTicker} = await import('../timer.js');
+    stopTicker();
+    const stored = db.loadMatchSnapshot()?.data;
+    expect(stored).toBeTruthy();
+    const {recoverIndividualFlagMatchState} = await import('../recovery.js');
+    // Mirror startup's JSON snapshot restore after dropping runtime-only state.
+    activeState.match = null;
+    activeState.matchState = null;
+    activeState.rules = null;
+    const recovered = JSON.parse(JSON.stringify(stored)) as NonNullable<typeof stored>;
+    activeState.match = recovered.match as unknown as import('../state.js').MatchInfo;
+    activeState.rules = recovered.rules as unknown as import('../../src/engine/types.js').RuleSetSparring;
+    activeState.matchState = recoverIndividualFlagMatchState(recovered);
+    expect(activeState.rules?.rounds).toMatchObject({count: 2, duration_seconds: 90});
+    expect(activeState.match?.preFight).toMatchObject({started: true, revision: 1});
+    expect(activeState.matchState?.phase).toBe('round');
+    expect(await configure(1, 120, 1)).toMatchObject({ok: false, code: 'match_already_started'});
+  });
+
+  it.each(['regular', 'elimination-final'])('preserves legacy three rounds for %s with duration-only and restore', async kind => {
+    const {configure, activeState} = await loaded(kind, false, 3);
+    expect(await configure(0, 90, 3)).toMatchObject({ok: true});
+    expect(activeState.rules?.rounds.count).toBe(3);
+    expect(await configure(1, 120, 4)).toMatchObject({ok: false, code: 'invalid_round_count'});
+    if (kind === 'elimination-final') {
+      expect(await configure(1, 40, 2)).toMatchObject({ok: true});
+      expect(await configure(2, 60, 3)).toMatchObject({ok: true});
+    }
+  });
+  it.each([40, 60, 90, 120])('runs both configured final rounds at %i seconds through the existing flag result flow', async seconds => {
+    const {socket, identity, configure, activeState, db} = await loaded();
+    expect(await configure(0, seconds, 2)).toMatchObject({ok: true});
+    for (let round = 1; round <= 2; round++) {
+      expect(await emitAck(socket, 'match:start', {...identity, expectedTimingRevision: 1})).toMatchObject({ok: true});
+      expect(activeState.matchState).toMatchObject({phase: 'round', currentRound: round, timeLeft: seconds});
+      socket.emit('match:skipToFlags', identity);
+      await vi.waitFor(() => expect(activeState.matchState?.phase).toBe('rest'));
+      for (let j = 1; j <= baselineRules.judgesCount; j++) socket.emit('mesa:flagVote', {...identity, judgeId: `J${j}`, vote: 'red'});
+      await vi.waitFor(() => expect(activeState.judgeVotes.size).toBe(baselineRules.judgesCount));
+      socket.emit('mesa:confirmRound', identity);
+      await vi.waitFor(() => expect(activeState.roundFlags.length).toBe(round));
+      if (round === 1) expect(activeState.matchState).toMatchObject({phase: 'rest', timeLeft: baselineRules.rounds.rest_seconds});
+    }
+    expect(activeState.matchState).toMatchObject({phase: 'finished', result: {winner: 'red'}});
+    expect(db.getMatchResult(identity.categoryId, identity.matchId)).toMatchObject({winner: 'red', status: 'pending_confirmation'});
+    expect(activeState.match?.preFight).toMatchObject({revision: 1, started: true});
+  });
+
+});
+
+// Tul correction must have the same durable revision boundary as sparring flags.
+async function setupTulCorrection() {
+  const fixture = await setupSocketClient();
+  const { db, socket, activeState } = fixture;
+  activeState.activeTournamentId = db.createTournament('Tul correction regression', '');
+  const identity = { categoryId: 'tul-correction', matchId: 'tul-correction-fight' };
+  await emitAck(socket, 'match:load', { categoryId: identity.categoryId,
+    tournamentName: 'Tul correction regression', rules: { ...baselineRules, judgesCount: 4 },
+    match: { id: identity.matchId, matchMode: 'tul', ringId: 'ring-1',
+      red: { id: 'tul-red', name: 'Red' }, blue: { id: 'tul-blue', name: 'Blue' } } });
+  socket.emit('match:start', identity);
+  for (const judgeId of ['J1', 'J2', 'J3', 'J4']) {
+    socket.emit('mesa:flagVote', { ...identity, judgeId, vote: 'red' });
+  }
+  await emitAck(socket, 'match:result:get', identity);
+  return { ...fixture, identity };
+}
+
+function tulAck(socket: Socket, event: string, payload: unknown): Promise<{
+  ok: boolean; code?: string; revision?: number;
+}> {
+  return new Promise((resolve, reject) => socket.timeout(500).emit(event, payload,
+    (error: Error | null, response: { ok: boolean; code?: string; revision?: number }) =>
+      error ? reject(error) : resolve(response)));
+}
+
+describe('Tul durable correction', () => {
+  it('invalidates old winner before opposite-winner correction and rejects stale confirmations', async () => {
+    const { db, socket, activeState, identity } = await setupTulCorrection();
+    socket.emit('tul:finish', identity);
+    await emitAck(socket, 'match:result:get', identity);
+    expect(await tulAck(socket, 'tul:undoFinish', { ...identity, expectedRevision: 0 }))
+      .toMatchObject({ ok: true, revision: 1 });
+    expect(db.getMatchResult(identity.categoryId, identity.matchId)).toBeNull();
+    expect(db.getMatchResultRevision(identity.categoryId, identity.matchId)).toBe(1);
+    expect(db.loadMatchSnapshot()?.data).toMatchObject({ tulPhase: 'voting',
+      resultRevision: 1, matchState: { phase: 'rest', result: null }, judgeVotes: { J1: 'red' } });
+    expect(await emitAck(socket, 'match:saveFallo', { ...identity, expectedRevision: 0 }))
+      .toMatchObject({ ok: false, code: 'stale_result_revision' });
+    expect(await emitAck(socket, 'match:saveFallo', { ...identity, expectedRevision: 1 }))
+      .toMatchObject({ ok: false });
+    expect(await tulAck(socket, 'tul:finish', identity))
+      .toMatchObject({ ok: false, code: 'stale_result_revision' });
+    for (const judgeId of ['J1', 'J2', 'J3', 'J4']) {
+      socket.emit('mesa:flagVote', { ...identity, judgeId, vote: 'blue' });
+    }
+    expect(await tulAck(socket, 'tul:finish', { ...identity, expectedRevision: 1 }))
+      .toMatchObject({ ok: true, revision: 1 });
+    expect(activeState.matchState?.result?.winner).toBe('blue');
+    expect(await emitAck(socket, 'match:saveFallo', { ...identity, expectedRevision: 1 }))
+      .toMatchObject({ ok: true, result: { winner: 'blue', status: 'confirmed', revision: 1 } });
+    expect(await tulAck(socket, 'tul:undoFinish', { ...identity, expectedRevision: 1 }))
+      .toMatchObject({ ok: false, code: 'result_confirmed' });
+  });
+
+  it('rolls back Tul reopening on snapshot failure and preserves the old pending winner', async () => {
+    const { db, socket, activeState, identity } = await setupTulCorrection();
+    socket.emit('tul:finish', identity);
+    await emitAck(socket, 'match:result:get', identity);
+    db.default.exec(`CREATE TRIGGER reject_tul_reopen BEFORE INSERT ON match_snapshot
+      BEGIN SELECT RAISE(ABORT, 'test snapshot failure'); END`);
+    expect(await tulAck(socket, 'tul:undoFinish', { ...identity, expectedRevision: 0 }))
+      .toMatchObject({ ok: false, code: 'persistence_failed' });
+    expect(db.getMatchResult(identity.categoryId, identity.matchId))
+      .toMatchObject({ winner: 'red', status: 'pending_confirmation', revision: 0 });
+    expect(activeState.tulPhase).toBe('finished');
+    expect(activeState.matchState?.result?.winner).toBe('red');
+    db.default.exec('DROP TRIGGER reject_tul_reopen');
+    expect(await tulAck(socket, 'tul:undoFinish', { ...identity, expectedRevision: 0 }))
+      .toMatchObject({ ok: true, revision: 1 });
+  });
+
+  it('keeps Tul voting and votes intact if finishing cannot persist, then retries', async () => {
+    const { db, socket, activeState, identity } = await setupTulCorrection();
+    db.default.exec(`CREATE TRIGGER reject_tul_finish BEFORE INSERT ON match_results
+      BEGIN SELECT RAISE(ABORT, 'test pending failure'); END`);
+    expect(await tulAck(socket, 'tul:finish', { ...identity, expectedRevision: 0 }))
+      .toMatchObject({ ok: false, code: 'persistence_failed' });
+    expect(activeState.tulPhase).toBe('voting');
+    expect(activeState.matchState?.result).toBeNull();
+    expect(db.getMatchResult(identity.categoryId, identity.matchId)).toBeNull();
+    expect(db.loadMatchSnapshot()?.data).toMatchObject({ tulPhase: 'voting',
+      judgeVotes: { J1: 'red', J2: 'red', J3: 'red', J4: 'red' } });
+    db.default.exec('DROP TRIGGER reject_tul_finish');
+    expect(await tulAck(socket, 'tul:finish', { ...identity, expectedRevision: 0 }))
+      .toMatchObject({ ok: true });
+  });
+
+  it('rejects Tul 2-2 draws and stale finish revisions without publishing a result', async () => {
+    const { db, socket, activeState, identity } = await setupTulCorrection();
+    for (const judgeId of ['J3', 'J4']) socket.emit('mesa:flagVote', { ...identity, judgeId, vote: 'blue' });
+    expect(await tulAck(socket, 'tul:finish', { ...identity, expectedRevision: 0 }))
+      .toMatchObject({ ok: false, code: 'draw_not_allowed' });
+    expect(activeState.tulPhase).toBe('voting');
+    expect(db.getMatchResult(identity.categoryId, identity.matchId)).toBeNull();
+    expect(await tulAck(socket, 'tul:finish', { ...identity, expectedRevision: 9 }))
+      .toMatchObject({ ok: false, code: 'stale_result_revision' });
+  });
+});
+
+describe('safe loaded-idle postponement', () => {
+  async function loaded() {
+    const result = await setupSocketClient();
+    result.activeState.activeTournamentId = result.db.createTournament('Postpone', '');
+    const identity = {categoryId:'postpone-category',matchId:'postpone-fight'};
+    await emitAck(result.socket,'match:load',{categoryId:identity.categoryId,rules:baselineRules,
+      match:{id:identity.matchId,ringId:'T1',matchMode:'sparring',timingKind:'regular',red:{id:'pr',name:'Red'},blue:{id:'pb',name:'Blue'}}});
+    const timing = result.activeState.match?.preFight as {revision:number;loadId?:string};
+    const payload = {...identity,requestId:'postpone-request',expectedRevision:timing.revision,expectedLoadId:timing.loadId ?? 'missing-generation'};
+    return {...result,identity,payload};
+  }
+  const send = (socket:Socket,payload:unknown):Promise<{ok:boolean;code?:string;alreadyApplied?:boolean}> =>
+    socket.timeout(400).emitWithAck('match:postpone',payload);
+  it('durably releases only its snapshot, preserves pending fight and idempotently recovers lost ACK',async()=>{
+    const {db,activeState,socket,payload}=await loaded();
+    expect(await send(socket,payload)).toMatchObject({ok:true});
+    expect(activeState.match).toBeNull();expect(db.loadMatchSnapshot()).toBeNull();expect(db.getActiveMatchLock()).toBeNull();
+    expect(db.isFightPending(payload.matchId)).toBe(true);
+    expect(await send(socket,payload)).toMatchObject({ok:true,alreadyApplied:true});
+  });
+  it.each(['foreign','revision','generation','started','paused','votes','clock','confirmed','pending-result'])('rejects %s without changing the queue lock or snapshot',async(kind)=>{
+    const {db,activeState,socket,payload}=await loaded();
+    const before=db.loadMatchSnapshot();
+    const request={...payload};
+    if(kind==='foreign')request.categoryId='foreign-category';
+    if(kind==='revision')request.expectedRevision++;
+    if(kind==='generation')request.expectedLoadId='foreign-generation';
+    if(kind==='started'&&activeState.match?.preFight)activeState.match.preFight.started=true;
+    if(kind==='paused')activeState.matchPaused=true;
+    if(kind==='votes')activeState.judgeVotes.set('J1','red');
+    if(kind==='clock'&&activeState.matchState)activeState.matchState.timeLeft--;
+    if(kind==='confirmed')activeState.resultConfirmed=true;
+    if(kind==='pending-result'&&activeState.matchState)activeState.matchState.result={winner:'red',reason:'points'};
+    expect(await send(socket,request)).toMatchObject({ok:false});
+    expect(activeState.match?.id).toBe(payload.matchId);expect(db.loadMatchSnapshot()).toEqual(before);expect(db.getActiveMatchLock()?.fightId).toBe(payload.matchId);
+  });
+  it('does not release a reloaded bout on old-generation commands or successful receipt replay',async()=>{
+    const {db,activeState,socket,payload,identity}=await loaded();
+    const original=structuredClone(activeState.match);
+    expect(await send(socket,payload)).toMatchObject({ok:true});
+    expect(await emitAck(socket,'match:load',{categoryId:identity.categoryId,rules:baselineRules,match:original})).toMatchObject({ok:true});
+    const before=db.loadMatchSnapshot();
+    expect(activeState.match?.preFight?.loadId).not.toBe(payload.expectedLoadId);
+    expect(await send(socket,payload)).toMatchObject({ok:true,alreadyApplied:true});
+    expect(await send(socket,{...payload,requestId:'stale-new-request'})).toMatchObject({ok:false,code:'stale_revision'});
+    expect(db.loadMatchSnapshot()).toEqual(before);expect(activeState.match?.id).toBe(identity.matchId);
+  });
+  it('retains a durable receipt after module restart and rejects altered request identity',async()=>{
+    const {db,socket,payload}=await loaded();
+    expect(await send(socket,payload)).toMatchObject({ok:true});
+    expect(await send(socket,{...payload,expectedRevision:1})).toMatchObject({ok:false});
+    vi.resetModules();
+    const recoveredDb=await import('../db/index.js');
+    try {const recovered=await import('../db/match-postpone.js');expect(recovered.hasPostponeReceipt(payload)).toBe(true);expect(recoveredDb.loadMatchSnapshot()).toBeNull();expect(recoveredDb.isFightPending(payload.matchId)).toBe(true);}finally{recoveredDb.default.close();}
+    expect(db.isFightPending(payload.matchId)).toBe(true);
+  });
+  it('refuses a durable started snapshot even if runtime looks idle',async()=>{
+    const {db,activeState,socket,payload}=await loaded();
+    const snapshot=db.loadMatchSnapshot();if(!snapshot?.data)throw new Error('missing snapshot');
+    snapshot.data.match.preFight.started=true;db.saveMatchSnapshot(payload.matchId,snapshot.tournamentId,snapshot.data,payload.categoryId);
+    const before=db.loadMatchSnapshot();expect(await send(socket,payload)).toMatchObject({ok:false});
+    expect(db.loadMatchSnapshot()).toEqual(before);expect(activeState.match?.id).toBe(payload.matchId);
+  });  it('rolls back receipt and snapshot deletion on persistence failure',async()=>{
+    const {db,activeState,socket,payload}=await loaded();const before=db.loadMatchSnapshot();
+    db.default.exec("CREATE TRIGGER reject_postpone BEFORE DELETE ON match_snapshot BEGIN SELECT RAISE(ABORT, 'test'); END");
+    expect(await send(socket,payload)).toMatchObject({ok:false,code:'persistence_failed'});
+    expect(db.loadMatchSnapshot()).toEqual(before);expect(activeState.match?.id).toBe(payload.matchId);
+    db.default.exec('DROP TRIGGER reject_postpone');expect(await send(socket,payload)).toMatchObject({ok:true});
+  });
+});

@@ -536,7 +536,7 @@ export function SetupPage() {
       setConfig({ mode: defaultCategoryFormat("tul") });
     }
   }, [config.matchType, config.mode, setConfig]);
-  const showWelcome = competitors.length === 0 && !setupStarted && !welcomeDismissed;
+  const showWelcome = competitors.length === 0 && !setupStarted && !welcomeDismissed && !config.categoryName.trim();
 
 
   const [draftTournamentName, setDraftTournamentName] = useState(config.tournamentName ?? "");

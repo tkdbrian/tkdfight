@@ -7,7 +7,9 @@ import path from "node:path";
 import express from "express";
 import { Server } from "socket.io";
 import { afterEach, expect, it, vi } from "vitest";
-import { generateGroupsTournament } from "../../src/lib/bracket";
+import { generateEliminationBracket, generateGroupsTournament, getActiveBracketFights } from "../../src/lib/bracket";
+import { categoryDeletionPreviewSchema } from "../../src/lib/category-deletion-contract";
+import { categoryDeleteAndRestartSuccessSchema } from "../../src/lib/category-restart-modes-contract";
 import type {
   CategoryRestartSnapshot,
   RestartCategoryRequest,
@@ -59,6 +61,98 @@ function request(): RestartCategoryRequest {
     replacementSnapshot: graph(),
   };
 }
+
+function historicalElimination(): CategoryRestartSnapshot {
+  const previous = graph();
+  previous.config.mode = "elimination";
+  previous.competitors.push({ id: randomUUID(), name: "Histórico retirado" });
+  const generated = generateEliminationBracket(previous.competitors);
+  previous.bracketMatches = generated.matches;
+  previous.bracketSeeds = generated.seeds;
+  previous.groups = [];
+  previous.fights = [];
+  for (let round = 0; round < 2; round++) {
+    const next = getActiveBracketFights(previous.bracketMatches, previous.fights);
+    for (const fight of next) {
+      previous.fights.push({ ...fight, completed: true, winner: "red", winReason: "flags",
+        flagsRed: 4, flagsBlue: 0 });
+      previous.bracketMatches = previous.bracketMatches.map((match) => {
+        if (match.id === fight.bracketMatchId)
+          return { ...match, completed: true, winnerId: fight.red.id };
+        if (match.red.fromMatchId === fight.bracketMatchId)
+          return { ...match, red: { ...match.red, competitor: fight.red } };
+        if (match.blue.fromMatchId === fight.bracketMatchId)
+          return { ...match, blue: { ...match.blue, competitor: fight.red } };
+        return match;
+      });
+    }
+  }
+  previous.competitors = previous.competitors.filter((entry) => entry.id !== previous.fights[1].blue.id);
+  previous.phase = "results";
+  previous.currentFightIndex = 2;
+  return previous;
+}
+
+it.each(["archive", "delete-and-restart"] as const)(
+  "commits %s with the current three entrants and the unchanged four-person historical graph",
+  async (mode) => {
+    const { db, post } = await setup();
+    const previousSnapshot = historicalElimination();
+    const original = JSON.stringify(previousSnapshot);
+    const competitors = previousSnapshot.competitors.map((entry) => ({ ...entry, id: randomUUID() }));
+    const bracket = generateEliminationBracket(competitors);
+    const replacementSnapshot: CategoryRestartSnapshot = { ...previousSnapshot,
+      config: { ...previousSnapshot.config, id: randomUUID() }, competitors,
+      bracketMatches: bracket.matches, bracketSeeds: bracket.seeds, fights: [],
+      phase: "fighting", currentFightIndex: 0 };
+    expect(previousSnapshot.competitors).toHaveLength(3);
+    expect(new Set(previousSnapshot.fights.flatMap((fight) => [fight.red.id, fight.blue.id])).size).toBe(4);
+    const requestId = randomUUID();
+    if (mode === "archive") {
+      const response = await post("/api/ring/restart-category", {
+        requestId, categoryId: previousSnapshot.config.id, previousSnapshot, replacementSnapshot,
+      });
+      expect(response.status).toBe(200);
+      const result = (await response.json()) as RestartCategorySuccess;
+      expect(result.replacementSnapshot).toEqual(replacementSnapshot);
+      expect(db.getCategoryArchive(result.archive.sourceTournamentId)?.fullSnapshot).toEqual(previousSnapshot);
+    } else {
+      const previewResponse = await post(`/api/ring/categories/${previousSnapshot.config.id}/deletion-preview`,
+        { localSnapshot: previousSnapshot });
+      expect(previewResponse.status).toBe(200);
+      const preview = categoryDeletionPreviewSchema.parse(await previewResponse.json());
+      expect(preview.counts).toMatchObject({ competitors: 4, fights: 3, completedFights: 3 });
+      const response = await post(`/api/ring/categories/${previousSnapshot.config.id}/delete-and-restart`, {
+        requestId, expectedRevision: preview.revision, previousSnapshot, replacementSnapshot,
+      });
+      expect(response.status).toBe(200);
+      const result = categoryDeleteAndRestartSuccessSchema.parse(await response.json());
+      expect(result.replacementSnapshot).toEqual(replacementSnapshot);
+      expect(result.deletion.counts.competitors).toBe(4);
+    }
+    const nextId = db.getCategoryTournamentId(replacementSnapshot.config.id);
+    expect(nextId).not.toBeNull();
+    expect(db.getCompetitors(nextId ?? -1)).toHaveLength(3);
+    expect(replacementSnapshot.competitors.map(({ id: _id, ...entry }) => entry))
+      .toEqual(previousSnapshot.competitors.map(({ id: _id, ...entry }) => entry));
+    expect(JSON.stringify(previousSnapshot)).toBe(original);
+  }
+);
+
+it("still refuses deletion of a historical embedded participant owned by another category", async () => {
+  const { db, post } = await setup();
+  const previousSnapshot = historicalElimination();
+  const historical = previousSnapshot.fights[1].blue;
+  const foreignId = db.createTournament("Ajeno", "Ajena");
+  db.upsertCompetitor({ ...historical, tournament_id: foreignId });
+  const response = await post(`/api/ring/categories/${previousSnapshot.config.id}/deletion-preview`,
+    { localSnapshot: previousSnapshot });
+  expect(response.status).toBe(409);
+  expect(await response.json()).toMatchObject({ error: "deletion_scope_ambiguous" });
+  expect(db.getCompetitors(foreignId)).toHaveLength(1);
+  expect(db.default.prepare("SELECT * FROM category_execution_deletions").all()).toEqual([]);
+  expect(db.default.prepare("SELECT * FROM category_execution_archives").all()).toEqual([]);
+});
 async function setup(): Promise<{
   db: typeof import("../db/index.js");
   state: typeof import("../state.js").state;

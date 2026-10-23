@@ -3,6 +3,8 @@ import { useTournamentStore } from "@/store/tournament";
 import { useSocket } from "@/hooks/useSocket";
 import { CategoryTabs } from "@/components/CategoryTabs";
 import { CategoryDeletionRecovery } from "@/components/CategoryDeletionRecovery";
+import { TournamentPersistenceRecovery } from "@/components/TournamentPersistenceRecovery";
+import { useTournamentPersistenceState } from "@/lib/tournament-persistence";
 import { useCategoryDeletionState } from "@/store/category-deletion-state";
 import { CategoryFormatFallback } from "@/components/CategoryFormatFallback";
 import { isCategoryFormatRouteAvailable } from "@/lib/category-navigation";
@@ -57,6 +59,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
 export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const phase = useTournamentStore((s) => s.phase);
   const deletionBlocked = useCategoryDeletionState((state) => state.pending || state.recoveryRequired);
+  const persistenceBlocked = useTournamentPersistenceState((state) => state.blocked);
   const categoryId = useTournamentStore((s) => s.config.id);
   const categoryRevision = useTournamentStore((s) => s.categoryRevision);
   const categoryOperationReason = useTournamentStore((s) => s.categoryOperationReason);
@@ -279,11 +282,12 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
 
         <CategoryTabs connected={connected} stateReady={stateReady} serverState={serverState} />
         <CategoryDeletionRecovery connected={connected} stateReady={stateReady} serverState={serverState} />
+        <TournamentPersistenceRecovery />
 
         {/* Page content */}
         <div
           id="category-panel"
-          inert={deletionBlocked}
+          inert={deletionBlocked || persistenceBlocked}
           role="tabpanel"
           aria-labelledby={`category-tab-${categoryId}`}
           key={categoryId}

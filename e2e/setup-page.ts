@@ -25,6 +25,10 @@ export class SetupPage {
   async selectCategoryOption(label: string): Promise<void> {
     const accessibleLabel = label === "M" ? "Masculino" : label === "F" ? "Femenino" : label;
     const button = this.page.getByRole("button", { name: accessibleLabel, exact: true });
+    if (!(await button.isVisible())) {
+      const configure = this.page.getByRole("button", { name: /Configurar categoría/ });
+      if (await configure.isVisible()) await configure.click();
+    }
     await button.click();
     await this.page.waitForTimeout(200); // Small delay for UI update
   }

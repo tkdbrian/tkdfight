@@ -108,13 +108,13 @@ export function CategoryDeleteButton(context: CategoryPrimaryActionContext): Rea
   }
 
   return (
-    <details className="max-w-sm text-sm">
-      <summary className="cursor-pointer text-muted-foreground">Más acciones de categoría</summary>
+    <div className="max-w-sm text-sm">
       <div className="mt-2 space-y-1">
         <Button
           type="button"
           variant="outline"
           size="sm"
+          className="border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive"
           disabled={disabled}
           onClick={() => void loadPreview()}
         >
@@ -227,6 +227,6 @@ export function CategoryDeleteButton(context: CategoryPrimaryActionContext): Rea
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </details>
+    </div>
   );
 }

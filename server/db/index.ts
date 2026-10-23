@@ -789,6 +789,7 @@ for (const col of ['category_id TEXT']) {
 }
 
 export interface MatchSnapshotData {
+  tulPhase?: 'idle' | 'voting' | 'finished'
   resultRevision?: number
   // biome-ignore lint/suspicious/noExplicitAny: loose types — JSON round-trip
   match: Record<string, any>

@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { io } from "socket.io-client";
 import { FightPage } from "./fight-page";
 
@@ -178,6 +178,9 @@ export class RoundRobinPage {
   }
 
   async loadCurrent(): Promise<RrServerState> {
+    if (!new URL(this.page.url()).pathname.endsWith("/fight")) {
+      await this.page.getByRole("button", { name: "Ir a Combate", exact: true }).click();
+    }
     const current = await this.currentFight();
     const load = this.fightPage.loadFightButton;
     await expect(load.or(this.fightPage.startFightButton).first()).toBeVisible();
@@ -232,7 +235,12 @@ export class RoundRobinPage {
       await nextFight.click();
     }
     const dialog = this.page.getByRole("dialog", { name: "Registrar resultado del combate" });
-    await expect(dialog).toBeVisible();
+    try { await expect(dialog).toBeVisible(); } catch (error) {
+      await test.info().attach("result-dialog-diagnostics", { contentType: "application/json",
+        body: JSON.stringify({ progress: await this.progress(), server: await readRrServerState(),
+          durable: await readFightResult((await this.progress()).config.id, fight.id) }, null, 2) });
+      throw error;
+    }
     const directDraw =
       winner === "draw" &&
       (fight.isFinalFight || (fight.isTiebreakExtra && fight.playoffKind === "direct"));

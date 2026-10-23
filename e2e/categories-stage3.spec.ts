@@ -1,9 +1,12 @@
-import { test, expect, type Page } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./isolated-test";
 import { SetupPage } from "./setup-page";
 import { CategoriesPage } from "./categories-page";
 
 async function configureRoundRobin(page: Page): Promise<void> {
-  await page.getByRole("button", { name: "Adultos (18-35)" }).click();
+  await page.getByRole("button", { name: "ADULTOS (18-35)", exact: true }).click();
+  await page.getByRole("button", { name: "GUPS", exact: true }).click();
+  await page.getByRole("button", { name: "Blancos y Puntas Amarillas", exact: true }).click();
   await page.getByRole("button", { name: "Liviano A", exact: true }).click();
   await page.getByRole("button", { name: "Masculino", exact: true }).click();
   await page.getByRole("button", { name: "Round Robin" }).click();

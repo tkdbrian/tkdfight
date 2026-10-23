@@ -3,9 +3,11 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
+import { test } from "./isolated-test";
 import { io, type Socket } from "socket.io-client";
 import { FightPage } from "./fight-page";
+import { CategoriesPage } from "./categories-page";
 import {
   RoundRobinPage,
   type RrFight,
@@ -605,6 +607,9 @@ test("first-place tie waits for all fixtures, then direct extra, rematch and unt
     playoffKind: "direct",
     isGoldenPointFight: true,
   });
+  const loadGolden = page.getByRole("button", { name: "Cargar combate", exact: true });
+  if (await loadGolden.isVisible()) await loadGolden.click();
+  await expect.poll(async () => (await readRrServerState()).match?.id).toBe(golden.id);
   const state = await readRrServerState();
   expect(state.match?.id).toBe(golden.id);
   expect(state.match?.goldenPoint).toBe(true);
@@ -673,6 +678,9 @@ test("two-group adult final draw advances timed rematch then untimed majority go
   expect(rematchResult.serverBefore.rules?.rounds.duration_seconds).toBe(60);
   const golden = await rr.currentFight();
   expect(golden).toMatchObject({ groupId: "FINAL", isGoldenPointFight: true });
+  const loadGolden = page.getByRole("button", { name: "Cargar combate", exact: true });
+  if (await loadGolden.isVisible()) await loadGolden.click();
+  await expect.poll(async () => (await readRrServerState()).match?.id).toBe(golden.id);
   const state = await readRrServerState();
   expect(state.match?.id).toBe(golden.id);
   expect(state.matchState?.phase).toBe("golden_point");
@@ -1373,4 +1381,70 @@ test("separate server restart preserves provisional Golden Point votes for chief
     if (child) await stopExtraServer(child);
     removeExtraDataDir(dataDir);
   }
+});
+
+
+test("Tul correction rejects draw and durably confirms corrected blue winner", async ({ page }) => {
+  const categories = new CategoriesPage(page);
+  const setup = new SetupPage(page);
+  await setup.goto();
+  for (const option of ["ADULTOS (18-35)", "GUPS", "Blancos y Puntas Amarillas", "Liviano A", "Masculino", "Tul / Formas"]) {
+    await setup.selectCategoryOption(option);
+  }
+  await setup.addCompetitors(["Tul Uno", "Tul Dos"]);
+  await setup.startCategory();
+  await page.getByRole("button", { name: "Iniciar ronda actual", exact: true }).click();
+  const categoryId = await categories.activeId();
+  const original = (await categories.progress()).fights[0];
+  await page.getByRole("button", { name: "Iniciar competencia", exact: true }).click();
+  await page.getByRole("button", { name: "Iniciar votación", exact: true }).click();
+  const fightPage = new FightPage(page);
+  for (let judge = 1; judge <= 4; judge++) await fightPage.voteJudge(judge, "red");
+  await page.getByRole("button", { name: "Confirmar resultado", exact: true }).click();
+  const overlay = page.getByRole("dialog", { name: "Resultado del combate" });
+  await expect(overlay).toBeVisible();
+  await expect.poll(() => readFightResult(categoryId, original.id)).toMatchObject({ winner: "red", status: "pending_confirmation" });
+  await overlay.getByRole("button", { name: /Corregir banderines/ }).click();
+  await expect(overlay).not.toBeVisible();
+  expect(await readFightResult(categoryId, original.id)).toBeNull();
+  await fightPage.voteJudge(1, "blue");
+  await fightPage.voteJudge(2, "blue");
+  await expect(page.getByRole("button", { name: /Confirmar.*Empate en banderas/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "Confirmar resultado", exact: true })).toBeDisabled();
+  await fightPage.voteJudge(3, "blue");
+  await page.getByRole("button", { name: /Confirmar.*Azul gana el round/ }).click();
+  await expect(overlay).toBeVisible();
+  await expect.poll(() => readFightResult(categoryId, original.id)).toMatchObject({ winner: "blue", flagsRed: 1, flagsBlue: 3, status: "pending_confirmation" });
+  await overlay.getByRole("button", { name: /Confirmar resultado/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Registrar resultado del combate" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Confirmar y continuar" }).click();
+  await expect(dialog).not.toBeVisible();
+  expect(await readConfirmedFight(categoryId, original.id)).toMatchObject({ winner: "blue", flagsRed: 1, flagsBlue: 3, status: "confirmed" });
+  expect((await categories.progress()).fights[0]).toMatchObject({ completed: true, winner: "blue" });
+});
+
+test("three-athlete elimination advances a BYE and loads only a real contest", async ({ page }) => {
+  const setup = new SetupPage(page);
+  await setup.goto();
+  for (const option of ["ADULTOS (18-35)", "GUPS", "Blancos y Puntas Amarillas", "Liviano A", "Masculino", "Eliminación"]) {
+    await setup.selectCategoryOption(option);
+  }
+  await setup.addCompetitors(["Bye Uno", "Bye Dos", "Bye Tres"]);
+  await setup.startCategory();
+  await expect(page).toHaveURL(/\/bracket$/);
+  const bracket = await page.evaluate(() => {
+    const raw = localStorage.getItem("tkd-tournament");
+    if (!raw) throw new Error("Missing tournament");
+    return JSON.parse(raw).state.bracketMatches as Array<{ round: number; red: { competitor: unknown | null }; blue: { competitor: unknown | null }; completed: boolean; winnerId?: string | null }>;
+  });
+  expect(bracket.some((match) => match.round === 0 && (!match.red.competitor || !match.blue.competitor) && match.completed && !!match.winnerId)).toBe(true);
+  await page.getByRole("button", { name: "Iniciar ronda actual", exact: true }).click();
+  const fightPage = new FightPage(page);
+  await expect(fightPage.loadFightButton.or(fightPage.startFightButton).first()).toBeVisible();
+  if (await fightPage.loadFightButton.isVisible()) await fightPage.loadFight();
+  const active = await readRrServerState();
+  expect(active.match?.id).toBeTruthy();
+  await fightPage.startFight();
+  await expect(fightPage.endRoundButton).toBeVisible();
 });

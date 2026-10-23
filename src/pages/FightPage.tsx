@@ -50,11 +50,11 @@ import type { RuleSetSparring } from "@/engine/types";
 import type { PenaltyCounts, ServerState } from "@/lib/socket-types";
 import type { FightEntry, TournamentMode } from "@/store/tournament";
 import {
-  applyBoutDurationOverride,
   applyFightTiming,
-  parseBoutDurationOverride,
   withoutRegularRoundRobinTiebreak,
 } from "@/lib/fight-timing";
+import { PreFightSettings } from "@/components/PreFightSettings";
+import { applyPreFightSettings, preFightTimingKind } from "@/lib/pre-fight-settings";
 import { isMiniRoundRobinBout } from "@/lib/round-robin-playoff";
 import { closedGroupBasis, isAuthorizedPlayoffFight, nextDirectFightIsGoldenPoint } from "@/lib/round-robin-resolution";
 import { getCanonicalEliminationContinuation, syncProposedFights } from "@/lib/sync-proposed-fights";
@@ -77,7 +77,7 @@ const MATCH_CONTEXT_EVENTS = new Set([
   "match:undoArbiter", "match:pause", "match:resume", "match:dq",
   "match:medical", "match:saveFallo", "timer:addSeconds",
   "match:skipToFlags", "mesa:flagVote", "mesa:confirmRound",
-  "mesa:undoRound", "mesa:goldenVote", "mesa:confirmGoldenOutcome", "tul:finish", "tul:reset",
+  "mesa:undoRound", "mesa:goldenVote", "mesa:confirmGoldenOutcome", "tul:finish", "tul:undoFinish", "tul:reset",
   "mesa:setSanctionCount",
 ]);
 
@@ -678,7 +678,7 @@ export function JefeMesaPanel({
           {canVote ? (
             <Button
               size="lg"
-              disabled={!allVoted || !canConfirm}
+              disabled={!allVoted || !canConfirm || (tulMode && roundWinner === "draw")}
               onClick={() => tulMode ? onEmit("tul:finish") : onEmit("mesa:confirmRound")}
               title={roundActive ? "Terminá el round para confirmar" : undefined}
               className={cn(
@@ -1740,6 +1740,7 @@ interface MatchControlsProps {
   isTul?: boolean;
   onEmit: (event: string, data?: unknown) => void;
   onFinishAndNext: () => void;
+  startBlocked?: boolean;
 }
 
 function MatchControls({
@@ -1753,6 +1754,7 @@ function MatchControls({
   isTul,
   onEmit,
   onFinishAndNext,
+  startBlocked,
 }: Readonly<MatchControlsProps>) {
   if (!loaded) return null;
 
@@ -1832,7 +1834,7 @@ function MatchControls({
     // tulPhase === 'idle'
     return (
       <div className="flex flex-col items-center gap-3 w-full">
-        <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={() => onEmit("match:start")}>
+        <Button size="xl" className="bg-green-700 hover:bg-green-600" disabled={startBlocked} onClick={() => onEmit("match:start")}>
           <Play />
           Iniciar votación
         </Button>
@@ -1877,7 +1879,7 @@ function MatchControls({
       {/* Acciones primarias */}
       <div className="flex flex-wrap gap-2 justify-center">
         {canStart && (
-          <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={() => onEmit("match:start")}>
+          <Button size="xl" className="bg-green-700 hover:bg-green-600" disabled={startBlocked} onClick={() => onEmit("match:start")}>
             <Play />
             Iniciar combate
           </Button>
@@ -2036,44 +2038,6 @@ function FlagCounterField({
   );
 }
 
-function PreFightDurationControl({
-  configuredSeconds,
-  input,
-  inputId,
-  onChange,
-}: Readonly<{
-  configuredSeconds: number;
-  input: string | null;
-  inputId: string;
-  onChange: (value: string | null) => void;
-}>) {
-  return (
-    <div className="flex flex-col items-center gap-1.5 text-sm">
-      <label htmlFor={inputId} className="text-muted-foreground">
-        Duración de este combate (segundos)
-      </label>
-      <div className="flex items-center gap-2">
-        <input
-          id={inputId}
-          type="number"
-          min={1}
-          max={3600}
-          step={1}
-          value={input ?? String(configuredSeconds)}
-          onChange={(event) => onChange(event.target.value)}
-          className="w-24 rounded-md border border-input bg-background px-2 py-1.5 text-center font-bold"
-        />
-        {input !== null && (
-          <Button type="button" size="sm" variant="ghost" onClick={() => onChange(null)}>
-            Usar tiempo de categoría
-          </Button>
-        )}
-      </div>
-      {input !== null && <p className="text-xs text-amber-300">Solo cambia esta pelea.</p>}
-    </div>
-  );
-}
-
 export interface FightPageProps {
   navigationIntent?: unknown;
   navigationEntryKey?: string;
@@ -2165,6 +2129,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   const [winnerOverlayOpen, setWinnerOverlayOpen] = React.useState(false);
   const [goldenActionPending, setGoldenActionPending] = React.useState(false);
   const goldenActionRef = React.useRef(false);
+  const [tulFinishPending, setTulFinishPending] = React.useState(false);
+  const [tulFinishError, setTulFinishError] = React.useState<string | null>(null);
+  const tulFinishRef = React.useRef(false);
   const [flagCorrectionPending, setFlagCorrectionPending] = React.useState(false);
   const [flagCorrectionView, setFlagCorrectionView] = React.useState<ServerState | null>(null);
   const [flagCorrectionError, setFlagCorrectionError] = React.useState<string | null>(null);
@@ -2178,7 +2145,17 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     const cfg = useTournamentStore.getState().config;
     return cfg.tiebreakerSeconds ?? (cfg.ruleSet as RuleSetSparring)?.rounds?.overtime_seconds ?? 30;
   });
-  const [preloadDurationInput, setPreloadDurationInput] = React.useState<string | null>(null);
+  const draftKey = `${config.id}:${currentFight?.id ?? ""}`;
+  const [timingDraft, setTimingDraft] = React.useState<{ key: string; seconds: string | null; rounds: number | null } | null>(null);
+  const preloadDurationInput = timingDraft?.key === draftKey ? timingDraft.seconds : null;
+  const preloadRounds = timingDraft?.key === draftKey ? timingDraft.rounds : null;
+  const [timingSaving, setTimingSaving] = React.useState(false);
+  const timingSavingRef = React.useRef(false);
+  const [postponePending, setPostponePending] = React.useState(false);
+  const [postponeError, setPostponeError] = React.useState<string | null>(null);
+  const postponeBusyRef = React.useRef(false);
+  const postponeRequestRef = React.useRef<{requestId:string;categoryId:string;matchId:string;expectedRevision:number;expectedLoadId:string} | null>(null);
+  const [timingRecovery, setTimingRecovery] = React.useState<string | null>(null);
   const prevIsFinishedRef = React.useRef<boolean | null>(null);
   const prevPhaseRef = React.useRef<string>("idle");
 
@@ -2251,22 +2228,56 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     if (index === -1 || fights[index]?.id !== fightLockNotice.fightId) return;
     selectFight(index);
   }
+  async function handlePostpone(): Promise<void> {
+    if (postponeBusyRef.current || !currentFight || !beginExplicitOperation(false)) return;
+    const timing = state.match?.preFight;
+    const cached = postponeRequestRef.current;
+    const retry = cached?.categoryId === config.id && cached.matchId === currentFight.id;
+    if (!retry && (!beginExplicitOperation() || !timing?.loadId || timing.started || state.matchPaused || phase !== "idle")) return;
+    const payload = retry ? cached : { requestId: crypto.randomUUID(), categoryId: config.id,
+      matchId: currentFight.id, expectedRevision: timing!.revision, expectedLoadId: timing!.loadId! };
+    postponeRequestRef.current = payload;
+    postponeBusyRef.current = true; setPostponePending(true); setPostponeError(null);
+    type Reply = {ok:boolean;error?:string};
+    try {
+      // An uncertain ACK must retry the same durable receipt, never a new release.
+      const response = await request<Reply>("match:postpone", payload)
+        .catch(() => request<Reply>("match:postpone", payload));
+      if (!response?.ok) { postponeRequestRef.current = null; throw new Error(response?.error ?? "No se pudo postergar el combate."); }
+      const latest = useTournamentStore.getState();
+      const active = latestConnectionRef.current.state;
+      if (latest.config.id !== payload.categoryId || latest.fights[latest.currentFightIndex]?.id !== payload.matchId
+        || categoryRestartInteractionBlocked()
+        || (active.match && (active.match.id !== payload.matchId || active.categoryId !== payload.categoryId
+          || active.match.preFight?.loadId !== payload.expectedLoadId))) throw new Error("El tatami liberó el combate, pero la selección cambió. Revisá la lista antes de continuar.");
+      postponeFight(payload.matchId);
+      postponeRequestRef.current = null; setLoaded(false);
+    } catch (error) {
+      setPostponeError(error instanceof Error ? error.message : "No hubo confirmación. Revisá la conexión y reintentá Postergar.");
+    } finally { postponeBusyRef.current = false; setPostponePending(false); }
+  }
   const currentGroupIds = currentFight
     ? groups.find((group) => group.id === (currentFight.groupId ?? "G1"))?.competitors.map((competitor) => competitor.id)
     : undefined;
   const isMiniPlayoff = currentFight ? isMiniRoundRobinBout(currentFight, fights) : false;
-  const configuredFightSeconds = currentFight
-    ? applyFightTiming(
-        (config.ruleSet as RuleSetSparring) ?? DEFAULT_RULES,
-        config,
-        currentFight,
-        bracketMatches,
-      ).rounds.duration_seconds
-    : 0;
-  function emit(event: string, data?: unknown) {
-    if (!beginExplicitOperation()) return;
+  const configuredFightRules = currentFight
+    ? applyFightTiming((config.ruleSet as RuleSetSparring) ?? DEFAULT_RULES, config, currentFight, bracketMatches)
+    : DEFAULT_RULES;
+  const timingKind = currentFight ? preFightTimingKind(currentFight, bracketMatches) : "regular";
+  const allowTimingRounds = (selectedMatchesServer ? state.match?.preFight?.timingKind : timingKind) === "elimination-final";
+  const baseTimingRules = selectedMatchesServer && state.rules ? state.rules : configuredFightRules;
+  const effectiveTimingRounds = preloadRounds ?? (!selectedMatchesServer && config.mode !== "elimination" && timingKind === "regular" ? 1 : baseTimingRules.rounds.count);
+  const effectiveTimingSeconds = preloadDurationInput ?? String(baseTimingRules.rounds.duration_seconds);
+  const timingDirty = selectedMatchesServer && (effectiveTimingSeconds !== String(state.rules?.rounds.duration_seconds) || effectiveTimingRounds !== state.rules?.rounds.count);
+  const timingStartBlocked = config.matchType === "sparring" && timingKind !== "continuation" &&
+    (timingSaving || timingDirty || timingRecovery === draftKey);
+  function emit(event: string, data?: unknown): void {
+    if (!beginExplicitOperation() || tulFinishRef.current) return;
+    if (event === "tul:finish") { void handleFinishTul(); return; }
+    if (event === "match:start" && (timingSavingRef.current || timingStartBlocked)) return;
     emitSocket(event, currentFight
-      ? withMatchContext(event, data, config.id, currentFight.id)
+      ? withMatchContext(event, event === "match:start" && state.match?.preFight
+        ? { ...(data && typeof data === "object" ? data : {}), expectedTimingRevision: state.match.preFight.revision } : data, config.id, currentFight.id)
       : data);
   }
   const { matchState, matchPaused, judges } = state;
@@ -2335,6 +2346,64 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     !currentFight?.isTiebreakExtra &&
     !(state.match?.id === currentFight?.id && state.categoryId === config.id);
   const tulPhase = state.tulPhase ?? "idle";
+  const canEditLoadedTiming = loaded && !isTul && !!state.rules && timingKind !== "continuation" && phase === "idle" &&
+    state.match?.preFight?.started === false && state.match.preFight.timingKind !== "continuation" &&
+    !state.matchState?.firstPoint && state.matchState?.rounds.every((round) => round.events.length === 0) &&
+    Object.keys(state.judgeVotes ?? {}).length === 0 && (state.roundFlags?.length ?? 0) === 0 &&
+    Object.values(state.penaltyCounts?.warnings ?? {}).every((count) => count === 0) &&
+    Object.values(state.penaltyCounts?.fouls ?? {}).every((count) => count === 0) &&
+    Object.values(state.judgeTotals ?? {}).every((totals) => Object.values(totals).every((count) => count === 0));
+
+  React.useEffect(() => {
+    if (timingRecovery === draftKey && connected && stateReady && selectedMatchesServer && !timingDirty) {
+      setTimingRecovery(null);
+    }
+  }, [timingRecovery, draftKey, connected, stateReady, selectedMatchesServer, timingDirty]);
+
+  function renderTimingSettings(inputId: string): React.JSX.Element {
+    return <PreFightSettings seconds={effectiveTimingSeconds} rounds={effectiveTimingRounds}
+      allowRounds={allowTimingRounds} inputId={inputId}
+      whiteBand={config.gradeSystem === "GUPS" && config.gupBand === "Blancos y Puntas Amarillas"}
+      disabled={loaded && !canOperateFight} busy={timingSaving}
+      dirty={loaded ? timingDirty : preloadDurationInput !== null || preloadRounds !== null}
+      onChange={(seconds, rounds) => setTimingDraft({key:draftKey,seconds,rounds})}
+      onReset={() => setTimingDraft({key:draftKey,seconds:String(configuredFightRules.rounds.duration_seconds),
+        rounds:allowTimingRounds ? configuredFightRules.rounds.count : null})}
+      onSave={loaded ? () => { void saveTimingSettings(); } : undefined} />;
+  }
+
+  async function saveTimingSettings(): Promise<void> {
+    if (timingSavingRef.current || !canEditLoadedTiming || !currentFight || !beginExplicitOperation()) return;
+    const revision = state.match?.preFight?.revision;
+    if (revision == null) return;
+    let rules: RuleSetSparring;
+    try { rules = applyPreFightSettings(baseTimingRules, effectiveTimingSeconds, allowTimingRounds ? effectiveTimingRounds : null, timingKind, config.mode); }
+    catch (error) { toast.error(error instanceof Error ? error.message : "Ajustes inv\u00e1lidos."); return; }
+    timingSavingRef.current = true; setTimingSaving(true);
+    type Reply = {ok: boolean; error?: string; rules?: RuleSetSparring; preFight?: {revision:number;started:boolean}};
+    const payload = {categoryId:config.id,matchId:currentFight.id,expectedRevision:revision,
+      durationSeconds:rules.rounds.duration_seconds,rounds:rules.rounds.count};
+    try {
+      let response = await request<Reply>("match:configure", payload, 7000).catch(() => null);
+      if (!response) {
+        setTimingRecovery(draftKey);
+        response = await request<Reply>("match:configuration", {categoryId:config.id,matchId:currentFight.id}, 7000);
+        if (!response?.ok || response.preFight?.started || response.rules?.rounds.duration_seconds !== payload.durationSeconds || response.rules?.rounds.count !== payload.rounds) {
+          throw new Error("No se pudo verificar el guardado. Reconect\u00e1 y revis\u00e1 los ajustes antes de iniciar.");
+        }
+      }
+      if (!response.ok) {
+        await request<Reply>("match:configuration", {categoryId:config.id,matchId:currentFight.id}, 7000);
+        throw new Error(response.error ?? "El servidor rechaz\u00f3 los ajustes.");
+      }
+      setTimingRecovery(null);
+      // Keep draft until the canonical broadcast matches; never set clock or reset the bout locally.
+      toast.success("Ajustes guardados en el servidor.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo guardar. Revis\u00e1 la conexi\u00f3n.");
+    } finally { timingSavingRef.current=false; setTimingSaving(false); }
+  }
+
 
   React.useEffect(() => {
     const displayed = resultDialogContextRef.current;
@@ -2347,9 +2416,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     toast.warning("El resultado cambió en el tatami. Revisá la votación actual antes de confirmar.");
   }, [resultDialogOpen, state.categoryId, state.match?.id, state.resultRevision, state.matchState?.phase, state.matchState?.result]);
 
-  React.useEffect(() => {
-    setPreloadDurationInput(null);
-  }, [config.id, currentFight?.id]);
+
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: setLoaded/setConfirmRedo are stable state setters — no need in deps
   React.useEffect(() => {
@@ -2378,7 +2445,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   React.useEffect(() => {
     const prev = prevIsFinishedRef.current;
     prevIsFinishedRef.current = isFinished;
-    if (prev === false && isFinished && matchState?.result != null && loaded) {
+    if (prev === false && isFinished && matchState?.result != null && loaded && !tulFinishRef.current) {
       setWinnerOverlayOpen(true);
     }
     if (!isFinished && !flagCorrectionRef.current) {
@@ -2449,7 +2516,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   // Guest fights (EXT: prefix) are intentional and stay.
   // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount to clear stale imported fights
   React.useEffect(() => {
-    if (passiveEntryRef.current) return;
+    if (passiveEntryRef.current || categoryRestartInteractionBlocked()) return;
     useTournamentStore.setState((s) => ({
       fights: s.fights.filter((f) => !f.importedFrom || f.groupId?.startsWith("EXT:")),
     }));
@@ -2505,7 +2572,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   }
 
   function requestMatchAction(
-    event: "mesa:goldenVote" | "mesa:confirmGoldenOutcome" | "mesa:undoRound",
+    event: "mesa:goldenVote" | "mesa:confirmGoldenOutcome" | "mesa:undoRound" | "tul:finish" | "tul:undoFinish",
     payload: Record<string, unknown>,
     matchesUpdate: (next: ServerState) => boolean,
     actionLabel = "Punto de Oro",
@@ -2741,11 +2808,8 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       toast.error("Esta pelea extra no fue creada después de cerrar la llave. Revisá la clasificación antes de cargarla.");
       return false;
     }
-    let overrideSeconds: number | null;
     try {
-      overrideSeconds = canEditPreloadDuration
-        ? parseBoutDurationOverride(preloadDurationInput)
-        : null;
+      if (canEditPreloadDuration) applyPreFightSettings(configuredFightRules, preloadDurationInput, preloadRounds, timingKind, config.mode);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Duración inválida.");
       return false;
@@ -2822,7 +2886,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       judgingMode: selectedBottomTab === "remotos" ? "points" : "flags",
     };
     rules = applyFightTiming(rules, config, currentFight, bracketMatches);
-    rules = applyBoutDurationOverride(rules, overrideSeconds);
+    if (!isTul) rules = applyPreFightSettings(rules, canEditPreloadDuration ? preloadDurationInput : null, preloadRounds, timingKind, config.mode);
     // A normal round-robin draw is a valid result. Never let a legacy ruleset
     // start an overtime or Golden Point inside that ordinary bout.
     rules = withoutRegularRoundRobinTiebreak(rules, config.mode, currentFight);
@@ -2835,6 +2899,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       rules,
       match: {
         id: currentFight.id,
+        ...(!isTul ? { timingKind } : {}),
         goldenPoint: currentFight.isGoldenPointFight || undefined,
         requireIndividualFlags: requiresIndividualFlagsForBout(config.mode, currentFight),
         ringId: "ring-1",
@@ -2978,17 +3043,44 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     }
   });
 
+  async function handleFinishTul(): Promise<void> {
+    if (tulFinishRef.current || !currentFight || !beginExplicitOperation() || state.tulPhase !== "voting") return;
+    const categoryId = config.id;
+    const matchId = currentFight.id;
+    const revision = state.resultRevision ?? 0;
+    // Read the latest authoritative votes: single-choice controls may have sent votes just before this request.
+    const votes = Object.values(latestConnectionRef.current.state.judgeVotes);
+    const red = votes.filter((vote) => vote === "red").length;
+    const blue = votes.filter((vote) => vote === "blue").length;
+    if (red === blue) {
+      setTulFinishError("En formas no se permite empate. Corregí los votos antes de confirmar.");
+      return;
+    }
+    tulFinishRef.current = true;
+    setTulFinishPending(true);
+    setTulFinishError(null);
+    try {
+      await requestMatchAction("tul:finish", { expectedRevision: revision }, (next) =>
+        next.categoryId === categoryId && next.match?.id === matchId && next.resultRevision === revision &&
+        next.tulPhase === "finished" && next.matchState?.phase === "finished" &&
+        next.matchState.result?.winner === (red > blue ? "red" : "blue"), "resultado de formas");
+      const latest = useTournamentStore.getState();
+      if (latest.config.id === categoryId && latest.fights[latest.currentFightIndex]?.id === matchId) setWinnerOverlayOpen(true);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "No se pudo guardar el resultado de formas.";
+      setTulFinishError(message);
+      toast.error(message);
+    } finally {
+      tulFinishRef.current = false;
+      setTulFinishPending(false);
+    }
+  }
+
   async function handleCorrectFlags(): Promise<void> {
     if (flagCorrectionRef.current || !currentFight || !loaded || !connected || !stateReady ||
       state.resultConfirmed || state.matchState?.phase !== "finished" ||
       state.matchState.result?.reason !== "points") return;
     if (!beginExplicitOperation()) return;
-    if (isTul) {
-      // Tul has its own existing voting flow; do not route it through sparring result invalidation.
-      emit("tul:undoFinish");
-      setWinnerOverlayOpen(false);
-      return;
-    }
     const categoryId = config.id;
     const matchId = currentFight.id;
     const revision = state.resultRevision ?? 0;
@@ -2997,8 +3089,8 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     setFlagCorrectionError(null);
     setFlagCorrectionPending(true);
     try {
-      await requestMatchAction("mesa:undoRound", { expectedRevision: revision },
-        (next) => hasReopenedFlagUpdate(next, categoryId, matchId, revision + 1),
+      await requestMatchAction(isTul ? "tul:undoFinish" : "mesa:undoRound", { expectedRevision: revision },
+        (next) => hasReopenedFlagUpdate(next, categoryId, matchId, revision + 1) && (!isTul || next.tulPhase === "voting"),
         "corrección de banderines");
       const latest = useTournamentStore.getState();
       if (latest.config.id !== categoryId || latest.fights[latest.currentFightIndex]?.id !== matchId) return;
@@ -3300,6 +3392,8 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      {tulFinishError && <p role="alert" className="px-4 py-2 text-sm text-destructive">{tulFinishError}</p>}
+      {tulFinishPending && <p role="status" className="px-4 py-2 text-sm">Guardando resultado de formas...</p>}
 
       {/* ── WINNER OVERLAY ──────────────────────────────────── */}
       <Dialog open={loaded && winnerOverlayOpen} onOpenChange={(open) => {
@@ -3719,15 +3813,18 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                   size="sm"
                   variant="outline"
                   className="shrink-0 text-yellow-400 border-yellow-700/60 hover:bg-yellow-900/20"
-                  disabled={!canPostpone || isActive || !canOperateFight}
-                  title={postponeTitle}
-                  onClick={() => { if (!beginExplicitOperation()) return; postponeFight(currentFight.id); setLoaded(false); emit("match:reset"); }}
+                  disabled={!canPostpone || isActive || postponePending || state.matchPaused || !!state.match?.preFight?.started
+                    || (!canOperateFight && !(canLoadFight && postponeRequestRef.current?.matchId === currentFight.id))
+                    || (!state.match?.preFight?.loadId && postponeRequestRef.current?.matchId !== currentFight.id)}
+                  title={state.match?.preFight?.started || state.matchPaused ? "Solo se puede postergar un combate sin iniciar ni actividad registrada" : postponeTitle}
+                  onClick={() => { void handlePostpone(); }}
                 >
                   <SkipForward className="size-3.5" />
                   Postergar
                 </Button>
               );
             })()}
+            {postponeError && <p role="alert" className="text-sm text-red-400">{postponeError}</p>}
 
             {/* Reiniciar (solo cuando ya está cargado) */}
             {loaded && phase !== "golden_point" && matchState?.result?.reason !== "golden_point" && (
@@ -3926,7 +4023,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                   {phase === "golden_point" ? "SIN RELOJ" : formatTime(timeLeft)}
                 </div>
                 {loaded ? (
-                  <fieldset disabled={!canOperateFight} className="contents"><MatchControls
+                  <>
+                  {canEditLoadedTiming && renderTimingSettings("bout-settings-loaded-desktop")}
+                  <fieldset disabled={!canOperateFight || tulFinishPending} className="contents"><MatchControls
                     loaded={loaded}
                     isFinished={isFinished}
                     phase={phase}
@@ -3936,17 +4035,13 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                     state={state}
                     isTul={isTul}
                     onEmit={emit}
+                    startBlocked={timingStartBlocked}
                     onFinishAndNext={handleOpenResultDialog}
-                  /></fieldset>
+                  /></fieldset></>
                 ) : (
                   <div className="flex flex-col items-center gap-3">
                     {canEditPreloadDuration && (
-                      <PreFightDurationControl
-                        configuredSeconds={configuredFightSeconds}
-                        input={preloadDurationInput}
-                        inputId="bout-duration-desktop"
-                        onChange={setPreloadDurationInput}
-                      />
+                      renderTimingSettings("bout-duration-desktop")
                     )}
                     <Button size="xl" className="bg-green-700 hover:bg-green-600" disabled={!canLoadFight}
                       title={otherFightLocked ? fightLockNotice?.message : undefined} onClick={handleLoad}>
@@ -4098,7 +4193,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
           {/* Controles */}
           <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4 py-4 overflow-y-auto">
             {loaded ? (
-              <fieldset disabled={!canOperateFight} className="contents"><MatchControls
+              <>
+              {canEditLoadedTiming && renderTimingSettings("bout-settings-loaded-mobile")}
+              <fieldset disabled={!canOperateFight || tulFinishPending} className="contents"><MatchControls
                 loaded={loaded}
                 isFinished={isFinished}
                 phase={phase}
@@ -4108,8 +4205,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                 state={state}
                 isTul={isTul}
                 onEmit={emit}
+                startBlocked={timingStartBlocked}
                 onFinishAndNext={handleOpenResultDialog}
-              /></fieldset>
+              /></fieldset></>
             ) : currentFight?.completed ? (() => {
               const isDraw = currentFight.winner === "draw";
               const isRed = currentFight.winner === "red";
@@ -4167,12 +4265,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
             })() : (
               <div className="flex flex-col items-center gap-3">
                 {canEditPreloadDuration && (
-                  <PreFightDurationControl
-                    configuredSeconds={configuredFightSeconds}
-                    input={preloadDurationInput}
-                    inputId="bout-duration-mobile"
-                    onChange={setPreloadDurationInput}
-                  />
+                  renderTimingSettings("bout-duration-mobile")
                 )}
               <Button size="xl" className="bg-green-700 hover:bg-green-600" disabled={!canLoadFight}
                 title={otherFightLocked ? fightLockNotice?.message : undefined} onClick={handleLoad}>
@@ -4188,7 +4281,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
 
       {/* ── PANEL INFERIOR (TABS) ─────────────────────────────────── */}
       {loaded && (
-        <fieldset disabled={!canOperateFight} id="tour-bottom-tabs" className={cn(
+        <fieldset disabled={!canOperateFight || tulFinishPending} id="tour-bottom-tabs" className={cn(
           "shrink-0 border-t border-border bg-card/40 px-4 py-2 space-y-2 overflow-y-auto",
           canReviewSanctions ? "max-h-[32vh] md:max-h-[42vh]" : "max-h-[42vh]",
         )}>

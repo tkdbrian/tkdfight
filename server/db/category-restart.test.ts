@@ -399,3 +399,55 @@ it("does not let an as-recorded local archive capture an unrelated durable parti
     db.getCompetitors(otherId).find((entry) => entry.id === other.competitors[0].id)?.name
   ).toBe("Updated");
 });
+
+for (const [mode, count] of [["elimination", 0], ["elimination", 1], ["round-robin", 0], ["round-robin", 1], ["round-robin", 2]] as const) {
+  it(`durably restarts ${mode} with ${count} entrants as a clean setup draft`, async () => {
+    const db = await setup();
+    const previous = snapshot(mode);
+    const sourceId = register(db, previous);
+    const oldRows = db.getFights(sourceId);
+    previous.competitors = previous.competitors.slice(0, count);
+    const before = structuredClone(previous);
+    const next: CategoryRestartSnapshot = { ...structuredClone(previous),
+      config: { ...previous.config, id: randomUUID() },
+      competitors: previous.competitors.map((entry) => ({ ...entry, id: randomUUID() })),
+      phase: "setup", setupStarted: false, currentFightIndex: 0,
+      fights: [], groups: [], bracketMatches: [], bracketSeeds: [] };
+    const operation = { requestId: randomUUID(), categoryId: previous.config.id, previousSnapshot: previous, replacementSnapshot: next };
+    const result = db.restartCategoryExecution(operation);
+    expect(result.replacementSnapshot).toEqual(next);
+    const replacementId = db.getCategoryTournamentId(next.config.id);
+    expect(replacementId).not.toBeNull();
+    expect(db.getFights(replacementId!)).toEqual([]);
+    expect(db.getCompetitors(replacementId!)).toHaveLength(count);
+    expect(db.restartCategoryExecution(operation)).toEqual(result);
+    expect(previous).toEqual(before);
+    expect(db.getFights(sourceId)).toEqual(oldRows);
+    expect(db.getCategoryArchive(sourceId)?.fullSnapshot).toEqual(before);
+  });
+}
+
+it.each(["sufficient", "started", "fighting", "index", "seeds", "foreign-config", "roster", "reused-id"])("rejects forged draft %s atomically", async (fault) => {
+  const db = await setup();
+  const previous = snapshot();
+  const sourceId = register(db, previous);
+  previous.competitors = previous.competitors.slice(0, fault === "sufficient" ? 3 : 1);
+  const next: CategoryRestartSnapshot = { ...structuredClone(previous),
+    config: { ...previous.config, id: randomUUID() },
+    competitors: previous.competitors.map((entry) => ({ ...entry, id: randomUUID() })),
+    phase: "setup", setupStarted: false, currentFightIndex: 0,
+    fights: [], groups: [], bracketMatches: [], bracketSeeds: [] };
+  if (fault === "started") next.setupStarted = true;
+  if (fault === "fighting") next.phase = "fighting";
+  if (fault === "index") next.currentFightIndex = 1;
+  if (fault === "seeds") next.bracketSeeds = [null];
+  if (fault === "foreign-config") next.config.eventId = "another-event";
+  if (fault === "roster") next.competitors[0].name = "Changed";
+  if (fault === "reused-id") next.competitors[0].id = previous.competitors[0].id;
+  const before = db.getFights(sourceId);
+  expect(() => db.restartCategoryExecution({ requestId: randomUUID(), categoryId: previous.config.id,
+    previousSnapshot: previous, replacementSnapshot: next })).toThrow();
+  expect(db.getFights(sourceId)).toEqual(before);
+  expect(db.getCategoryTournamentId(next.config.id)).toBeNull();
+  expect(db.getCategoryArchive(sourceId)).toBeNull();
+});

@@ -41,7 +41,7 @@ function Read-Identity {
 function Confirm-Process($Identity) {
     if (-not $Identity -or -not (Test-OneClickIdentity $Identity $script:config $script:build.buildId $Identity.pid)) { return $false }
     $p=Get-CimInstance Win32_Process -Filter ('ProcessId='+[int]$Identity.pid) -ErrorAction SilentlyContinue
-    if (-not $p -or $p.ExecutablePath -ine $node -or $p.CommandLine -notlike ('*"'+$server+'"*')) { return $false }
+    if (-not $p -or $p.ExecutablePath -ine $node -or $p.CommandLine -notlike ('*'+[WildcardPattern]::Escape('"'+$server+'"')+'*')) { return $false }
     $script:process=Get-Process -Id $Identity.pid -ErrorAction SilentlyContinue
     return ($null -ne $script:process)
 }

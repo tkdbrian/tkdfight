@@ -33,7 +33,12 @@ try {
     Write-OneClickJson $file $config
     Assert-True (Test-OneClickConfig (Get-Content -LiteralPath $file -Raw | ConvertFrom-Json)) 'atomic replacement not readable'
     Assert-True (@(Get-ChildItem -LiteralPath $temp -File).Count -eq 1) 'temporary file leaked'
-} finally { Remove-Item -LiteralPath $temp -Recurse -Force }
+} finally {
+    $resolved = [IO.Path]::GetFullPath($temp)
+    $approved = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
+    if (-not $resolved.StartsWith($approved, [StringComparison]::OrdinalIgnoreCase) -or [IO.Path]::GetFileName($resolved) -notlike 'tkd-oneclick-test-*') { throw 'Unsafe fixture cleanup' }
+    Remove-Item -LiteralPath $resolved -Recurse -Force
+}
 $launcher = Get-Content -LiteralPath (Join-Path $template 'Launch-Sunday.ps1') -Raw
 Assert-True ($launcher -notmatch 'Read-Host|Stop-Process|taskkill|Stop-TKDServer|Start-TKDServer') 'unsafe legacy lifetime retained'
 Assert-True ($launcher -match 'WindowStyle Hidden') 'background launch not hidden'
@@ -74,4 +79,21 @@ Assert-Throws { Start-ServiceProcess } 'alive unhealthy server duplicated'
 Assert-True ($script:spawned -eq 1) 'unhealthy live process replaced'
 Retry-Startup
 Assert-True $script:blocked 'failed retry did not block automatic startup'
+# Verify the real identity check treats installation paths literally, not as wildcards.
+$definition=$ast.Find({param($entry) $entry -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $entry.Name -eq 'Confirm-Process'},$true)
+. ([scriptblock]::Create($definition.Extent.Text))
+function Get-CimInstance { param($ClassName,$Filter,$ErrorAction) return $script:cimProcess }
+function Get-Process { param($Id,$ErrorAction) return [pscustomobject]@{Id=$Id;HasExited=$false} }
+$identity.installationId=$config.installationId
+foreach ($installation in @('C:\TKD torneo',('C:\TKD '+[char]0x00F1+'and'+[char]0x00FA),'C:\TKD [Final]')) {
+    $node=$installation+'\sistema\bin\node.exe'; $server=$installation+'\sistema\dist-server\index.mjs'
+    $script:cimProcess=[pscustomobject]@{ExecutablePath=$node;CommandLine=('"'+$node+'" "'+$server+'"')}
+    Assert-True (Confirm-Process $identity) ('literal installation path rejected: '+$installation)
+    $script:cimProcess.CommandLine=$script:cimProcess.CommandLine.ToUpperInvariant()
+    Assert-True (Confirm-Process $identity) 'case-insensitive Windows path rejected'
+}
+$script:cimProcess.CommandLine='"'+$node+'" "'+$server+'.foreign"'
+Assert-True (-not (Confirm-Process $identity)) 'foreign server command accepted'
+$script:cimProcess.CommandLine='"'+$node+'" "'+$server+'"'; $script:cimProcess.ExecutablePath='C:\foreign\node.exe'
+Assert-True (-not (Confirm-Process $identity)) 'foreign executable accepted'
 Write-Output "PASS: $count isolated one-click checks"

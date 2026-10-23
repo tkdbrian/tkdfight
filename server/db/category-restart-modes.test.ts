@@ -445,3 +445,59 @@ it.each([
   expect(restart).toThrowError(expect.objectContaining({ code: "category_deleted" }));
   expect(rows(db)).toEqual(before);
 });
+
+for (const [mode, count] of [["elimination", 0], ["elimination", 1], ["round-robin", 0], ["round-robin", 1], ["round-robin", 2]] as const) {
+  it(`durably restarts ${mode} with ${count} entrants as a clean setup draft`, async () => {
+    const db = await setup();
+    const previous = graph(mode === "elimination");
+    const sourceId = register(db, previous);
+    const oldRows = db.getFights(sourceId);
+    previous.competitors = previous.competitors.slice(0, count);
+    const before = structuredClone(previous);
+    const next: CategoryRestartSnapshot = { ...structuredClone(previous),
+      config: { ...previous.config, id: randomUUID() },
+      competitors: previous.competitors.map((entry) => ({ ...entry, id: randomUUID() })),
+      phase: "setup", setupStarted: false, currentFightIndex: 0,
+      fights: [], groups: [], bracketMatches: [], bracketSeeds: [] };
+    const operation = { requestId: randomUUID(), expectedRevision: db.previewCategoryDeletion(previous).revision, previousSnapshot: previous, replacementSnapshot: next };
+    const result = db.deleteAndRestartCategoryExecution(operation);
+    expect(result.replacementSnapshot).toEqual(next);
+    const replacementId = db.getCategoryTournamentId(next.config.id);
+    expect(replacementId).not.toBeNull();
+    expect(db.getFights(replacementId!)).toEqual([]);
+    expect(db.getCompetitors(replacementId!)).toHaveLength(count);
+    expect(db.deleteAndRestartCategoryExecution(operation)).toEqual(result);
+    expect(previous).toEqual(before);
+    expect(db.getFights(sourceId)).toEqual([]);
+    expect(oldRows.length).toBe(mode === "elimination" ? 0 : 3);
+  });
+}
+
+it.each([false, true])("keeps empty-draft restart atomic under busy, stale revision and late failure (delete=%s)", async (destructive) => {
+  const db = await setup();
+  const previous = graph();
+  const sourceId = register(db, previous);
+  db.setSelectedTournamentId(sourceId);
+  previous.competitors = [];
+  const next: CategoryRestartSnapshot = { ...structuredClone(previous),
+    config: { ...previous.config, id: randomUUID() }, competitors: [], phase: "setup", setupStarted: false,
+    currentFightIndex: 0, fights: [], groups: [], bracketMatches: [], bracketSeeds: [] };
+  const operation = { requestId: randomUUID(), expectedRevision: db.previewCategoryDeletion(previous).revision,
+    previousSnapshot: previous, replacementSnapshot: next };
+  const execute = (busy = false): unknown => destructive
+    ? db.deleteAndRestartCategoryExecution(operation, { hasUnconfirmedMatch: busy })
+    : db.restartCategoryExecution({ requestId: operation.requestId, categoryId: previous.config.id, previousSnapshot: previous, replacementSnapshot: next }, { hasUnconfirmedMatch: busy });
+  const before = rows(db);
+  expect(() => execute(true)).toThrowError(expect.objectContaining({ code: "active_match" }));
+  if (destructive) expect(() => db.deleteAndRestartCategoryExecution({ ...operation, expectedRevision: "f".repeat(64) }))
+    .toThrowError(expect.objectContaining({ code: "snapshot_conflict" }));
+  expect(rows(db)).toEqual(before);
+  const table = destructive ? "category_execution_deleted_restarts" : "category_execution_archives";
+  db.default.exec(`CREATE TRIGGER fail_draft BEFORE INSERT ON ${table} BEGIN SELECT RAISE(ABORT, 'late draft failure'); END`);
+  expect(() => execute()).toThrow("late draft failure");
+  expect(rows(db)).toEqual(before);
+  db.default.exec("DROP TRIGGER fail_draft");
+  const result = execute();
+  expect(execute()).toEqual(result);
+  expect(db.getFights(db.getCategoryTournamentId(next.config.id)!)).toEqual([]);
+});

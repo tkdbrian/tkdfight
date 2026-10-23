@@ -129,3 +129,13 @@ describe("editor rápido de categoría", () => {
     expect(config.profileApplied).toBe(false);
   });
 });
+
+it("keeps configured empty restart drafts in competitor preparation rather than the welcome screen", async () => {
+  act(() => useTournamentStore.setState({ setupStarted: false, phase: "setup",
+    config: { ...useTournamentStore.getState().config, categoryName: "Retained category" } }));
+  await act(async () => { render(<MemoryRouter><SetupPage /></MemoryRouter>); });
+  expect(screen.getByPlaceholderText("Nombre del competidor")).toBeVisible();
+  expect(screen.getByTestId("category-primary-action")).toHaveTextContent(/Iniciar categor/);
+  expect(screen.getByTestId("category-primary-action")).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Nuevo torneo" })).not.toBeInTheDocument();
+});

@@ -61,6 +61,9 @@ function sameRank(a: RankedCompetitor, b: RankedCompetitor): boolean {
   return compare(a, b) === 0;
 }
 
+/** Read-only reports use the exact same ranking priority as the operational resolver. */
+export { compare as compareRoundRobinRank };
+
 function winnerId(fight: FightEntry): string | null {
   return fight.winner === "red" ? fight.red.id : fight.winner === "blue" ? fight.blue.id : null;
 }

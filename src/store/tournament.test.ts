@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { recoverTournamentAuthorities } from "@/lib/tournament-persistence";
 import {
   TOURNAMENT_CATEGORY_STORAGE_KEY,
   useTournamentStore,
@@ -12,6 +13,7 @@ afterEach(() => {
   useTournamentStore.setState(initialState, true);
   localStorage.removeItem("tkd-tournament");
   localStorage.removeItem(TOURNAMENT_CATEGORY_STORAGE_KEY);
+  recoverTournamentAuthorities();
 });
 
 describe("swapBracketSlots", () => {

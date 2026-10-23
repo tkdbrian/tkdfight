@@ -41,9 +41,14 @@ afterEach(() => {
   localStorage.clear();
 });
 
-describe("shared restart controller", () => {
-  it("blocks duplicate requests and category switches, with no main/registry publication until ACK", async () => {
+describe.each([false, true])("shared restart controller draft=%s", (draft) => {
+  function category(): ReturnType<typeof recordedCategory> {
     const previous = recordedCategory();
+    if (draft) previous.competitors = [];
+    return previous;
+  }
+  it("blocks duplicate requests and category switches, with no main/registry publication until ACK", async () => {
+    const previous = category();
     useTournamentStore.setState(previous);
     const sibling = useTournamentStore.getState().createCategory();
     useTournamentStore.getState().selectCategory(previous.config.id);
@@ -74,7 +79,7 @@ describe("shared restart controller", () => {
   });
 
   it("rejects any other-category lock and known conflict without changing existing authorities", async () => {
-    const previous = recordedCategory();
+    const previous = category();
     useTournamentStore.setState(previous);
     const before = localStorage.getItem("tkd-tournament");
     const fetcher = vi.fn(
@@ -97,7 +102,7 @@ describe("shared restart controller", () => {
   });
 
   it("recovers a lost ACK by canonical lookup with the original request identity", async () => {
-    const previous = recordedCategory();
+    const previous = category();
     useTournamentStore.setState(previous);
     let committed: RestartCategorySuccess | null = null;
     const fetcher = vi.fn(async (_url: string, options?: RequestInit) => {
@@ -116,7 +121,7 @@ describe("shared restart controller", () => {
   });
 
   it("keeps old view read-only after storage failure and recovers without a second restart", async () => {
-    const previous = recordedCategory();
+    const previous = category();
     useTournamentStore.setState(previous);
     let committed: RestartCategorySuccess | null = null;
     const original = Storage.prototype.setItem;

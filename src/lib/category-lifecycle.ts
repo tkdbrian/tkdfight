@@ -57,6 +57,9 @@ export function createRestartReplacement(
     phase: "fighting",
     setupStarted: true,
   };
+  if (competitors.length < (config.mode === "elimination" ? 2 : 3)) {
+    return { ...base, phase: "setup", setupStarted: false };
+  }
   if (config.mode === "elimination") {
     const generated =
       competitors.length > 16

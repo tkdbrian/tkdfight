@@ -264,6 +264,15 @@ export function validateCategoryReplacement(input: RestartCategoryRequest): void
     )
       conflict("Una identidad nueva ya tiene propietario.");
   }
+  // Only an insufficient current roster may restart as a preparation draft.
+  // Configuration, roster order/content, ownership and fresh identities were checked above.
+  if (next.competitors.length < (next.config.mode === "elimination" ? 2 : 3)) {
+    if (next.phase !== "setup" || next.setupStarted || next.currentFightIndex !== 0 ||
+      next.fights.length || next.groups.length || next.bracketMatches.length || next.bracketSeeds.length) {
+      conflict("El reinicio sin participantes suficientes debe quedar en preparacion, sin fixture ni resultados.");
+    }
+    return;
+  }
   if (next.phase !== "fighting" || !next.setupStarted || next.currentFightIndex !== 0) {
     conflict("La ejecución nueva debe comenzar sin progreso.");
   }

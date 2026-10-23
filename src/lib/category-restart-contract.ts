@@ -117,6 +117,8 @@ const fight = z.strictObject({
   bracketRound: count.optional(),
   bracketPosition: count.optional(),
   bracketMatchId: id.optional(),
+  continuationParentFightId: id.optional(),
+  continuationStage: z.enum(["timed-extra", "golden-point"]).optional(),
 });
 const slot = z.strictObject({ competitor: competitor.nullable(), fromMatchId: id.optional() });
 const snapshotSchema = z
@@ -158,13 +160,28 @@ const snapshotSchema = z
       if (new Set(collection.map((entry) => entry.id)).size !== collection.length)
         fail("duplicate identity");
     }
-    const entrants = new Set(snapshot.competitors.map((entry) => entry.id));
+    // The editable current roster may omit a participant still recorded in the
+    // historical graph. Validate references against full participant records,
+    // without rewriting that graph or re-adding entrants to the next execution.
+    const entrants = new Set([
+      ...snapshot.competitors.map((entry) => entry.id),
+      ...snapshot.groups.flatMap((group) => group.competitors.map((entry) => entry.id)),
+      ...snapshot.fights.flatMap((entry) => [entry.red.id, entry.blue.id]),
+      ...snapshot.bracketMatches.flatMap((entry) =>
+        [entry.red.competitor?.id, entry.blue.competitor?.id].filter(
+          (identity): identity is string => typeof identity === "string"
+        )
+      ),
+    ]);
     const brackets = new Set(snapshot.bracketMatches.map((entry) => entry.id));
     const fights = new Set(snapshot.fights.map((entry) => entry.id));
     if (snapshot.bracketSeeds.some((seed) => seed !== null && !entrants.has(seed)))
       fail("unknown seed");
     for (const entry of snapshot.fights) {
       if (entry.red.id === entry.blue.id) fail("fight requires distinct competitors");
+      if (entry.continuationParentFightId &&
+        (!fights.has(entry.continuationParentFightId) || entry.continuationParentFightId === entry.id))
+        fail("unknown continuation parent");
       if (
         entry.bracketMatchId &&
         !brackets.has(entry.bracketMatchId) &&

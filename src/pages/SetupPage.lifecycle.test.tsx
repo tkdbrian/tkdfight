@@ -48,10 +48,9 @@ afterEach(() => {
 });
 
 describe("category lifecycle entrypoints", () => {
-  it("keeps Delete in a separate secondary menu and disables primary/restart during deletion recovery", async () => {
+  it("keeps Delete directly visible as a separate secondary action and disables primary/restart during deletion recovery", async () => {
     useTournamentStore.setState(recordedCategory());
     await act(async () => render(<MemoryRouter><SetupPage /></MemoryRouter>));
-    fireEvent.click(screen.getByText("Más acciones de categoría"));
     expect(screen.getByRole("button", { name: "Eliminar categoría…" })).toBeVisible();
     act(() => useCategoryDeletionState.setState({ recoveryRequired: true }));
     expect(screen.getByRole("button", { name: "Ir a Combate" })).toBeDisabled();

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { pendingDeleteAndRestartSource } from "@/lib/category-restart-journal";
 import { categoryDeletionInteractionBlocked } from "@/store/category-deletion-state";
+import { tournamentPersistenceBlocked } from "@/lib/tournament-persistence";
 
 interface CategoryRestartState {
   pending: boolean;
@@ -32,7 +33,7 @@ export const useCategoryRestartState = create<CategoryRestartState>(() => ({
 
 export function categoryRestartInteractionBlocked(): boolean {
   const state = useCategoryRestartState.getState();
-  return state.pending || state.recoveryRequired || hasPendingRecovery() || categoryDeletionInteractionBlocked();
+  return state.pending || state.recoveryRequired || hasPendingRecovery() || categoryDeletionInteractionBlocked() || tournamentPersistenceBlocked();
 }
 
 if (typeof window !== "undefined") window.addEventListener("storage", (event) => {

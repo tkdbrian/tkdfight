@@ -1,0 +1,54 @@
+.category-print-root { position: fixed; inset: 0; z-index: 1000; overflow: auto; background: #eee; color: #000; font: 14px Arial, sans-serif; }
+.category-print-root * { color: #000; box-shadow: none; text-shadow: none; }
+.category-print-toolbar { position: sticky; top: 0; background: #fff; border-bottom: 1px solid #000; padding: 12px; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; z-index: 1; }
+.category-print-toolbar button { border: 1px solid #000; border-radius: 3px; padding: 7px 12px; background: #fff; cursor: pointer; }
+.category-print-toolbar input { margin-right: 5px; accent-color: #000; }
+.category-print-sheet { box-sizing: border-box; width: 186mm; min-height: 260mm; padding: 5mm; margin: 8mm auto; background: #fff; break-after: page; }
+.category-print-landscape .category-print-sheet { width: 281mm; min-height: 180mm; }
+.category-print-sheet:last-child { break-after: auto; }
+.category-print-landscape .category-print-classic-sheet { position: relative; height: 192mm; min-height: 192mm; padding: 0; break-inside: avoid; }
+.category-print-classic-caption { width: calc(100% - 68mm); height: 20mm; padding: 0 2mm; }
+.category-print-classic-caption h1 { font-size: 16px; font-weight: bold; line-height: 18px; margin: 0; }
+.category-print-root .category-print-classic-caption h2 { font-size: 14px; line-height: 16px; margin: 1mm 0; }
+.category-print-classic-caption p { margin: .5mm 0; font-size: 12px; line-height: 14px; }
+.category-print-classic-label { font-weight: bold; }
+.category-print-classic-caption h1 .category-print-classic-label { font-size: 12px; font-weight: normal; margin-left: 3mm; }
+.category-print-classic-bracket { display: block; width: 100%; height: auto; overflow: visible; }
+.category-print-reference-metadata,.category-print-reference-podium { position: absolute; right: 0; border: 1px solid #000; padding: 1.5mm; box-sizing: border-box; background: #fff; font-size: 14px; line-height: 16px; }
+.category-print-reference-metadata { top: 0; width: 64mm; height: 35mm; }
+.category-print-reference-metadata h3 { font-size: 16px; font-weight: bold; line-height: 18px; margin: 0 0 .5mm; text-align: center; }
+.category-print-reference-metadata dl { margin: 0; }
+.category-print-reference-metadata dl > div { display: grid; grid-template-columns: 42px 1fr; gap: 1mm; margin: .25mm 0; }
+.category-print-reference-metadata dt { font-size: 12px; font-weight: bold; }
+.category-print-reference-metadata dd { margin: 0; min-width: 0; }
+.category-print-reference-line { display: block; white-space: pre-wrap; }
+.category-print-reference-podium { bottom: 0; width: 70mm; height: 38mm; }
+.category-print-reference-podium p { margin: 0 0 .5mm; }
+.category-print-reference-podium strong { display: block; font-size: 12px; line-height: 14px; }
+.category-print-reference-signature { display: flex; align-items: end; gap: 2mm; font-size: 12px; line-height: 16px; padding-top: 1mm; }
+.category-print-reference-signature span { flex: 1; border-bottom: 1px solid #000; height: 4mm; }
+.category-print-classic-note { position: absolute; bottom: 3mm; left: 2mm; max-width: calc(100% - 78mm); font-size: 12px; line-height: 16px; }
+.category-print-header { border-bottom: 1px solid #000; padding-bottom: 3mm; margin-bottom: 3mm; }
+.category-print-header h1 { font-size: 17px; font-weight: bold; overflow-wrap: anywhere; }
+.category-print-header p { margin: 1mm 0; }
+.category-print-root h2 { font-size: 14px; font-weight: bold; margin: 3mm 0; }
+.category-print-awards { padding-bottom: 2mm; }
+.category-print-root table { width: calc(100% - .4mm); max-width: 100%; border-collapse: collapse; margin: 3mm .2mm 0; table-layout: fixed; box-sizing: border-box; }
+.category-print-root th,.category-print-root td { border: .2mm solid #000; padding: 1.4mm; text-align: center; overflow-wrap: anywhere; background: #fff; }
+.category-print-root th { font-size: 12px; font-weight: bold; }
+.category-print-root td { font-size: 14px; }
+.category-print-root .category-print-name { text-align: left; }
+.category-print-standings th { white-space: nowrap; overflow-wrap: normal; }
+.category-print-root .category-print-legend { font-size: 12px; margin-top: 3mm; }
+.category-print-fights th:nth-child(2) { width: 24%; }
+.category-print-fights th:nth-child(3) { width: 24%; }
+.category-print-root thead { display: table-header-group; }
+.category-print-root tr,.category-print-match { break-inside: avoid; }
+@media print {
+  html:has([data-category-print-root]),body:has(> [data-category-print-root]) { background: #fff !important; margin: 0 !important; padding: 0 !important; }
+  body:has(> [data-category-print-root]) > *:not([data-category-print-root]) { display: none !important; }
+  .category-print-root { position: static; overflow: visible; background: #fff; outline: none; }
+  .category-print-toolbar { display: none !important; }
+  .category-print-sheet,.category-print-landscape .category-print-sheet { width: 100%; min-height: 0; margin: 0; padding: 0; }
+  .category-print-reference-metadata,.category-print-reference-podium { right: .3mm; }
+}
