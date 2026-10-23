@@ -7,18 +7,22 @@ import packageLock from "../../package-lock.json";
 import viteConfig from "../../vite.config";
 
 describe("product version", () => {
-  it("shows the 3.0.0 release version and keeps portable/install metadata aligned", () => {
-    const installer = readFileSync(resolve(process.cwd(), "installer/TKDFight.iss"), "utf8");
-    const distribution = readFileSync(resolve(process.cwd(), "crear-distribucion.bat"), "utf8");
-    const installerReadme = readFileSync(resolve(process.cwd(), "installer/README.md"), "utf8");
+  it("shows the 3.0.0 release version and keeps source metadata aligned", () => {
     const define = (viteConfig as { define?: Record<string, string> }).define;
 
     expect(packageJson.version).toBe("3.0.0");
     expect(packageLock.version).toBe(packageJson.version);
     expect(packageLock.packages[""].version).toBe(packageJson.version);
     expect(define?.__APP_VERSION__).toBe(JSON.stringify(packageJson.version));
-    expect(installer).toContain(`#define AppVersion "${packageJson.version}"`);
-    expect(distribution).toContain(`set ZIP_NAME=TKD_Fight_${packageJson.version}.zip`);
-    expect(installerReadme).toContain(`TKD_Fight_${packageJson.version}.zip`);
+  });
+
+  it("fingerprints the maintained one-click sources without obsolete launcher dependencies", () => {
+    const fingerprint = readFileSync(resolve(process.cwd(), "scripts/release-sunday/source-id.mjs"), "utf8");
+    expect(fingerprint).toContain('"scripts/release-sunday"');
+    expect(fingerprint).toContain('"scripts/check-runtime.cjs"');
+    expect(fingerprint).toContain('"scripts/Ensure-VCRedist.ps1"');
+    for (const legacy of ["Start-TKDServer.ps1", "Stop-TKDServer.ps1", "Test-TKDServer.ps1"]) {
+      expect(fingerprint).not.toContain(legacy);
+    }
   });
 });

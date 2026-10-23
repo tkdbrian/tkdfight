@@ -1,6 +1,8 @@
 # Sunday clean portable — maintainer handoff
 
-Do **not** run `crear-distribucion.bat` or reuse a current portable directory/ZIP. The
+This is the only maintained portable builder. Legacy BAT launchers and the Inno
+installer are no longer part of the source repository; use Git history for them.
+Do **not** reuse a current portable directory/ZIP. The
 builder never deletes or overwrites an output. Do not run a real package until
 root QA explicitly gives GO and all code/build changes are frozen.
 

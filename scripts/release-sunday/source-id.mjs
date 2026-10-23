@@ -7,8 +7,6 @@ import { join } from "node:path";
 const files = [
   "index.html", "vite.config.ts", "package.json", "package-lock.json",
   "scripts/check-runtime.cjs", "scripts/Ensure-VCRedist.ps1",
-  "scripts/Start-TKDServer.ps1", "scripts/Stop-TKDServer.ps1",
-  "scripts/Test-TKDServer.ps1",
 ];
 function walk(directory) {
   for (const entry of readdirSync(directory, { withFileTypes: true })) {

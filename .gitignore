@@ -33,6 +33,9 @@ data-central/
 /logs/
 /docs/TRASPASO_CODEX.md
 *.zip
+*.exe
+*.dll
+*.pdb
 *.db
 *.db-shm
 *.db-wal
@@ -46,3 +49,20 @@ data-central/
 .env
 .env.*
 !.env.example
+
+# Retired launchers/builders kept locally only; current portable is built from
+# scripts/release-sunday/template and uses ABRIR TKD.exe.
+/*.bat
+/LEEME.txt
+/INSTRUCCIONES_TORNEO.txt
+/README_TORNEO.md
+/installer/
+/.atl/
+/scripts/Start-TKDServer.ps1
+/scripts/Stop-TKDServer.ps1
+/scripts/Test-TKDServer.ps1
+/scripts/Test-TKDServer.tests.ps1
+/scripts/TKD-Manager.ps1
+/scripts/server-watchdog.ps1
+/scripts/server-watchdog.tests.ps1
+/scripts/descargar-node.ps1
