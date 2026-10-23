@@ -1,3 +1,4 @@
+import { canReseedBracket } from "@/lib/bracket-seeding";
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useTournamentStore } from "@/store/tournament";
@@ -81,6 +82,16 @@ export function BracketPage() {
       return false;
     }
     return true;
+  }
+
+  const ownOperativeMatch = (serverState.activeMatchLock
+    && (!serverState.activeMatchLock.categoryId || serverState.activeMatchLock.categoryId === config.id))
+    || (serverState.match && !serverState.resultConfirmed
+      && (!serverState.categoryId || serverState.categoryId === config.id));
+  const canEditSeeds = canReseedBracket(bracketMatches, fights) && !interactionBlocked
+    && connected && stateReady && !ownOperativeMatch;
+  function handleSwapSlots(a: string, aSlot: "red" | "blue", b: string, bSlot: "red" | "blue"): void {
+    if (canEditSeeds) swapBracketSlots(a, aSlot, b, bSlot);
   }
 
   const isElimination = config.mode === "elimination";
@@ -355,6 +366,16 @@ export function BracketPage() {
         </div>
       )}
 
+      {bracketMatches.length > 0 && (
+        <p role="status" className="text-xs text-muted-foreground">
+          {canEditSeeds
+            ? "Arrastrá nombres de la primera ronda para intercambiarlos, incluidos quienes tienen pase libre. Los espacios BYE no se mueven entre combates; tampoco se intercambian grillas A/B."
+            : fights.length > 0 || !canReseedBracket(bracketMatches, fights)
+              ? "Posiciones bloqueadas: ya hay combates preparados o disputados. Para cambiar la distribución, usá Reiniciar categoría."
+              : "Posiciones bloqueadas hasta verificar la conexión y que esta categoría no tenga un combate cargado ni un resultado pendiente."}
+        </p>
+      )}
+
       {/* Main content: single or double bracket view */}
       {isDoubleMode ? (
         <div className="space-y-6">
@@ -364,7 +385,7 @@ export function BracketPage() {
             competitors={competitors}
             selectedMatchId={selectedMatchId}
             onSelectMatch={setSelectedMatchId}
-            onSwap={swapBracketSlots}
+            onSwap={canEditSeeds ? handleSwapSlots : undefined}
             totalRounds={matchesA.length > 0 ? Math.max(...matchesA.map((m) => m.round)) + 1 : 0}
             onStartFight={handleStartMatchFight}
           />
@@ -374,7 +395,7 @@ export function BracketPage() {
             competitors={competitors}
             selectedMatchId={selectedMatchId}
             onSelectMatch={setSelectedMatchId}
-            onSwap={swapBracketSlots}
+            onSwap={canEditSeeds ? handleSwapSlots : undefined}
             totalRounds={matchesB.length > 0 ? Math.max(...matchesB.map((m) => m.round)) + 1 : 0}
             onStartFight={handleStartMatchFight}
           />
@@ -392,7 +413,7 @@ export function BracketPage() {
                   competitors={competitors}
                   onSelectMatch={setSelectedMatchId}
                   currentMatchId={selectedMatchId ?? undefined}
-                  onSwap={swapBracketSlots}
+                  onSwap={canEditSeeds ? handleSwapSlots : undefined}
                 />
               </CardContent>
             </Card>
@@ -433,7 +454,7 @@ function BracketSection({
   competitors: CompetitorEntry[];
   selectedMatchId: string | null;
   onSelectMatch: (id: string) => void;
-  onSwap: (aMatchId: string, aSlot: "red" | "blue", bMatchId: string, bSlot: "red" | "blue") => void;
+  onSwap?: (aMatchId: string, aSlot: "red" | "blue", bMatchId: string, bSlot: "red" | "blue") => void;
   totalRounds: number;
   onStartFight: (matchId: string) => void;
 }>) {

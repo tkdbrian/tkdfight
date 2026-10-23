@@ -1,3 +1,4 @@
+import { isAutomaticBracketBye, canReseedBracket } from "@/lib/bracket-seeding";
 import * as React from "react";
 import { cn } from "@/lib/utils";
 import type { BracketMatch } from "@/store/tournament";
@@ -80,6 +81,7 @@ export function BracketView({
     );
   }
 
+  const reseedingAllowed = canReseedBracket(matches, []);
   const totalRounds = (matches.at(-1)?.round ?? 0) + 1;
   const roundSizes = Array.from({ length: totalRounds }, (_, r) =>
     matches.filter((m) => m.round === r).length
@@ -110,12 +112,12 @@ export function BracketView({
 
   function getSlotAt(svgX: number, svgY: number): { matchId: string; slot: "red" | "blue" } | null {
     for (const match of matches) {
-      if (match.round !== 0 || match.completed) continue;
+      if (!reseedingAllowed || match.round !== 0 || (match.completed && !isAutomaticBracketBye(match))) continue;
       const x = getMatchX(match.round);
       const y = getMatchY(match.round, match.position);
       if (svgX >= x && svgX <= x + MATCH_W) {
-        if (svgY >= y && svgY <= y + MATCH_H / 2) return { matchId: match.id, slot: "red" };
-        if (svgY > y + MATCH_H / 2 && svgY <= y + MATCH_H) return { matchId: match.id, slot: "blue" };
+        if (svgY >= y && svgY <= y + MATCH_H / 2 && (match.red.competitor || match.id === drag?.matchId)) return { matchId: match.id, slot: "red" };
+        if (svgY > y + MATCH_H / 2 && svgY <= y + MATCH_H && (match.blue.competitor || match.id === drag?.matchId)) return { matchId: match.id, slot: "blue" };
       }
     }
     return null;
@@ -151,7 +153,9 @@ export function BracketView({
     if (drag.active && onSwap) {
       const { x, y } = toSvgCoords(e.clientX, e.clientY);
       const target = getSlotAt(x, y);
-      if (target && (target.matchId !== drag.matchId || target.slot !== drag.slot)) {
+      const targetMatch = matches.find((match) => match.id === target?.matchId);
+      if (target && (target.matchId === drag.matchId || targetMatch?.[target.slot].competitor)
+        && (target.matchId !== drag.matchId || target.slot !== drag.slot)) {
         onSwap(drag.matchId, drag.slot, target.matchId, target.slot);
       }
     } else if (!drag.active) {
@@ -242,7 +246,7 @@ export function BracketView({
           const redIsWinner = isCompleted && match.winnerId === match.red.competitor?.id;
           const blueIsWinner = isCompleted && match.winnerId === match.blue.competitor?.id;
           const strokeColor = isCurrent ? "hsl(var(--primary))" : "hsl(var(--border))";
-          const canDrag = !isCompleted && match.round === 0 && !!onSwap;
+          const canDrag = reseedingAllowed && match.round === 0 && (!isCompleted || isAutomaticBracketBye(match)) && !!onSwap;
 
           const redIsDragSource = drag?.matchId === match.id && drag.slot === "red";
           const blueIsDragSource = drag?.matchId === match.id && drag.slot === "blue";

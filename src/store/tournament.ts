@@ -1,3 +1,4 @@
+import { swapInitialBracketSlots } from "@/lib/bracket-seeding";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import type { RuleSet } from "@/engine/types";
@@ -741,44 +742,8 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
     }),
 
   swapBracketSlots: (aMatchId, aSlot, bMatchId, bSlot) =>
-    edit((s) => {
-      const matchA = s.bracketMatches.find((m) => m.id === aMatchId);
-      const matchB = s.bracketMatches.find((m) => m.id === bMatchId);
-      if (!matchA || !matchB) return {};
-      const compA = aSlot === "red" ? matchA.red.competitor : matchA.blue.competitor;
-      const compB = bSlot === "red" ? matchB.red.competitor : matchB.blue.competitor;
-      if (aMatchId === bMatchId) {
-        return {
-          bracketMatches: s.bracketMatches.map((m) => {
-            if (m.id !== aMatchId) return m;
-            return {
-              ...m,
-              red: aSlot === "red"
-                ? { ...m.red, competitor: compB }
-                : bSlot === "red" ? { ...m.red, competitor: compA } : m.red,
-              blue: aSlot === "blue"
-                ? { ...m.blue, competitor: compB }
-                : bSlot === "blue" ? { ...m.blue, competitor: compA } : m.blue,
-            };
-          }),
-        };
-      }
-      return {
-        bracketMatches: s.bracketMatches.map((m) => {
-          if (m.id === aMatchId) {
-            return aSlot === "red"
-              ? { ...m, red: { ...m.red, competitor: compB } }
-              : { ...m, blue: { ...m.blue, competitor: compB } };
-          }
-          if (m.id === bMatchId) {
-            return bSlot === "red"
-              ? { ...m, red: { ...m.red, competitor: compA } }
-              : { ...m, blue: { ...m.blue, competitor: compA } };
-          }
-          return m;
-        }),
-      };
-    }),
+    edit((s) => swapInitialBracketSlots(s.bracketMatches, s.fights,
+      aMatchId, aSlot, bMatchId, bSlot) ?? {}),
 
   // Mueve la pelea actual una posición hacia adelante intercambiándola
   // con la siguiente pelea no completada. currentFightIndex no cambia:

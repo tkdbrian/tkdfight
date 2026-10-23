@@ -13,6 +13,10 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
-    exclude: ["**/node_modules/**", "**/dist/**", "**/e2e/**"],
+    exclude: [
+      "**/node_modules/**", "**/dist/**", "**/e2e/**",
+      // Local releases and old portable copies are not repository test sources.
+      "release/**", "preview-*/**", "TKD_Fight_*/**", "TKD_Torneo_*/**", "dist-produccion*/**",
+    ],
   },
 });
