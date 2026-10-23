@@ -1,4 +1,5 @@
 import os from 'node:os'
+import type { MatchState } from '../src/engine/types.js'
 import { state } from './state.js'
 
 export function getLocalIp(): string {
@@ -33,9 +34,14 @@ function _computeJudgeTotals() {
       if (ev.type === 'warning_minor') {
         warns[ev.competitor as 'red' | 'blue']++
       } else if (ev.type === 'remove_warning') {
-        warns[ev.competitor as 'red' | 'blue'] = Math.max(0, warns[ev.competitor as 'red' | 'blue'] - 1)
+        warns[ev.competitor as 'red' | 'blue'] = Math.max(0,
+          warns[ev.competitor as 'red' | 'blue'] - 1)
+      } else if (ev.type === 'remove_warning_serious') {
+        arbDeduct[ev.competitor as 'red' | 'blue'] = Math.max(0,
+          arbDeduct[ev.competitor as 'red' | 'blue'] - ev.value)
       } else if (ev.type === 'remove_minus_point') {
-        arbDeduct[ev.competitor as 'red' | 'blue'] = Math.max(0, arbDeduct[ev.competitor as 'red' | 'blue'] - 1)
+        arbDeduct[ev.competitor as 'red' | 'blue'] = Math.max(0,
+          arbDeduct[ev.competitor as 'red' | 'blue'] - ev.value)
       } else if (ev.value < 0) {
         arbDeduct[ev.competitor as 'red' | 'blue'] += Math.abs(ev.value)
       }
@@ -73,16 +79,22 @@ function _computeJudgeTotals() {
 }
 
 export function computePenaltyCounts(): { warnings: { red: number; blue: number }; fouls: { red: number; blue: number } } {
+  return computePenaltyCountsForMatch(state.matchState)
+}
+
+export function computePenaltyCountsForMatch(matchState: MatchState | null): {
+  warnings: { red: number; blue: number }
+  fouls: { red: number; blue: number }
+} {
   const warnings = { red: 0, blue: 0 }
   const fouls = { red: 0, blue: 0 }
-  const { matchState } = state
   if (!matchState) return { warnings, fouls }
   for (const round of matchState.rounds) {
     for (const ev of round.events) {
       if (ev.judgeId !== 'arbiter') continue
       if (ev.type === 'warning_minor' || ev.type === 'warning_serious') {
         warnings[ev.competitor] += 1
-      } else if (ev.type === 'remove_warning') {
+      } else if (ev.type === 'remove_warning' || ev.type === 'remove_warning_serious') {
         warnings[ev.competitor] = Math.max(0, warnings[ev.competitor] - 1)
       } else if (ev.type === 'minus_point') {
         fouls[ev.competitor] += 1

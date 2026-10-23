@@ -29,6 +29,8 @@ export const matchLoadSchema = z.object({
     ringId: z.string().min(1).max(64).optional(),
     category: z.string().max(128).optional(),
     matchMode: z.enum(['sparring', 'patterns', 'tul']).optional(),
+    goldenPoint: z.boolean().optional(),
+    requireIndividualFlags: z.boolean().optional(),
     red: z.object({
       id: competitorIdSchema,
       name: z.string().min(1).max(128),
@@ -47,7 +49,14 @@ export const matchCommandContextSchema = z.object({
   matchId: fightIdSchema,
 })
 
-export const matchResultConfirmationSchema = matchCommandContextSchema
+export const matchResultConfirmationSchema = matchCommandContextSchema.extend({
+  expectedRevision: z.number().int().nonnegative(),
+}).strict()
+
+export const mesaUndoRoundSchema = matchCommandContextSchema.extend({
+  // Legacy between-round undo has no result to invalidate; finished correction requires this CAS.
+  expectedRevision: z.number().int().nonnegative().optional(),
+}).strict()
 
 export const matchResultQuerySchema = matchCommandContextSchema
 
@@ -65,6 +74,23 @@ export const judgeVoteSchema = z.object({
 export const mesaFlagVoteSchema = z.object({
   judgeId: judgeIdSchema,
   vote: z.enum(['red', 'blue', 'draw']),
+})
+
+export const goldenPointVoteSchema = matchCommandContextSchema.extend({
+  judgeId: z.string().regex(/^J[1-5]$/),
+  competitor: competitorColorSchema,
+  attempt: z.number().int().positive(),
+})
+
+export const mesaGoldenOutcomeSchema = matchCommandContextSchema.extend({
+  attempt: z.number().int().positive(),
+})
+
+export const mesaSanctionCountSchema = matchCommandContextSchema.extend({
+  competitor: competitorColorSchema,
+  kind: z.enum(['warning', 'minus_point']),
+  expectedCount: z.number().int().min(0).max(99),
+  count: z.number().int().min(0).max(99),
 })
 
 export const matchUndoSchema = z.object({

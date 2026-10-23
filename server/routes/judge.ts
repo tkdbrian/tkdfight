@@ -3,7 +3,7 @@ import type { Router } from 'express'
 export function registerJudgeRoute(router: Router) {
   router.get('/judge', (req, res) => {
     const judgeNum = Number.parseInt((req.query.id as string) ?? '1', 10)
-    const safeNum = judgeNum >= 1 && judgeNum <= 4 ? judgeNum : 1
+    const safeNum = judgeNum >= 1 && judgeNum <= 5 ? judgeNum : 1
     const judgeId = `J${safeNum}`
     res.send(`<!DOCTYPE html>
 <html lang="es">
@@ -68,6 +68,15 @@ export function registerJudgeRoute(router: Router) {
   <div class="hdr-side blue" id="hdr-blue">AZUL</div>
 </div>
 <div id="sparring-section" style="display:flex;flex-direction:column;gap:10px">
+<div id="golden-section" style="display:none;flex-direction:column;gap:12px;text-align:center">
+  <strong>⚡ Punto de Oro — sin reloj</strong>
+  <span id="golden-attempt">Intento 1</span>
+  <div style="display:flex;gap:12px">
+    <button class="tul-btn red" id="golden-red" onclick="goldenVote('red')">PUNTO ROJO</button>
+    <button class="tul-btn blue" id="golden-blue" onclick="goldenVote('blue')">PUNTO AZUL</button>
+  </div>
+  <span id="golden-status">Marcá el punto observado.</span>
+</div>
 <div class="score-row">
   <button class="s-btn plus red" onclick="score('red','pts_1',1)">+</button>
   <button class="s-btn minus red" onclick="unscore('red',1)">\u2212</button>
@@ -117,6 +126,8 @@ export function registerJudgeRoute(router: Router) {
   let connected = false;
   let activeCategoryId = null;
   let activeMatchId = null;
+  let goldenAttempt = 0;
+  let judgeRegistrationPending = false;
   let myRed = 0, myBlue = 0;
   const scoreHistory = [];
   const PHASE_LABELS = {idle:'\u2014',round:'Round',rest:'Descanso',overtime:'Pr\u00f3rroga',golden_point:'\u2605 Punto de Oro',penalties:'Penalidades',finished:'Finalizado'};
@@ -127,15 +138,20 @@ export function registerJudgeRoute(router: Router) {
   const myRedEl    = document.getElementById('my-red');
   const myBlueEl   = document.getElementById('my-blue');
 
-  socket.on('connect', () => {
+  function registerJudge() {
+    if (judgeRegistrationPending) return;
+    judgeRegistrationPending = true;
     socket.emit('judge:connect', { requestedId: JUDGE_ID, token: TOKEN }, (res) => {
+      judgeRegistrationPending = false;
       if (res.error) { statusEl.textContent = '\u274c ' + res.error; statusEl.style.color = '#e74c3c'; }
       else { connected = true; statusEl.textContent = '\u2705 ' + res.judgeId + ' listo'; statusEl.style.color = '#2ecc71'; }
     });
-  });
-  socket.on('disconnect', () => { connected = false; statusEl.textContent = '\u26a0\ufe0f Reconectando...'; statusEl.style.color = '#f90'; });
+  }
+  socket.on('connect', registerJudge);
+  socket.on('disconnect', () => { connected = false; judgeRegistrationPending = false; statusEl.textContent = '\u26a0\ufe0f Reconectando...'; statusEl.style.color = '#f90'; });
   socket.on('state:update', (data) => {
     const m = data.match, ms = data.matchState;
+    if (connected && m && Array.isArray(data.judges) && !data.judges.includes(JUDGE_ID)) registerJudge();
     activeCategoryId = data.categoryId || (m && m.categoryId) || null;
     activeMatchId = m ? m.id : null;
     if (m) {
@@ -183,11 +199,22 @@ export function registerJudgeRoute(router: Router) {
       return;
     }
     // Modo sparring normal
+    const gp = ms && ms.phase === 'golden_point' && ms.goldenPoint;
+    document.getElementById('golden-section').style.display = gp ? 'flex' : 'none';
+    document.querySelectorAll('.score-row,.totals-row,.undo-row').forEach(el => { el.style.display = gp ? 'none' : ''; });
+    if (gp) {
+      goldenAttempt = ms.goldenPoint.attempt;
+      const voted = ms.goldenPoint.votes && ms.goldenPoint.votes[JUDGE_ID];
+      document.getElementById('golden-attempt').textContent = 'Intento ' + goldenAttempt;
+      document.getElementById('golden-status').textContent = voted ? 'Voto registrado: ' + (voted === 'red' ? 'Rojo' : 'Azul') : 'Marcá el punto observado.';
+      document.getElementById('golden-red').disabled = !connected || !!voted;
+      document.getElementById('golden-blue').disabled = !connected || !!voted;
+    }
     const jt = data.judgeTotals && data.judgeTotals[JUDGE_ID];
     if (jt) { myRed = jt.red; myBlue = jt.blue; myRedEl.textContent = myRed; myBlueEl.textContent = myBlue; }
     const idle = !ms || ms.phase === 'idle' || ms.phase === 'finished';
     waitMsg.style.display = idle ? 'block' : 'none';
-    document.querySelectorAll('.s-btn').forEach(b => b.disabled = idle);
+    document.querySelectorAll('.s-btn').forEach(b => b.disabled = idle || !!gp);
   });
   function emitMatchCommand(event, payload) {
     if (!connected || !activeCategoryId || !activeMatchId) return;
@@ -199,6 +226,16 @@ export function registerJudgeRoute(router: Router) {
     document.getElementById('tul-red-btn').disabled = true;
     document.getElementById('tul-blue-btn').disabled = true;
     document.getElementById('tul-voted').style.display = 'block';
+  }
+  function goldenVote(competitor) {
+    if (!connected || !activeCategoryId || !activeMatchId || !goldenAttempt) return;
+    document.getElementById('golden-red').disabled = true;
+    document.getElementById('golden-blue').disabled = true;
+    socket.emit('golden:vote', { categoryId: activeCategoryId, matchId: activeMatchId, judgeId: JUDGE_ID, competitor, attempt: goldenAttempt }, (response) => {
+      if (!response || !response.ok) {
+        document.getElementById('golden-status').textContent = response && response.error || 'Voto rechazado. Esperá la actualización.';
+      }
+    });
   }
   function score(competitor, type, pts) {
     if (!connected || !activeCategoryId || !activeMatchId) return;

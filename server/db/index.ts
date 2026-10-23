@@ -2,6 +2,21 @@ import Database from 'better-sqlite3'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { mkdirSync } from 'node:fs'
+import {
+  assertCategoryWritable, assertTournamentWritable, assertFightWritable, assertCompetitorWritable,
+} from './category-executions.js'
+export {
+  restartCategoryExecution, getCategoryReplacement, getCategoryArchive,
+  assertCategoryWritable, assertTournamentWritable, assertFightWritable, assertCompetitorWritable,
+  isProtectedHistoryTournament, CategoryExecutionError,
+} from './category-executions.js'
+export {
+  previewCategoryDeletion, deleteCategoryExecution, getCategoryDeletion,
+  getCategoryDeletionTombstones, getDeletedCategoryReplacement, isDeletedTournament,
+  assertCategoryNotDeleted, assertTournamentNotDeleted, assertIdentityNotDeleted,
+  assertReplacementNotDeleted, CategoryDeletionError,
+} from './category-deletions.js'
+export { deleteAndRestartCategoryExecution, getCategoryDeleteAndRestart, CategoryRestartModeError } from './category-restart-modes.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const DATA_DIR = process.env.DATA_DIR
@@ -62,7 +77,7 @@ db.exec(`
 `)
 
 // Migrations for existing DBs (columns may not exist yet)
-for (const col of ['group_id TEXT', 'flags_red INTEGER NOT NULL DEFAULT 0', 'flags_blue INTEGER NOT NULL DEFAULT 0', 'source_ring TEXT', 'source_category_id TEXT']) {
+for (const col of ['group_id TEXT', 'flags_red INTEGER NOT NULL DEFAULT 0', 'flags_blue INTEGER NOT NULL DEFAULT 0', 'source_ring TEXT', 'source_category_id TEXT', 'result_revision INTEGER NOT NULL DEFAULT 0']) {
   try { db.exec(`ALTER TABLE fights ADD COLUMN ${col}`) } catch { /* already exists */ }
 }
 
@@ -101,7 +116,57 @@ db.exec(`
   );
 `)
 
+// One selection per DATA_DIR. A foreign key clears stale selections when history is deleted.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS ring_selection (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    tournament_id INTEGER REFERENCES tournaments(id) ON DELETE SET NULL
+  )
+`)
+
 try { db.exec('ALTER TABLE category_tournaments ADD COLUMN legacy_history_unassigned INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
+try { db.exec('ALTER TABLE ring_selection ADD COLUMN explicitly_cleared INTEGER NOT NULL DEFAULT 0') } catch { /* already exists */ }
+
+// Execution archives are additive. Both generations survive ordinary history cleanup.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS category_execution_archives (
+    category_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    replacement_category_id TEXT NOT NULL UNIQUE,
+    source_tournament_id INTEGER NOT NULL UNIQUE REFERENCES tournaments(id) ON DELETE RESTRICT,
+    replacement_tournament_id INTEGER NOT NULL UNIQUE REFERENCES tournaments(id) ON DELETE RESTRICT,
+    archived_at TEXT NOT NULL,
+    previous_snapshot TEXT NOT NULL,
+    replacement_snapshot TEXT NOT NULL,
+    warnings TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL
+  )
+`)
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS category_execution_deletions (
+    category_id TEXT PRIMARY KEY,
+    request_id TEXT NOT NULL UNIQUE,
+    tournament_id INTEGER UNIQUE REFERENCES tournaments(id) ON DELETE RESTRICT,
+    deleted_at TEXT NOT NULL,
+    counts TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS category_deletion_identities (
+    kind TEXT NOT NULL CHECK(kind IN ('competitor', 'fight', 'bracket')),
+    identity_id TEXT NOT NULL,
+    category_id TEXT NOT NULL REFERENCES category_execution_deletions(category_id) ON DELETE RESTRICT,
+    PRIMARY KEY(kind, identity_id)
+  );
+  CREATE TABLE IF NOT EXISTS category_execution_deleted_restarts (
+    category_id TEXT PRIMARY KEY REFERENCES category_execution_deletions(category_id) ON DELETE RESTRICT,
+    request_id TEXT NOT NULL UNIQUE REFERENCES category_execution_deletions(request_id) ON DELETE RESTRICT,
+    replacement_category_id TEXT NOT NULL UNIQUE REFERENCES category_tournaments(category_id) ON DELETE RESTRICT,
+    replacement_snapshot TEXT NOT NULL,
+    request_fingerprint TEXT NOT NULL,
+    mode TEXT NOT NULL CHECK(mode = 'delete-and-restart')
+  );
+`)
 
 // ── Tournaments ──────────────────────────────────────────────────────────────
 
@@ -153,6 +218,7 @@ export function resolveCategoryTournament(input: {
   legacyFights?: LegacyFightFingerprint[]
   legacyCompetitorIds?: string[]
 }): CategoryTournament {
+  assertCategoryWritable(input.categoryId)
   return db.transaction(() => {
     const existing = db.prepare('SELECT tournament_id, legacy_history_unassigned FROM category_tournaments WHERE category_id = ?').get(input.categoryId) as { tournament_id: number; legacy_history_unassigned: number } | undefined
     if (existing) return { tournamentId: existing.tournament_id, legacyHistoryUnassigned: existing.legacy_history_unassigned === 1 }
@@ -212,12 +278,59 @@ export function getTournament(id: number) {
 }
 
 export function getLatestTournament() {
-  return db.prepare('SELECT * FROM tournaments ORDER BY id DESC LIMIT 1').get() as {
+  return db.prepare(`SELECT * FROM tournaments t WHERE NOT EXISTS (
+    SELECT 1 FROM category_execution_deletions d WHERE d.tournament_id = t.id
+  ) ORDER BY id DESC LIMIT 1`).get() as {
     id: number; name: string; category: string; created_at: string
   } | undefined
 }
 
+export function getSelectedTournamentId(): number | null {
+  const row = db.prepare(`
+    SELECT t.id FROM ring_selection s
+    JOIN tournaments t ON t.id = s.tournament_id
+    WHERE s.id = 1 AND NOT EXISTS (SELECT 1 FROM category_execution_deletions d WHERE d.tournament_id = t.id)
+  `).get() as { id: number } | undefined
+  return row?.id ?? null
+}
+
+export function setSelectedTournamentId(tournamentId: number): void {
+  assertTournamentWritable(tournamentId)
+  if (!getTournament(tournamentId)) throw new Error(`Tournament ${tournamentId} does not exist`)
+  db.prepare(`
+    INSERT INTO ring_selection (id, tournament_id) VALUES (1, ?)
+    ON CONFLICT(id) DO UPDATE SET tournament_id = excluded.tournament_id, explicitly_cleared = 0
+  `).run(tournamentId)
+}
+
+export function getStartupTournamentId(): number | null {
+  const lockTournamentId = getActiveMatchLock()?.tournamentId
+  if (lockTournamentId && getTournament(lockTournamentId)) return lockTournamentId
+
+  const selection = db.prepare('SELECT explicitly_cleared FROM ring_selection WHERE id = 1').get() as { explicitly_cleared: number } | undefined
+  if (selection?.explicitly_cleared === 1) return null
+
+  const selectedId = getSelectedTournamentId()
+  if (selectedId !== null) return selectedId
+
+  // Old installations had no durable selection. Keep their former startup behavior.
+  const writable = db.prepare(`SELECT t.id FROM tournaments t WHERE NOT EXISTS (
+    SELECT 1 FROM category_execution_deletions d WHERE d.tournament_id = t.id
+  ) AND NOT EXISTS (SELECT 1 FROM category_execution_archives a WHERE a.source_tournament_id = t.id)
+    ORDER BY t.id DESC LIMIT 1`).get() as { id: number } | undefined
+  return writable?.id ?? null
+}
+
+/** Internal inert workspace after explicit deselection, never an implicit public activation. */
+export function getRetiredIdleTournamentId(): number | null {
+  const selection = db.prepare('SELECT explicitly_cleared FROM ring_selection WHERE id = 1').get() as { explicitly_cleared: number } | undefined
+  if (selection?.explicitly_cleared !== 1) return null
+  const row = db.prepare('SELECT tournament_id FROM category_execution_deletions WHERE tournament_id IS NOT NULL ORDER BY deleted_at DESC LIMIT 1').get() as { tournament_id: number } | undefined
+  return row?.tournament_id ?? null
+}
+
 export function renameTournament(id: number, name: string, category: string) {
+  assertTournamentWritable(id)
   db.prepare('UPDATE tournaments SET name = ?, category = ? WHERE id = ?').run(name, category, id)
 }
 
@@ -227,10 +340,12 @@ export function getCompetitorCount(tournamentId: number): number {
 }
 
 export function deletePendingFights(tournamentId: number) {
+  assertTournamentWritable(tournamentId)
   db.prepare('DELETE FROM fights WHERE tournament_id = ? AND completed = 0').run(tournamentId)
 }
 
 export function clearTournamentData(tournamentId: number) {
+  assertTournamentWritable(tournamentId)
   db.prepare('DELETE FROM fights WHERE tournament_id = ?').run(tournamentId)
   db.prepare('DELETE FROM competitors WHERE tournament_id = ?').run(tournamentId)
 }
@@ -245,6 +360,8 @@ export function upsertCompetitor(c: {
   weight?: number
   belt?: string
 }) {
+  assertTournamentWritable(c.tournament_id)
+  assertCompetitorWritable(c.id)
   const existing = db.prepare('SELECT tournament_id FROM competitors WHERE id = ?').get(c.id) as { tournament_id: number | null } | undefined
   if (existing && existing.tournament_id !== c.tournament_id) {
     throw new Error(`competitor ${c.id} already belongs to another tournament`)
@@ -267,6 +384,7 @@ export function getCompetitors(tournamentId: number) {
 }
 
 export function deleteCompetitor(id: string) {
+  assertCompetitorWritable(id)
   db.prepare('DELETE FROM competitors WHERE id = ?').run(id)
 }
 
@@ -287,6 +405,12 @@ export function upsertFight(f: {
   source_ring?: string
   source_category_id?: string
 }) {
+  assertTournamentWritable(f.tournament_id)
+  assertFightWritable(f.id)
+  assertCompetitorWritable(f.red_id)
+  assertCompetitorWritable(f.blue_id)
+  const owner = db.prepare('SELECT tournament_id FROM fights WHERE id = ?').get(f.id) as { tournament_id: number } | undefined
+  if (owner && owner.tournament_id !== f.tournament_id) throw new Error('fight already belongs to another tournament')
   db.prepare(`
     INSERT OR REPLACE INTO fights (id, tournament_id, red_id, blue_id, completed, winner, reason, round_index, group_id, flags_red, flags_blue, source_ring, source_category_id)
     VALUES (@id, @tournament_id, @red_id, @blue_id, @completed, @winner, @reason, @round_index, @group_id, @flags_red, @flags_blue, @source_ring, @source_category_id)
@@ -300,6 +424,10 @@ export function insertFightIfNew(f: {
   red_id: string
   blue_id: string
 }) {
+  assertTournamentWritable(f.tournament_id)
+  assertFightWritable(f.id)
+  assertCompetitorWritable(f.red_id)
+  assertCompetitorWritable(f.blue_id)
   const existing = db.prepare('SELECT tournament_id, red_id, blue_id FROM fights WHERE id = ?').get(f.id) as {
     tournament_id: number | null; red_id: string; blue_id: string
   } | undefined
@@ -317,6 +445,7 @@ export function insertFightIfNew(f: {
 }
 
 export function completeFight(id: string, winner: string, reason: string, flagsRed = 0, flagsBlue = 0) {
+  assertFightWritable(id)
   db.prepare('UPDATE fights SET completed = 1, winner = ?, reason = ?, flags_red = ?, flags_blue = ? WHERE id = ?').run(winner, reason, flagsRed, flagsBlue, id)
 }
 
@@ -340,6 +469,8 @@ export interface MatchResultInput {
 export interface StoredMatchResult extends MatchResultInput {
   status: 'pending_confirmation' | 'confirmed'
   alreadyConfirmed: boolean
+  /** Monotonic fight revision; invalidating a pending result must never recycle it. */
+  revision: number
 }
 
 interface MatchResultRow {
@@ -372,10 +503,14 @@ function mapMatchResult(row: MatchResultRow, alreadyConfirmed = false): StoredMa
     foulsBlue: row.fouls_blue,
     status: row.status,
     alreadyConfirmed,
+    revision: getMatchResultRevision(row.category_id, row.fight_id),
   }
 }
 
 function assertMatchResultOwnership(input: MatchResultInput): { completed: number } {
+  assertCategoryWritable(input.categoryId)
+  assertTournamentWritable(input.tournamentId)
+  assertFightWritable(input.fightId)
   const category = db.prepare('SELECT tournament_id FROM category_tournaments WHERE category_id = ?')
     .get(input.categoryId) as { tournament_id: number } | undefined
   if (!category || category.tournament_id !== input.tournamentId) {
@@ -426,15 +561,84 @@ function persistPendingResult(input: MatchResultInput): StoredMatchResult {
     WHERE id = @fightId AND tournament_id = @tournamentId AND completed = 0
   `).run(input)
   if (updated.changes !== 1) throw new Error('fight result could not be persisted')
-  return { ...input, status: 'pending_confirmation', alreadyConfirmed: false }
+  return { ...input, status: 'pending_confirmation', alreadyConfirmed: false,
+    revision: getMatchResultRevision(input.categoryId, input.fightId) }
 }
 
 export function savePendingMatchResult(input: MatchResultInput): StoredMatchResult {
   return db.transaction(() => persistPendingResult(input))()
 }
 
-export function confirmMatchResult(input: MatchResultInput): StoredMatchResult {
+/** Commit the final Golden Point snapshot and pending result as one durable operation. */
+export function savePendingMatchResultWithSnapshot(
+  input: MatchResultInput,
+  snapshot: MatchSnapshotData,
+): StoredMatchResult {
   return db.transaction(() => {
+    if (getMatchResult(input.categoryId, input.fightId)) {
+      throw new Error('a result is already stored for this fight')
+    }
+    saveMatchSnapshot(input.fightId, input.tournamentId, snapshot, input.categoryId)
+    return persistPendingResult(input)
+  })()
+}
+
+export interface SanctionResultMetrics {
+  warningsRed: number
+  warningsBlue: number
+  foulsRed: number
+  foulsBlue: number
+}
+
+/** Post-clock corrections must update recovery state and provisional ranking metrics together. */
+export function saveMatchSanctionEdit(
+  fightId: string,
+  categoryId: string,
+  tournamentId: number,
+  snapshot: MatchSnapshotData,
+  metrics: SanctionResultMetrics,
+): StoredMatchResult | null {
+  assertCategoryWritable(categoryId)
+  assertTournamentWritable(tournamentId)
+  assertFightWritable(fightId)
+  return db.transaction(() => {
+    const category = db.prepare('SELECT tournament_id FROM category_tournaments WHERE category_id = ?')
+      .get(categoryId) as { tournament_id: number } | undefined
+    const fight = db.prepare('SELECT tournament_id, completed FROM fights WHERE id = ?')
+      .get(fightId) as { tournament_id: number; completed: number } | undefined
+    if (!category || category.tournament_id !== tournamentId ||
+      !fight || fight.tournament_id !== tournamentId) {
+      throw new Error('category does not own this fight')
+    }
+    const row = db.prepare('SELECT * FROM match_results WHERE fight_id = ?')
+      .get(fightId) as MatchResultRow | undefined
+    if (row && (row.category_id !== categoryId || row.tournament_id !== tournamentId ||
+      row.status !== 'pending_confirmation')) {
+      throw new Error('result already confirmed or belongs to another category')
+    }
+    if (!row && snapshot.matchState?.phase === 'finished') {
+      throw new Error('finished match has no pending result')
+    }
+    if (!row && fight.completed === 1) throw new Error('fight already completed without a pending result')
+    saveMatchSnapshot(fightId, tournamentId, snapshot, categoryId)
+    if (!row) return null
+    const updated = db.prepare(`
+      UPDATE match_results
+      SET warnings_red = @warningsRed, warnings_blue = @warningsBlue,
+          fouls_red = @foulsRed, fouls_blue = @foulsBlue
+      WHERE fight_id = @fightId AND category_id = @categoryId AND status = 'pending_confirmation'
+    `).run({ ...metrics, fightId, categoryId })
+    if (updated.changes !== 1) throw new Error('pending result could not be updated')
+    const adjusted = db.prepare('SELECT * FROM match_results WHERE fight_id = ?').get(fightId) as MatchResultRow
+    return mapMatchResult(adjusted)
+  })()
+}
+
+export function confirmMatchResult(input: MatchResultInput, expectedRevision = 0): StoredMatchResult {
+  return db.transaction(() => {
+    if (getMatchResultRevision(input.categoryId, input.fightId) !== expectedRevision) {
+      throw new Error('stale result revision')
+    }
     const result = persistPendingResult(input)
     if (result.status === 'confirmed') {
       clearMatchSnapshot(input.fightId, input.categoryId)
@@ -464,6 +668,54 @@ export function getMatchResult(categoryId: string, fightId: string): StoredMatch
   return row ? mapMatchResult(row, row.status === 'confirmed') : null
 }
 
+/** Persisted on the fight, not the replaceable pending-result row. */
+export function getMatchResultRevision(categoryId: string, fightId: string): number {
+  const row = db.prepare(`SELECT f.result_revision FROM fights f
+    JOIN category_tournaments c ON c.tournament_id = f.tournament_id
+    WHERE f.id = ? AND c.category_id = ?`).get(fightId, categoryId) as { result_revision: number } | undefined
+  return row?.result_revision ?? 0
+}
+
+/** Invalidate only an unconfirmed result, preserving all recovery data in one transaction. */
+export function reopenPendingFlagResult(
+  fightId: string,
+  categoryId: string,
+  tournamentId: number,
+  expectedRevision: number,
+  snapshot: MatchSnapshotData,
+): number {
+  assertCategoryWritable(categoryId)
+  assertTournamentWritable(tournamentId)
+  assertFightWritable(fightId)
+  return db.transaction(() => {
+    const row = db.prepare('SELECT * FROM match_results WHERE fight_id = ?')
+      .get(fightId) as MatchResultRow | undefined
+    if (!row || row.category_id !== categoryId || row.tournament_id !== tournamentId ||
+      row.status !== 'pending_confirmation' || row.reason !== 'points') {
+      throw new Error('only a pending flags result can be reopened')
+    }
+    assertMatchResultOwnership({ ...mapMatchResult(row) })
+    const lock = getActiveMatchLock()
+    if (lock?.fightId !== fightId || lock.categoryId !== categoryId || lock.tournamentId !== tournamentId ||
+      getMatchResultRevision(categoryId, fightId) !== expectedRevision) {
+      throw new Error('stale match or result revision')
+    }
+    if (snapshot.matchState?.phase !== 'rest' || snapshot.matchState.result !== null || snapshot.pendingResult) {
+      throw new Error('a reopened snapshot must be awaiting flag votes')
+    }
+    const updated = db.prepare(`UPDATE fights SET completed = 0, winner = NULL, reason = NULL,
+      flags_red = 0, flags_blue = 0, result_revision = result_revision + 1
+      WHERE id = ? AND tournament_id = ? AND completed = 1 AND result_revision = ?`)
+      .run(fightId, tournamentId, expectedRevision)
+    if (updated.changes !== 1) throw new Error('pending fight could not be reopened')
+    const removed = db.prepare(`DELETE FROM match_results
+      WHERE fight_id = ? AND category_id = ? AND status = 'pending_confirmation'`).run(fightId, categoryId)
+    if (removed.changes !== 1) throw new Error('pending result could not be invalidated')
+    saveMatchSnapshot(fightId, tournamentId, snapshot, categoryId)
+    return expectedRevision + 1
+  })()
+}
+
 export function countMatchResults(fightId: string): number {
   const row = db.prepare('SELECT COUNT(*) AS count FROM match_results WHERE fight_id = ?').get(fightId) as { count: number }
   return row.count
@@ -481,6 +733,15 @@ export function getSourceCategoryId(fightId: string): string | null {
 
 export function getFights(tournamentId: number) {
   return db.prepare('SELECT * FROM fights WHERE tournament_id = ? ORDER BY round_index ASC').all(tournamentId)
+}
+
+/** Resolve a locked fight without inferring names or local fight numbers. */
+export function getFightCompetitorNames(fightId: string, tournamentId: number): { redName: string; blueName: string } | null {
+  const row = db.prepare(`SELECT r.name AS redName, b.name AS blueName FROM fights f
+    JOIN competitors r ON r.id = f.red_id
+    JOIN competitors b ON b.id = f.blue_id
+    WHERE f.id = ? AND f.tournament_id = ?`).get(fightId, tournamentId) as { redName: string; blueName: string } | undefined
+  return row ?? null
 }
 
 // ── Presets ──────────────────────────────────────────────────────────────────
@@ -528,12 +789,17 @@ for (const col of ['category_id TEXT']) {
 }
 
 export interface MatchSnapshotData {
+  resultRevision?: number
   // biome-ignore lint/suspicious/noExplicitAny: loose types — JSON round-trip
   match: Record<string, any>
   // biome-ignore lint/suspicious/noExplicitAny: loose types — JSON round-trip
   rules: Record<string, any>
   roundFlags: Array<{ red: number; blue: number; draw?: number; winner: string; votes: Record<string, string> }>
+  /** Optional for compatibility with snapshots saved before individual RR votes. */
+  judgeVotes?: Record<string, string>
   pendingResult?: { winner: FightWinner; reason: string }
+  /** Saved on each Golden Point vote so a restart cannot reset an attempt. */
+  matchState?: import('../../src/engine/types.js').MatchState
 }
 
 export interface LoadedMatchSnapshot {
@@ -545,10 +811,13 @@ export interface LoadedMatchSnapshot {
 }
 
 export function saveMatchSnapshot(fightId: string, tournamentId: number, data: MatchSnapshotData, categoryId?: string): void {
+  if (categoryId) assertCategoryWritable(categoryId)
+  assertTournamentWritable(tournamentId)
+  assertFightWritable(fightId)
   db.prepare(`
     INSERT OR REPLACE INTO match_snapshot (id, fight_id, tournament_id, data, saved_at, category_id)
     VALUES (1, ?, ?, ?, datetime('now'), ?)
-  `).run(fightId, tournamentId, JSON.stringify(data), categoryId ?? null)
+  `).run(fightId, tournamentId, JSON.stringify({ ...data, resultRevision: categoryId ? getMatchResultRevision(categoryId, fightId) : 0 }), categoryId ?? null)
 }
 
 export function loadMatchSnapshot(): LoadedMatchSnapshot | null {
@@ -570,11 +839,24 @@ export function loadMatchSnapshot(): LoadedMatchSnapshot | null {
 }
 
 export function clearMatchSnapshot(fightId?: string, categoryId?: string): void {
+  if (categoryId) assertCategoryWritable(categoryId)
+  if (fightId) assertFightWritable(fightId)
+  const existing = loadMatchSnapshot()
+  if (existing) assertTournamentWritable(existing.tournamentId)
   if (fightId && categoryId) {
     db.prepare('DELETE FROM match_snapshot WHERE id = 1 AND fight_id = ? AND category_id = ?').run(fightId, categoryId)
     return
   }
   db.prepare('DELETE FROM match_snapshot WHERE id = 1').run()
+}
+
+/** Post-commit operational cleanup only: never deletes pending/recovery snapshots or archive JSON. */
+export function clearConfirmedMatchSnapshot(): void {
+  db.prepare(`DELETE FROM match_snapshot WHERE EXISTS (
+    SELECT 1 FROM match_results r WHERE r.fight_id = match_snapshot.fight_id
+      AND r.category_id = match_snapshot.category_id
+      AND r.tournament_id = match_snapshot.tournament_id AND r.status = 'confirmed'
+  )`).run()
 }
 
 export function getActiveMatchLock(): { fightId: string; tournamentId: number; categoryId: string | null; resultStatus: string | null } | null {

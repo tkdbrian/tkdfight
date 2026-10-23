@@ -8,7 +8,7 @@ export type GradeSystem = "DAN" | "GUPS";
 
 export interface CategoryNameFields {
   weight: string;
-  gradeSystem: GradeSystem;
+  gradeSystem: GradeSystem | "";
   beltFrom: string;
   beltTo: string;
   gupBand: string;

@@ -4,12 +4,64 @@ import { getRingConfig, setRingConfig } from '../ring-config.js'
 import { getLocalIp } from '../helpers.js'
 import { state } from '../state.js'
 import { broadcast } from '../broadcast.js'
-import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, clearTournamentData, insertFightIfNew, createTournament, renameTournament, getCompetitorCount, getActiveMatchLock, getCategoryTournamentId, getSourceCategoryId, getTournamentCategoryId, resolveCategoryTournament } from '../db/index.js'
+import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, clearTournamentData, insertFightIfNew, isFightPending, createTournament, renameTournament, getCompetitorCount, getActiveMatchLock, getCategoryTournamentId, getSourceCategoryId, getTournamentCategoryId, resolveCategoryTournament, setSelectedTournamentId } from '../db/index.js'
 import db from '../db/index.js'
+import { eliminationContinuationSchema } from '../../src/lib/elimination-continuation-contract.js'
+import { ensureEliminationContinuation, getEliminationContinuation, ContinuationConflict } from '../db/elimination-continuations.js'
+import { registerCategoryRestartRoutes, sendCategoryExecutionError } from './category-restart.js'
+import { registerCategoryDeletionRoutes } from './category-deletion.js'
+import { registerCategoryRestartModesRoutes } from './category-restart-modes.js'
+import {
+  assertCategoryWritable, assertTournamentWritable, assertFightWritable, assertCompetitorWritable,
+} from '../db/index.js'
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)
 
 export function registerRingRoute(app: Express, io: Server) {
+  registerCategoryRestartRoutes(app, io)
+  registerCategoryDeletionRoutes(app, io)
+  registerCategoryRestartModesRoutes(app, io)
+  // Guard explicit identities AND existing owners before handlers can select, replace or broadcast.
+  const executionWrites = new Set(['/import-fights', '/full-reset', '/activate-category',
+    '/sync-fights', '/remove-fights', '/remote-result'])
+  app.use('/api/ring', (req, res, next) => {
+    if (req.method !== 'POST' || !executionWrites.has(req.path)) return next()
+    const body: unknown = req.body
+    const input = body !== null && typeof body === 'object'
+      ? body as Record<string, unknown> : {}
+    try {
+      if (typeof input.categoryId === 'string') assertCategoryWritable(input.categoryId)
+      if (typeof input.sourceCategoryId === 'string') assertCategoryWritable(input.sourceCategoryId)
+      if (req.path === '/full-reset'
+        || (req.path === '/import-fights' && !input.newCategory)
+        || (req.path === '/remove-fights' && typeof input.categoryId !== 'string')) {
+        assertTournamentWritable(state.activeTournamentId)
+      }
+      if (typeof input.fightId === 'string') assertFightWritable(input.fightId)
+      if (Array.isArray(input.ids)) {
+        for (const id of input.ids) if (typeof id === 'string') assertFightWritable(id)
+      }
+      if (Array.isArray(input.fights)) {
+        for (const value of input.fights) {
+          if (value === null || typeof value !== 'object') continue
+          const fight = value as Record<string, unknown>
+          if (typeof fight.id === 'string') assertFightWritable(fight.id)
+          for (const id of [fight.red_id, fight.blue_id]) {
+            if (typeof id === 'string') assertCompetitorWritable(id)
+          }
+        }
+      }
+      if (Array.isArray(input.competitors)) {
+        for (const value of input.competitors) {
+          if (value !== null && typeof value === 'object' && 'id' in value
+            && typeof value.id === 'string') assertCompetitorWritable(value.id)
+        }
+      }
+      next()
+    } catch (error) {
+      if (!sendCategoryExecutionError(error, res)) next(error)
+    }
+  })
   // ── GET /api/ring/status ─────────────────────────────────────────────────
   app.get('/api/ring/status', (_req, res) => {
     const config = getRingConfig()
@@ -35,6 +87,9 @@ export function registerRingRoute(app: Express, io: Server) {
             currentRound: matchState?.currentRound ?? 0,
           }
         : null,
+      activeMatchLock: getActiveMatchLock() ?? (match && !state.resultConfirmed
+        ? { fightId: match.id, categoryId: state.matchCategoryId }
+        : null),
       queuedFights: queued,
       completedFights: completed,
       judges: Array.from(judges.values()),
@@ -208,6 +263,8 @@ export function registerRingRoute(app: Express, io: Server) {
       imported++
     }
 
+    if (newCategory) setSelectedTournamentId(state.activeTournamentId)
+
     res.json({ ok: true, imported, warning: legacyHistoryWarning })
 
     // Notify FightPage clients so they can add the new fights to their Zustand store
@@ -287,6 +344,7 @@ export function registerRingRoute(app: Express, io: Server) {
       })
       const categoryChanged = association.tournamentId !== state.activeTournamentId
         || state.matchCategoryId !== categoryId
+      setSelectedTournamentId(association.tournamentId)
       state.activeTournamentId = association.tournamentId
       if (categoryChanged) {
         if (state.tickInterval) clearInterval(state.tickInterval)
@@ -316,60 +374,146 @@ export function registerRingRoute(app: Express, io: Server) {
           : undefined,
       })
     } catch (err) {
+      if (sendCategoryExecutionError(err, res)) return
       res.status(409).json({
         error: err instanceof Error ? err.message : 'No se pudo activar la categoría.',
       })
     }
   })
 
+  app.get('/api/ring/categories/:categoryId/fights/:parentFightId/continuation', (req, res) => {
+    const { categoryId, parentFightId } = req.params
+    if (!categoryId || !parentFightId) {
+      res.status(400).json({ error: 'invalid_continuation_identity' })
+      return
+    }
+    const canonicalFight = getEliminationContinuation(categoryId, parentFightId)
+    if (!canonicalFight) {
+      res.status(404).json({ error: 'continuation_not_found' })
+      return
+    }
+    res.json({ canonicalFight })
+  })
+
   app.post('/api/ring/sync-fights', (req, res) => {
-    const { categoryId, categoryName, tournamentName, competitors, fights } = req.body ?? {}
+    const { categoryId, categoryName, tournamentName, competitors, fights,
+      requiredConfirmedFightIds, eliminationContinuation } = req.body ?? {}
     if (typeof categoryId !== 'string' || !categoryId.trim()
       || typeof categoryName !== 'string' || typeof tournamentName !== 'string'
       || !Array.isArray(fights) || !Array.isArray(competitors)) {
       res.status(400).json({ error: 'category identity, fights and competitors are required' })
       return
     }
-    const typedFights = fights as Array<{ id: string; red_id: string; blue_id: string; completed?: boolean }>
+    if (requiredConfirmedFightIds !== undefined && (
+      !Array.isArray(requiredConfirmedFightIds)
+      || requiredConfirmedFightIds.length > 500
+      || requiredConfirmedFightIds.some((id: unknown) =>
+        typeof id !== 'string' || id.length === 0 || id.length > 128)
+    )) {
+      res.status(400).json({ error: 'requiredConfirmedFightIds must contain valid fight IDs' })
+      return
+    }
+    const parsedContinuation = eliminationContinuation === undefined
+      ? null : eliminationContinuationSchema.safeParse(eliminationContinuation)
+    if (parsedContinuation?.success === false) {
+      res.status(400).json({ error: 'invalid_elimination_continuation',
+        message: 'La propuesta de continuación no tiene una identidad válida.' })
+      return
+    }
+    const activeLock = getActiveMatchLock()
+    const activeCategoryId = activeLock
+      ? activeLock.categoryId
+      : state.match && !state.resultConfirmed ? state.matchCategoryId : null
+    if ((activeLock || (state.match && !state.resultConfirmed)) && activeCategoryId !== categoryId) {
+      res.status(409).json({ error: 'active_match', message: 'Otra categoría tiene un combate activo en este tatami.' })
+      return
+    }
+    const typedFights = fights as Array<{
+      id: string; red_id: string; blue_id: string; completed?: boolean;
+      continuationParentFightId?: string; continuationStage?: string;
+    }>
     const typedCompetitors = competitors as Array<{ id: string; name: string; team?: string; weight?: number; belt?: string }>
     const fingerprintCompetitorIds = Array.from(new Set(typedFights.flatMap((fight) => [fight.red_id, fight.blue_id])))
-    let association
+    const pendingFights = typedFights.filter((fight) => !fight.completed)
+    const continuationRequest = parsedContinuation?.success ? parsedContinuation.data : null
+    if (continuationRequest && pendingFights.filter((fight) =>
+      fight.id === continuationRequest.proposedFight.id
+      && fight.red_id === continuationRequest.proposedFight.red_id
+      && fight.blue_id === continuationRequest.proposedFight.blue_id).length !== 1) {
+      res.status(400).json({ error: 'continuation_fight_missing',
+        message: 'La pelea propuesta debe aparecer una vez en las peleas pendientes.' })
+      return
+    }
+    const pendingCompetitorIds = new Set(pendingFights.flatMap((fight) => [fight.red_id, fight.blue_id]))
     try {
-      association = resolveCategoryTournament({
-        categoryId,
-        categoryName,
-        tournamentName,
-        preferredTournamentId: state.activeTournamentId,
-        legacyFights: typedFights.map(({ id, red_id, blue_id }) => ({ id, red_id, blue_id })),
-        legacyCompetitorIds: fingerprintCompetitorIds,
+      const { association, synced, canonicalFight } = db.transaction(() => {
+        const association = resolveCategoryTournament({
+          categoryId,
+          categoryName,
+          tournamentName,
+          preferredTournamentId: state.activeTournamentId,
+          legacyFights: typedFights.map(({ id, red_id, blue_id }) => ({ id, red_id, blue_id })),
+          legacyCompetitorIds: fingerprintCompetitorIds,
+        })
+        const tournamentId = association.tournamentId
+        if (requiredConfirmedFightIds !== undefined) {
+          const confirmedFight = db.prepare(`
+            SELECT 1 AS ok FROM fights f
+            JOIN match_results r ON r.fight_id = f.id
+            WHERE f.id = ? AND f.tournament_id = ?
+              AND r.category_id = ? AND r.tournament_id = ? AND r.status = 'confirmed'
+          `)
+          for (const fightId of new Set(requiredConfirmedFightIds as string[])) {
+            if (!confirmedFight.get(fightId, tournamentId, categoryId, tournamentId)) {
+              throw new Error(`El combate ${fightId} no tiene un resultado confirmado de esta categoría.`)
+            }
+          }
+        }
+        for (const competitor of typedCompetitors) {
+          if (pendingCompetitorIds.has(competitor.id)) upsertCompetitor({ ...competitor, tournament_id: tournamentId })
+        }
+        const priorContinuation = continuationRequest
+          ? getEliminationContinuation(categoryId, continuationRequest.parentFightId) : null
+        const canonicalFight = continuationRequest
+          ? ensureEliminationContinuation(categoryId, tournamentId, continuationRequest) : null
+        let synced = canonicalFight && !priorContinuation ? 1 : 0
+        for (const fight of pendingFights) {
+          if (continuationRequest && fight.id === continuationRequest.proposedFight.id) continue
+          if (fight.continuationParentFightId !== undefined
+            || fight.continuationStage !== undefined) {
+            const proof = typeof fight.continuationParentFightId === 'string'
+              ? getEliminationContinuation(categoryId, fight.continuationParentFightId) : null
+            if (!proof || proof.id !== fight.id || proof.stage !== fight.continuationStage
+              || proof.red_id !== fight.red_id || proof.blue_id !== fight.blue_id) {
+              throw new ContinuationConflict('La pelea de continuación no tiene prueba canónica.')
+            }
+          }
+          const inserted = insertFightIfNew({
+            id: fight.id, tournament_id: tournamentId, red_id: fight.red_id, blue_id: fight.blue_id,
+          })
+          if (inserted) synced++
+          else if (!isFightPending(fight.id, tournamentId)) {
+            throw new Error(`fight ${fight.id} already has a confirmed result`)
+          }
+        }
+        return { association, synced, canonicalFight }
+      })()
+      res.json({
+        ok: true,
+        synced,
+        tournamentId: association.tournamentId,
+        ...(canonicalFight ? { canonicalFight } : {}),
+        warning: association.legacyHistoryUnassigned
+          ? 'El historial anterior no tenía identidad de categoría fiable; se conservó sin reasignar.'
+          : undefined,
       })
     } catch (err) {
-      res.status(409).json({ error: err instanceof Error ? err.message : 'No se pudo asociar la categoría.' })
-      return
+      if (sendCategoryExecutionError(err, res)) return
+      res.status(409).json({
+        error: err instanceof ContinuationConflict ? 'continuation_conflict' : 'sync_failed',
+        message: err instanceof Error ? err.message : 'No se pudo sincronizar la categoría.',
+      })
     }
-    const tournamentId = association.tournamentId
-    const pendingFights = typedFights.filter((fight) => !fight.completed)
-    const pendingCompetitorIds = new Set(pendingFights.flatMap((fight) => [fight.red_id, fight.blue_id]))
-    let synced = 0
-    try {
-      for (const competitor of typedCompetitors) {
-        if (pendingCompetitorIds.has(competitor.id)) upsertCompetitor({ ...competitor, tournament_id: tournamentId })
-      }
-      for (const fight of pendingFights) {
-        if (insertFightIfNew({ id: fight.id, tournament_id: tournamentId, red_id: fight.red_id, blue_id: fight.blue_id })) synced++
-      }
-    } catch (err) {
-      res.status(409).json({ error: err instanceof Error ? err.message : 'No se pudo sincronizar la categoría.' })
-      return
-    }
-    res.json({
-      ok: true,
-      synced,
-      tournamentId,
-      warning: association.legacyHistoryUnassigned
-        ? 'El historial anterior no tenía identidad de categoría fiable; se conservó sin reasignar.'
-        : undefined,
-    })
   })
 
   // ── POST /api/ring/remove-fights ─────────────────────────────────────────

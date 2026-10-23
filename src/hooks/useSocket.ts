@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { io, type Socket } from "socket.io-client";
 import type { ServerState } from "@/lib/socket-types";
+import { z } from "zod";
+import { categoryDeletionReceiptSchema, categoryDeletionTombstoneSchema } from "@/lib/category-deletion-contract";
+import { useTournamentStore } from "@/store/tournament";
 
 const DEFAULT_STATE: ServerState = {
   rules: null,
@@ -28,11 +31,19 @@ export function useSocket() {
     socketRef.current = sock;
     setSocket(sock);
 
-    sock.on("connect", () => setConnected(true));
-    sock.on("disconnect", () => setConnected(false));
+    sock.on("connect", () => { setStateReady(false); setConnected(true); });
+    sock.on("disconnect", () => { setStateReady(false); setConnected(false); });
     sock.on("state:update", (data: ServerState) => {
+      const deletions = z.array(categoryDeletionTombstoneSchema).safeParse(data.categoryDeletions);
+      if (deletions.success) useTournamentStore.getState().applyCategoryDeletions(deletions.data);
       setState((prev) => ({ ...prev, ...data }));
       setStateReady(true);
+    });
+    sock.on("category:deleted", (payload: unknown) => {
+      const parsed = categoryDeletionReceiptSchema.safeParse(payload);
+      if (!parsed.success) return;
+      const { categoryId, requestId, deletedAt } = parsed.data;
+      useTournamentStore.getState().applyCategoryDeletions([{ categoryId, requestId, deletedAt }]);
     });
     sock.on("ring:config-updated", (data: { alias: string; name: string }) =>
       setState((prev) => ({ ...prev, ringAlias: data.alias, ringName: data.name }))

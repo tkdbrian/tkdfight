@@ -11,8 +11,8 @@
 
 📋 CONFIGURACIÓN INICIAL:
 ------------------------
-1. Abrir index.html
-2. Seleccionar número de competidores (3-8)
+1. Ejecutar ABRIR_TKD.bat y seleccionar el rol de esta computadora
+2. Abrir en el navegador la URL local que muestra el launcher
 3. Completar información de categoría:
    - Género (Masculino/Femenino/Mixto)
    - Rango de edad
@@ -49,12 +49,13 @@ Para 6-8 competidores:
 3. 🥇 La final se programa automáticamente
 4. 📋 Actualizar tabla de posiciones en tiempo real
 
-💾 RESPALDO DE DATOS:
+💾 DATOS Y RESPALDO:
 --------------------
-- ✅ Backup automático cada 30 segundos
-- 💾 Datos persistentes en el navegador
-- 📁 Exportar resultados al final del torneo
-- 🔄 Sistema de recuperación ante fallos
+- Los torneos se guardan localmente en la base de datos de esta computadora.
+- Para instalaciones, los datos están bajo %ProgramData%\TKD Fight.
+- En el ZIP portable, están dentro de sistema\data-*.
+- Para respaldar, cierra TKD Fight y copia la carpeta de datos a un medio seguro.
+- No mezcles las carpetas de datos de roles distintos.
 
 🚨 PROTOCOLO DE EMERGENCIA:
 --------------------------

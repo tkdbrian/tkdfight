@@ -24,9 +24,15 @@ import { cn } from "@/lib/utils";
 import { buildCategoryName, GUP_GRADE_OPTIONS, type GradeSystem } from "@/lib/category-name";
 import { availableCategoryFormats, defaultCategoryFormat, isCategoryFormatAllowed } from "@/lib/category-mode";
 import { ageSelectionFromPreset, formatCategoryAge, isTimePresetActive } from "@/lib/category-age";
+import { AGE_DIVISIONS, ageDivisionForRange, validateDanRange, yusanConfigPatch } from "@/lib/yusan-profile";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
-import { COPA_DANES_26, fetchPresets, getPresetForCategoryAge, getPresetForCategoryFormat, type TimePreset } from "@/lib/tournament-presets";
+import { fetchPresets, getPresetForCategoryFormat, type TimePreset } from "@/lib/tournament-presets";
+import { CategoryRestartButton } from "@/components/CategoryRestartButton";
+import { CategoryDeleteButton } from "@/components/CategoryDeleteButton";
+import { useCategoryInteractionBlocked } from "@/hooks/useCategoryInteractionBlocked";
+import { isCategoryInitialized } from "@/lib/category-lifecycle";
+import { useCategoryPrimaryAction } from "@/hooks/useCategoryPrimaryAction";
 
 const BASE = itfRules as RuleSetSparring;
 
@@ -417,11 +423,11 @@ function FixturePreview({ fights, mode, roundLabels }: Readonly<{
   );
 }
 
-const PESO_OPTIONS = ["Liviano A", "Liviano B", "Mediano A", "Mediano B", "Pesado A", "Pesado B"];
+const PESO_OPTIONS = ["Liviano A", "Liviano B", "Mediano A", "Mediano B", "Pesado A", "Pesado B", "Pesado C"];
 const GENERO_OPTIONS = ["Masculino", "Femenino", "Mixto"];
 
-type CatState = { weight: string; gradeSystem: GradeSystem; beltFrom: string; beltTo: string; gupBand: string; gender: string; ageFrom: string; ageTo: string; ageOpenEnded: boolean; ageMode: "preset" | "custom" };
-const EMPTY_CAT: CatState = { weight: "", gradeSystem: "DAN", beltFrom: "", beltTo: "", gupBand: "", gender: "", ageFrom: "", ageTo: "", ageOpenEnded: false, ageMode: "custom" };
+type CatState = { weight: string; gradeSystem: GradeSystem | ""; beltFrom: string; beltTo: string; gupBand: string; gender: string; ageFrom: string; ageTo: string; ageOpenEnded: boolean; ageMode: "preset" | "custom" };
+const EMPTY_CAT: CatState = { weight: "", gradeSystem: "", beltFrom: "", beltTo: "", gupBand: "", gender: "", ageFrom: "", ageTo: "", ageOpenEnded: false, ageMode: "custom" };
 function ChipGroup({ label, options, value, onChange }: Readonly<{
   label: string;
   options: string[];
@@ -437,6 +443,7 @@ function ChipGroup({ label, options, value, onChange }: Readonly<{
             key={opt}
             type="button"
             onClick={() => onChange(value === opt ? "" : opt)}
+            aria-pressed={value === opt}
             className={cn(
               "rounded-full border font-medium transition-all duration-150",
               value === opt
@@ -444,7 +451,7 @@ function ChipGroup({ label, options, value, onChange }: Readonly<{
                 : "px-3 py-1.5 text-xs border border-border/50 text-muted-foreground/60 hover:border-border hover:text-muted-foreground hover:bg-secondary",
             )}
           >
-            {opt}
+            {opt === "DAN" ? "DANES" : opt}
           </button>
         ))}
       </div>
@@ -457,6 +464,7 @@ export function SetupPage() {
     competitors,
     config,
     fights,
+    bracketMatches,
     phase,
     addCompetitor,
     removeCompetitor,
@@ -471,11 +479,13 @@ export function SetupPage() {
     setGroups,
     setupStarted,
     setSetupStarted,
+    startNewTournament,
   } = useTournamentStore(
     useShallow((s) => ({
       competitors: s.competitors,
       config: s.config,
       fights: s.fights,
+      bracketMatches: s.bracketMatches,
       phase: s.phase,
       addCompetitor: s.addCompetitor,
       removeCompetitor: s.removeCompetitor,
@@ -490,11 +500,36 @@ export function SetupPage() {
       setGroups: s.setGroups,
       setupStarted: s.setupStarted,
       setSetupStarted: s.setSetupStarted,
+      startNewTournament: s.startNewTournament,
     }))
   );
   const navigate = useNavigate();
-  const { socket } = useSocket();
+  const { socket, connected, stateReady, state: serverState, request } = useSocket();
+  const interactionBlocked = useCategoryInteractionBlocked();
+  const snapshot = { phase, config, competitors, fights, bracketMatches, setupStarted,
+    groups: useTournamentStore((state) => state.groups),
+    currentFightIndex: useTournamentStore((state) => state.currentFightIndex),
+    bracketSeeds: useTournamentStore((state) => state.bracketSeeds) };
+  const lifecycleContext = { snapshot, connected, stateReady, serverState: serverState ?? {} };
+  const primaryAction = useCategoryPrimaryAction(lifecycleContext, request);
+  const categoryIsActive = isCategoryInitialized(snapshot);
   const [cat, setCat] = useState<CatState>(EMPTY_CAT);
+  useEffect(() => {
+    const age = AGE_DIVISIONS.find((division) => division.id === config.ageDivision);
+    setCat({
+      ...EMPTY_CAT,
+      weight: config.weightLabel ?? "",
+      gradeSystem: config.gradeSystem ?? "",
+      beltFrom: config.danFrom === undefined ? "" : String(config.danFrom),
+      beltTo: config.danTo === undefined ? "" : String(config.danTo),
+      gupBand: config.gupBand ?? "",
+      gender: config.sexDivision ?? "",
+      ageFrom: config.categoryAgeFrom ?? (age ? String(age.from) : ""),
+      ageTo: config.categoryAgeTo ?? (age?.to === undefined ? "" : String(age.to)),
+      ageOpenEnded: config.categoryAgeOpenEnded ?? (!!age && age.to === undefined),
+      ageMode: age ? "preset" : "custom",
+    });
+  }, [config.id]);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
   useEffect(() => {
     if (config.matchType === "tul" && !isCategoryFormatAllowed("tul", config.mode as "round-robin" | "elimination")) {
@@ -503,10 +538,6 @@ export function SetupPage() {
   }, [config.matchType, config.mode, setConfig]);
   const showWelcome = competitors.length === 0 && !setupStarted && !welcomeDismissed;
 
-  // Confirmación de 2 pasos para no borrar categoría activa por accidente
-  // 0 = normal, 1 = primer aviso, 2 = segundo aviso (último paso antes de ejecutar)
-  const [confirmStart, setConfirmStart] = useState(0);
-  const categoryIsActive = phase === "fighting" && fights.length > 0;
 
   const [draftTournamentName, setDraftTournamentName] = useState(config.tournamentName ?? "");
   const [draftAlias, setDraftAlias] = useState("");
@@ -525,7 +556,7 @@ export function SetupPage() {
   // Cuando Mesa Central reasigna peleas a este tatami, navegar automáticamente a /fight.
   useEffect(() => {
     if (!socket) return;
-    function onFightsImported(payload: { categoryId?: string | null; fights: Array<{ id: string; red: { id: string; name: string }; blue: { id: string; name: string }; completed: boolean; groupId?: string }>; sourceRingLabel?: string | null }) {
+    async function onFightsImported(payload: { categoryId?: string | null; fights: Array<{ id: string; red: { id: string; name: string }; blue: { id: string; name: string }; completed: boolean; groupId?: string }>; sourceRingLabel?: string | null }) {
       if (payload.categoryId !== config.id) return;
       addImportedFights(
         payload.fights.map((f) => ({
@@ -541,7 +572,20 @@ export function SetupPage() {
         `📥 ${payload.fights.length} pelea${payload.fights.length !== 1 ? "s" : ""} reasignadas desde ${payload.sourceRingLabel ?? "Mesa Central"}`,
         { description: "Redirigiendo a página de combate...", duration: 5000 }
       );
-      navigate("/fight");
+      try {
+        const response = await fetch("/api/ring/status");
+        if (!response.ok) throw new Error("No se pudo verificar el tatami.");
+        const status = await response.json() as {
+          activeMatchLock?: { categoryId: string | null } | null;
+        };
+        if (status.activeMatchLock && status.activeMatchLock.categoryId !== config.id) {
+          navigate(config.mode === "elimination" ? "/bracket" : "/standings");
+          return;
+        }
+        navigate("/fight");
+      } catch {
+        navigate(config.mode === "elimination" ? "/bracket" : "/standings");
+      }
     }
     socket.on("fights:imported", onFightsImported);
     return () => { socket.off("fights:imported", onFightsImported); };
@@ -575,7 +619,29 @@ export function SetupPage() {
   function updateCat(patch: Partial<CatState>) {
     const next = { ...cat, ...patch };
     setCat(next);
-    setConfig({ categoryName: buildCategoryName(next) });
+    const dimensions = {
+      weightLabel: next.weight || undefined,
+      ageDivision: ageDivisionForRange(next.ageFrom, next.ageTo, next.ageOpenEnded),
+      categoryAgeFrom: next.ageFrom || undefined,
+      categoryAgeTo: next.ageTo || undefined,
+      categoryAgeOpenEnded: next.ageOpenEnded,
+      sexDivision: GENERO_OPTIONS.includes(next.gender)
+        ? next.gender as "Masculino" | "Femenino" | "Mixto" : undefined,
+      gradeSystem: next.gradeSystem || undefined,
+      gupBand: next.gradeSystem === "GUPS" ? next.gupBand : undefined,
+      danFrom: next.gradeSystem === "DAN" && /^\d+$/.test(next.beltFrom)
+        ? Number(next.beltFrom) : undefined,
+      danTo: next.gradeSystem === "DAN" && /^\d+$/.test(next.beltTo)
+        ? Number(next.beltTo) : undefined,
+    };
+    const profilePatch = config.profileId === "yusan-2026" && config.profileApplied
+      ? yusanConfigPatch(config, dimensions, config.mode, BASE) : null;
+    const generatedName = !config.categoryName.trim() || config.nameGenerated === true;
+    setConfig({
+      ...dimensions,
+      ...profilePatch,
+      ...(generatedName ? { categoryName: buildCategoryName(next), nameGenerated: true } : {}),
+    });
   }
 
   const DEMO_COMPETITORS = [
@@ -591,7 +657,7 @@ export function SetupPage() {
 
   function loadDemo() {
     setWelcomeDismissed(true);
-    updateCat({ weight: "Mediano A", beltFrom: "1", beltTo: "3", gender: "M" });
+    updateCat({ weight: "Mediano A", gradeSystem: "DAN", beltFrom: "1", beltTo: "3", gender: "Masculino" });
     DEMO_COMPETITORS.forEach((c) => { addCompetitor(c); });
   }
 
@@ -607,9 +673,7 @@ export function SetupPage() {
         // non-critical
       }
     }
-    if (draftTournamentName.trim()) {
-      setConfig({ tournamentName: draftTournamentName.trim() });
-    }
+    startNewTournament(draftTournamentName.trim());
     setSetupStarted(true);
     setWelcomeDismissed(true);
   }
@@ -650,6 +714,7 @@ export function SetupPage() {
       mode: format,
       ruleSet: updated,
       judgesCount: updated.judgesCount,
+      profileApplied: false,
     };
     // Round Robin preset changes only its single round; final and tie settings remain untouched.
     // Saved server presets remain custom, time-only presets and can still be applied as-is.
@@ -756,7 +821,7 @@ export function SetupPage() {
     for (const name of cat.competitors) {
       addCompetitor({ name });
     }
-    setConfig({ categoryName: cat.name });
+    setConfig({ categoryName: cat.name, nameGenerated: false });
     toast.success(`${cat.competitors.length} competidores cargados \u2014 ${cat.name}`);
   }
 
@@ -794,54 +859,49 @@ export function SetupPage() {
     setDialogOpen(false);
   }
 
-  async function handleStart() {
+  async function handleStart(): Promise<void> {
+    if (primaryAction.kind !== "start" || primaryAction.disabled || interactionBlocked) return;
+    let lock: { categoryId: string | null } | null;
+    try {
+      const response = await fetch("/api/ring/status");
+      if (!response.ok) throw new Error("No se pudo verificar el tatami.");
+      const status = await response.json() as { activeMatchLock?: { categoryId: string | null } | null };
+      lock = status.activeMatchLock ?? null;
+    } catch {
+      toast.warning("Sin respuesta del servidor. Podés editar esta categoría, pero no iniciarla todavía.");
+      return;
+    }
+    const preparingOtherCategory = Boolean(lock);
     if (config.mode === "elimination") {
       const { matches, seeds } = generateEliminationBracket(competitors);
-      setBracket(matches, seeds);
-      setFights([]);
-      setGroups([]);
+      setBracket(matches, seeds); setFights([]); setGroups([]);
     } else {
-      const { groups, fights } = generateGroupsTournament(competitors);
-      setGroups(groups);
-      setFights(fights);
-      // Populate server queue so Mesa Central can see and reassign fights
-      try {
-        await fetch("/api/ring/import-fights", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            competitors: competitors.map((c) => ({
-              id: c.id,
-              name: c.name,
-              team: c.team,
-              weight: c.weight,
-            })),
-            fights: fights.map((f) => ({
-              id: f.id,
-              red_id: f.red.id,
-              blue_id: f.blue.id,
-              group_id: f.groupId,
-            })),
-            categoryId: config.id,
-            categoryName: config.categoryName,
-            tournamentName: config.tournamentName,
-            newCategory: true,
-          }),
-        });
-      } catch {
-        // Non-critical — Mesa Central queue won't show but fighting still works
+      const generated = generateGroupsTournament(competitors);
+      if (!preparingOtherCategory) {
+        try {
+          const response = await fetch("/api/ring/sync-fights", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ competitors, fights: generated.fights.map((fight) => ({
+              id: fight.id, red_id: fight.red.id, blue_id: fight.blue.id, group_id: fight.groupId,
+            })), categoryId: config.id, categoryName: config.categoryName, tournamentName: config.tournamentName }),
+          });
+          if (!response.ok) throw new Error("El servidor rechazó la preparación de peleas.");
+        } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo sincronizar."); return; }
       }
+      setGroups(generated.groups); setFights(generated.fights);
     }
     setPhase("fighting");
-    navigate(config.mode === "elimination" ? "/bracket" : "/fight");
+    navigate(config.mode === "elimination" ? "/bracket" : "/standings");
   }
-
-  const previewFights = computePreview(competitors, config.mode);
+  const previewFights: PreviewFight[] = categoryIsActive
+    ? config.mode === "elimination"
+      ? bracketMatches.map((match, index) => ({ id: match.id, n: index + 1,
+          red: match.red.competitor?.name ?? "Por definir", blue: match.blue.competitor?.name ?? "Por definir", round: match.round }))
+      : fights.map((fight, index) => ({ id: fight.id, n: index + 1, red: fight.red.name,
+          blue: fight.blue.name, round: 0, group: fight.groupId ?? "G1" }))
+    : computePreview(competitors, config.mode);
   const roundLabels = buildRoundLabels(previewFights);
   const groupDist = config.mode === "round-robin" ? getGroupDistribution(competitors.length) : undefined;
-  const canStart = config.mode === "elimination"
-    ? competitors.length >= 2 && config.categoryName.trim() !== ""
-    : competitors.length >= 3 && competitors.length <= 12 && config.categoryName.trim() !== "";
 
   if (showWelcome) {
     return (
@@ -856,6 +916,9 @@ export function SetupPage() {
             Sistema de scoring para torneos de Taekwondo ITF.<br />
             Gratis, sin registro y funciona sin internet.
           </p>
+          <a href="/maintenance" className="inline-block text-sm text-blue-400 underline">
+            Respaldo completo
+          </a>
         </div>
 
         <Card className="w-full max-w-2xl text-left">
@@ -933,17 +996,13 @@ export function SetupPage() {
     );
   }
 
-  let canStartHint = "Seleccioná la categoría primero";
-  if (config.categoryName) {
-    canStartHint = config.mode === "round-robin" && competitors.length < 3
-      ? "Mínimo 3 competidores"
-      : "Mínimo 2 competidores";
-  }
-
   return (
     <div className="flex-1 overflow-auto p-4 space-y-4">
       {/* ── HEADER ─────────────────────────────────────────────── */}
       <div className="space-y-2">
+        <a href="/maintenance" className="inline-block text-sm text-blue-400 underline">
+          Respaldo completo
+        </a>
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0">
             {config.tournamentName && (
@@ -980,78 +1039,27 @@ export function SetupPage() {
             </div>
           </div>
           <div className="flex flex-col items-end gap-1.5 shrink-0">
-            {/* Paso 0: botón normal */}
-            {confirmStart === 0 && (
-              <Button
-                id="tour-start-btn"
-                onClick={() => {
-                  if (categoryIsActive) {
-                    setConfirmStart(1);
-                  } else {
-                    void handleStart();
+            <Button id="tour-start-btn" data-testid="category-primary-action"
+              disabled={primaryAction.disabled || interactionBlocked} size="xl"
+              onClick={() => {
+                if (primaryAction.route) {
+                  if (primaryAction.fightId) {
+                    const index = fights.findIndex((fight) => fight.id === primaryAction.fightId);
+                    if (index >= 0) useTournamentStore.getState().setCurrentFightIndex(index);
                   }
-                }}
-                disabled={!canStart}
-                size="xl"
-                className={cn(
-                  "transition-all",
-                  canStart
-                    ? "bg-green-600 hover:bg-green-500 text-white border-green-600 shadow-lg shadow-green-900/40 ring-2 ring-green-600/25"
-                    : "",
-                )}
-              >
-                <Swords className="size-5" />
-                Iniciar Categoría
-              </Button>
-            )}
-
-            {/* Paso 1: primer aviso */}
-            {confirmStart === 1 && (
-              <div className="rounded-xl border border-amber-600/60 bg-amber-950/40 px-4 py-3 space-y-3 max-w-xs text-right">
-                <div className="flex items-start gap-2 text-left">
-                  <span className="text-amber-400 text-xl leading-none mt-0.5">⚠</span>
-                  <div className="space-y-1">
-                    <p className="text-sm font-bold text-amber-300">Hay una categoría activa</p>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Se borrarán todas las peleas y resultados de <span className="font-semibold text-foreground">{config.categoryName || "la categoría actual"}</span>. Esta acción no se puede deshacer.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex gap-2 justify-end">
-                  <Button size="sm" variant="outline" onClick={() => setConfirmStart(0)}>
-                    Cancelar
-                  </Button>
-                  <Button size="sm" variant="destructive" onClick={() => setConfirmStart(2)}>
-                    Continuar igual
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {/* Paso 2: confirmación final */}
-            {confirmStart === 2 && (
-              <div className="rounded-xl border border-destructive/70 bg-destructive/15 px-4 py-3 space-y-3 max-w-xs text-right">
-                <div className="flex items-start gap-2 text-left">
-                  <span className="text-destructive text-xl leading-none mt-0.5">🗑</span>
-                  <div className="space-y-1">
-                    <p className="text-sm font-bold text-destructive">¿Confirmar borrado?</p>
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Última oportunidad. Los <span className="font-semibold text-foreground">{fights.filter(f => f.completed).length} resultado{fights.filter(f => f.completed).length !== 1 ? "s" : ""}</span> cargados se perderán para siempre.
-                    </p>
-                  </div>
-                </div>
-                <div className="flex gap-2 justify-end">
-                  <Button size="sm" variant="outline" onClick={() => setConfirmStart(0)}>
-                    Cancelar
-                  </Button>
-                  <Button size="sm" variant="destructive" className="font-bold" onClick={() => { setConfirmStart(0); void handleStart(); }}>
-                    Sí, borrar y empezar
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            {canStart && confirmStart === 0 ? null : (!canStart && confirmStart === 0 ? <p className="text-xs text-muted-foreground/60">{canStartHint}</p> : null)}
+                  navigate(primaryAction.route, primaryAction.route === "/fight" && primaryAction.fightId
+                    ? { state: { kind: "category-continue", categoryId: config.id, fightId: primaryAction.fightId } }
+                    : undefined);
+                } else { void handleStart(); }
+              }}>
+              <Swords className="size-5" />{primaryAction.label}
+            </Button>
+            {primaryAction.reason && <p className="text-xs text-muted-foreground">{primaryAction.reason}</p>}
+            {categoryIsActive && <Button variant="outline" size="sm" onClick={() => navigate(config.mode === "elimination" ? "/bracket" : "/standings")}>
+              {config.mode === "elimination" ? "Ver llave" : "Ver clasificación"}
+            </Button>}
+            {categoryIsActive && <CategoryRestartButton {...lifecycleContext} />}
+            <CategoryDeleteButton {...lifecycleContext} />
           </div>
         </div>
 
@@ -1063,7 +1071,7 @@ export function SetupPage() {
             <div className="space-y-2">
               <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">⚡ Preset</span>
               <div className="flex gap-2 flex-wrap">
-                {[...COPA_DANES_26, ...serverPresets].map((p) => (
+                {serverPresets.map((p) => (
                   <button
                     key={p.id ?? p.name}
                     type="button"
@@ -1080,6 +1088,25 @@ export function SetupPage() {
                 ))}
               </div>
             </div>
+            {config.profileId === "yusan-2026" && (
+              <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2">
+                <p className="text-sm font-semibold">Perfil Yusan 2026 {config.profileApplied ? "activo" : "seleccionado"}</p>
+                {!config.profileApplied && (
+                  <Button type="button" size="sm" variant="outline" onClick={() => {
+                    const patch = yusanConfigPatch(config, config, config.mode, BASE);
+                    if (!patch) { toast.error("Elegí una edad y un sistema de grado antes de aplicar Yusan 2026."); return; }
+                    setConfig(patch);
+                  }}>Aplicar Yusan 2026 a esta categoría</Button>
+                )}
+              </div>
+            )}
+            {!config.profileId && (
+              <Button type="button" size="sm" variant="outline" onClick={() => setConfig({
+                eventId: config.eventId ?? crypto.randomUUID(),
+                profileId: "yusan-2026",
+                profileApplied: false,
+              })}>Seleccionar perfil Yusan 2026 para este torneo</Button>
+            )}
 
             {/* Resumen de la config activa */}
             <p className="text-xs text-muted-foreground/70 leading-relaxed">
@@ -1090,23 +1117,59 @@ export function SetupPage() {
               {_gp ? " · Golden Point" : ""}
             </p>
 
-            <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
-            <div className="flex flex-wrap gap-4 items-end">
-              <div className="space-y-3 min-w-[16rem]">
+            <div className="space-y-5">
+              <div className="space-y-2">
+                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Edad</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {AGE_DIVISIONS.map((age) => (
+                    <button key={age.id} type="button" aria-pressed={ageDivisionForRange(cat.ageFrom, cat.ageTo, cat.ageOpenEnded) === age.id} className={cn(
+                      "rounded-full border px-2.5 py-1 text-xs",
+                      ageDivisionForRange(cat.ageFrom, cat.ageTo, cat.ageOpenEnded) === age.id
+                        ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground",
+                    )} onClick={() => updateCat({ ageFrom: String(age.from), ageTo: age.to === undefined ? "" : String(age.to), ageOpenEnded: age.to === undefined, ageMode: "preset" })}>
+                      {age.label} ({age.from}{age.to === undefined ? "+" : `-${age.to}`})
+                    </button>
+                  ))}
+                </div>
+                {cat.ageMode === "preset" ? (
+                  <div className="flex h-9 items-center gap-2">
+                    <span className="text-sm font-medium">{formatCategoryAge(cat)}</span>
+                    <button type="button" className="text-xs text-primary underline-offset-4 hover:underline" onClick={() => updateCat({ ageMode: "custom" })}>Personalizada</button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <Input type="number" aria-label="Edad desde" placeholder="Desde" value={cat.ageFrom} onChange={(e) => updateCat({ ageFrom: e.target.value, ageOpenEnded: false })} className="w-24 h-9 text-sm" />
+                    <span className="text-xs text-muted-foreground/50">?</span>
+                    <Input type="number" aria-label="Edad hasta" placeholder="Hasta" value={cat.ageTo} onChange={(e) => updateCat({ ageTo: e.target.value, ageOpenEnded: false })} className="w-24 h-9 text-sm" />
+                  </div>
+                )}
+              </div>
+              <div className="space-y-3">
                 <ChipGroup
                   label="Sistema de grado"
-                  options={["DAN", "GUPS"]}
+                  options={["GUPS", "DAN"]}
                   value={cat.gradeSystem}
                   onChange={(value) => {
                     if (value === "DAN" || value === "GUPS") updateCat({ gradeSystem: value });
                   }}
                 />
-                {cat.gradeSystem === "DAN" ? (
+                {cat.gradeSystem === "GUPS" && (
+                  <ChipGroup
+                    label="Rango GUP"
+                    options={[...GUP_GRADE_OPTIONS]}
+                    value={cat.gupBand}
+                    onChange={(value) => updateCat({ gupBand: value })}
+                  />
+                )}
+                {cat.gradeSystem === "DAN" && (
                   <div className="space-y-2">
                     <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Grado (Dan)</span>
                     <div className="flex items-center gap-1.5">
                       <Input
                         type="number"
+                        aria-label="Grado Dan desde"
+                        min="1"
+                        step="1"
                         placeholder="Desde"
                         value={cat.beltFrom}
                         onChange={(e) => updateCat({ beltFrom: e.target.value })}
@@ -1115,38 +1178,34 @@ export function SetupPage() {
                       <span className="text-xs text-muted-foreground/50">—</span>
                       <Input
                         type="number"
+                        aria-label="Grado Dan hasta"
+                        min="1"
+                        step="1"
                         placeholder="Hasta"
                         value={cat.beltTo}
                         onChange={(e) => updateCat({ beltTo: e.target.value })}
                         className="w-24 h-9 text-sm"
                       />
                     </div>
+                    {cat.beltFrom || cat.beltTo ? (
+                      <p className="text-xs text-destructive">{validateDanRange(cat.beltFrom, cat.beltTo)}</p>
+                    ) : null}
                   </div>
-                ) : (
-                  <ChipGroup
-                    label="Rango GUP"
-                    options={[...GUP_GRADE_OPTIONS]}
-                    value={cat.gupBand}
-                    onChange={(value) => updateCat({ gupBand: value })}
-                  />
                 )}
               </div>
               <ChipGroup label="Género" options={GENERO_OPTIONS} value={cat.gender} onChange={(v) => updateCat({ gender: v })} />
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Edad</span>
-                {cat.ageMode === "preset" ? (
-                  <div className="flex h-9 items-center gap-2">
-                    <span className="text-sm font-medium">{formatCategoryAge(cat)}</span>
-                    <button type="button" className="text-xs text-primary underline-offset-4 hover:underline" onClick={() => updateCat({ ageMode: "custom" })}>Personalizada</button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <Input type="number" placeholder="Desde" value={cat.ageFrom} onChange={(e) => updateCat({ ageFrom: e.target.value, ageOpenEnded: false })} className="w-24 h-9 text-sm" />
-                    <span className="text-xs text-muted-foreground/50">?</span>
-                    <Input type="number" placeholder="Hasta" value={cat.ageTo} onChange={(e) => updateCat({ ageTo: e.target.value, ageOpenEnded: false })} className="w-24 h-9 text-sm" />
-                  </div>
-                )}
-              </div>
+              <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
+              {!config.nameGenerated && !!config.categoryName.trim() && (
+                <div className="rounded-lg border border-border/60 p-2 space-y-2">
+                  <p className="text-xs text-muted-foreground">
+                    El nombre original se conserva aunque edites los datos estructurados.
+                  </p>
+                  <Button type="button" size="sm" variant="outline" onClick={() => setConfig({
+                    categoryName: buildCategoryName(cat),
+                    nameGenerated: true,
+                  })}>Reemplazar nombre con los datos seleccionados</Button>
+                </div>
+              )}
               <div className="space-y-2">
                 <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Disciplina</span>
                 <div className="flex gap-2">
@@ -1154,11 +1213,13 @@ export function SetupPage() {
                     <button
                       key={t}
                       type="button"
+                      aria-pressed={(config.matchType ?? "sparring") === t}
                       onClick={() => {
-                        const updates: Partial<typeof config> = { matchType: t };
                         // Defaults por disciplina: tul → eliminación; sparring → round-robin
-                        updates.mode = defaultCategoryFormat(t);
-                        setConfig(updates);
+                        const mode = defaultCategoryFormat(t);
+                        const timing = config.profileId === "yusan-2026" && config.profileApplied
+                          ? yusanConfigPatch(config, config, mode, BASE) : null;
+                        setConfig({ ...(timing ?? {}), matchType: t, mode });
                       }}
                       className={cn(
                         "rounded-full border font-medium transition-all duration-150",
@@ -1179,8 +1240,14 @@ export function SetupPage() {
                     <button
                       key={m}
                       type="button"
+                      aria-pressed={config.mode === m}
                       onClick={() => {
                         if (!isCategoryFormatAllowed(config.matchType ?? "sparring", m)) return;
+                        if (config.profileId === "yusan-2026" && config.profileApplied) {
+                          const patch = yusanConfigPatch(config, config, m, BASE);
+                          setConfig(patch ?? { mode: m });
+                          return;
+                        }
                         if (m === "round-robin") {
                           const rules = config.ruleSet?.mode === "sparring"
                             ? (config.ruleSet as RuleSetSparring)
@@ -1201,9 +1268,7 @@ export function SetupPage() {
                           });
                           return;
                         }
-                        const agePreset = getPresetForCategoryAge(cat.ageFrom);
-                        if (agePreset) applyPreset(agePreset, m);
-                        else setConfig({ mode: m });
+                        setConfig({ mode: m });
                       }}
                       className={cn(
                         "rounded-full border font-medium transition-all duration-150",
@@ -1372,7 +1437,7 @@ export function SetupPage() {
         <Card>
           <CardHeader className="pb-2 pt-4 px-4">
             <CardTitle className="text-sm flex items-center gap-2">
-              {config.mode === "elimination" ? "Llave (preview)" : "Fixture (preview)"}
+              {categoryIsActive ? (config.mode === "elimination" ? "Llave guardada" : "Fixture guardado") : (config.mode === "elimination" ? "Llave (preview)" : "Fixture (preview)")}
               {previewFights.length > 0 && (
                 <Badge variant="secondary">{previewFights.length} combates</Badge>
               )}
@@ -1389,6 +1454,7 @@ export function SetupPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4">
+            {categoryIsActive && <p className="text-xs text-muted-foreground">{fights.filter((fight) => fight.completed).length} de {fights.length} combates completados</p>}
             <FixturePreview
               fights={previewFights}
               mode={config.mode}
@@ -1484,3 +1550,4 @@ export function SetupPage() {
     </div>
   );
 }
+

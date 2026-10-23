@@ -11,6 +11,9 @@ export type MatchInfo = {
   ringId: string
   category?: string
   matchMode?: 'sparring' | 'patterns' | 'tul'
+  goldenPoint?: boolean
+  /** RR regular: table chief must record one flag from every configured judge. */
+  requireIndividualFlags?: boolean
   red: { id: string; name: string; club?: string }
   blue: { id: string; name: string; club?: string }
 }

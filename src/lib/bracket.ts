@@ -1,4 +1,9 @@
-import type { CompetitorEntry, FightEntry, BracketMatch, TournamentGroup } from "@/store/tournament";
+import type {
+  CategoryRestartCompetitor as CompetitorEntry,
+  CategoryRestartFight as FightEntry,
+  CategoryRestartBracketMatch as BracketMatch,
+  CategoryRestartGroup as TournamentGroup,
+} from "./category-restart-contract";
 
 // ── Group distribution ─────────────────────────────────────────────────────
 // Fixed table: n competitors → array of group sizes (3-12)
@@ -108,6 +113,7 @@ export function generateTiebreakFights(
       completed: false,
       groupId,
       isTiebreakExtra: true,
+      playoffKind: "direct",
     }];
   }
 
@@ -130,6 +136,7 @@ export function generateTiebreakFights(
     completed: false,
     groupId,
     isTiebreakExtra: true,
+    playoffKind: "mini",
   }));
 }
 
@@ -150,6 +157,7 @@ export function generateFinalFights(winners: CompetitorEntry[]): FightEntry[] {
       completed: false,
       groupId: "FINAL",
       isFinalFight: true,
+      playoffKind: "direct",
     }];
   }
 
@@ -172,6 +180,7 @@ export function generateFinalFights(winners: CompetitorEntry[]): FightEntry[] {
     completed: false,
     groupId: "FINAL",
     isFinalFight: true,
+    playoffKind: "mini",
   }));
 }
 
@@ -405,7 +414,15 @@ export function getActiveBracketFights(
       bracketRound: m.round,
       bracketPosition: m.position,
       bracketMatchId: m.id,
+      isFinalFight: isSingleBracketFinal(matches, m),
     }));
+}
+
+/** In a double bracket, the side finals are not the A-versus-B tournament final. */
+export function isSingleBracketFinal(matches: BracketMatch[], match: BracketMatch): boolean {
+  return !matches.some((candidate) => candidate.bracketGroup === "A" || candidate.bracketGroup === "B")
+    && match.round === Math.max(...matches.map((candidate) => candidate.round))
+    && matches.filter((candidate) => candidate.round === match.round).length === 1;
 }
 
 /**

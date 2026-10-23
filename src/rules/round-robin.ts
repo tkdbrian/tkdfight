@@ -48,10 +48,13 @@ export type SupportedGroupSize = (typeof SUPPORTED_GROUP_SIZES)[number];
 export const TIEBREAK_DETECTS_ONLY_FIRST_PLACE = true;
 
 /**
- * Formato: mini round-robin entre los empatados (isTiebreakExtra = true).
- * Mismas reglas de puntuación que las peleas regulares.
+ * Dos líderes: pelea extra directa; si empata, otro combate cronometrado;
+ * si vuelve a empatar, Punto de Oro sin reloj.
+ * Tres o más líderes: mini round-robin entre los empatados; repetir una
+ * vuelta completa si siguen igualados. Si quedan dos, aplicar la secuencia
+ * directa anterior.
  */
-export const TIEBREAK_FORMAT = "mini-round-robin" as const;
+export const TIEBREAK_FORMAT = "direct-or-mini-round-robin" as const;
 
 /**
  * REGLA CRÍTICA — cómo cuentan las peleas de desempate en estadísticas:
@@ -78,13 +81,14 @@ export const TIEBREAK_STATS_RULE = {
 
 /**
  * CUÁNDO se activa:
- * Cuando una pelea de desempate termina en EMPATE y el desempate sigue sin
- * resolverse. La siguiente pelea del mismo par → isGoldenPointFight = true.
+ * Cuando la pelea extra directa Y su siguiente desempate cronometrado
+ * terminan empatados. En una final entre dos llaves, la final normal ocupa
+ * el lugar de la primera pelea extra. La siguiente pelea → isGoldenPointFight.
  *
  * En FightPage: el primer punto anotado termina la pelea (no se espera el tiempo).
  * Las peleas GP heredan las mismas reglas estadísticas que el desempate.
  */
-export const GOLDEN_POINT_TRIGGER = "tiebreak-ends-in-draw" as const;
+export const GOLDEN_POINT_TRIGGER = "timed-rematch-ends-in-draw" as const;
 export const GOLDEN_POINT_STATS_RULE = TIEBREAK_STATS_RULE;
 
 // ── Orden de criterios para resolver empatados ─────────────────────────────

@@ -21,6 +21,96 @@ async function loadIsolatedDatabase() {
   return import("./index");
 }
 
+describe("durable active tournament selection", () => {
+  it("adds revision zero to an old database without changing pending or confirmed results", async () => {
+    let database = await loadIsolatedDatabase();
+    const category = database.resolveCategoryTournament({ categoryId: "legacy-cas", tournamentName: "Old", categoryName: "Old" });
+    database.upsertCompetitor({ id: "legacy-r", tournament_id: category.tournamentId, name: "Red" });
+    database.upsertCompetitor({ id: "legacy-b", tournament_id: category.tournamentId, name: "Blue" });
+    for (const id of ["old-pending", "old-confirmed"]) {
+      database.insertFightIfNew({ id, tournament_id: category.tournamentId, red_id: "legacy-r", blue_id: "legacy-b" });
+      const input = { fightId: id, categoryId: "legacy-cas", tournamentId: category.tournamentId,
+        winner: "red" as const, reason: "points", flagsRed: 4, flagsBlue: 0,
+        warningsRed: 2, warningsBlue: 0, foulsRed: 0, foulsBlue: 0 };
+      database.savePendingMatchResult(input);
+      if (id === "old-confirmed") database.confirmMatchResult(input);
+    }
+    database.default.exec("ALTER TABLE fights DROP COLUMN result_revision");
+    const before = database.default.prepare("SELECT * FROM match_results ORDER BY fight_id").all();
+    database.default.close();
+    vi.resetModules();
+    database = await import("./index");
+    expect(database.default.prepare("SELECT * FROM match_results ORDER BY fight_id").all()).toEqual(before);
+    expect(database.getMatchResult("legacy-cas", "old-pending"))
+      .toMatchObject({ status: "pending_confirmation", flagsRed: 4, warningsRed: 2, revision: 0 });
+    expect(database.getMatchResult("legacy-cas", "old-confirmed"))
+      .toMatchObject({ status: "confirmed", flagsRed: 4, warningsRed: 2, revision: 0 });
+    expect(database.default.prepare("SELECT result_revision FROM fights").all())
+      .toEqual([{ result_revision: 0 }, { result_revision: 0 }]);
+    database.default.close();
+  });
+
+  it("restores an explicitly selected older category after a restart", async () => {
+    let database = await loadIsolatedDatabase();
+    const selected = database.createTournament("Active", "A");
+    const latest = database.createTournament("Newer", "B");
+    database.setSelectedTournamentId(selected);
+    database.default.close();
+
+    vi.resetModules();
+    database = await import("./index");
+    expect(database.getStartupTournamentId()).toBe(selected);
+    expect(database.getLatestTournament()?.id).toBe(latest);
+    database.default.close();
+  });
+
+  it("gives a durable active-match lock priority over a different selection", async () => {
+    let database = await loadIsolatedDatabase();
+    const locked = database.createTournament("Locked", "A");
+    const selected = database.createTournament("Selected", "B");
+    database.setSelectedTournamentId(selected);
+    database.saveMatchSnapshot("fight-a", locked, { match: {}, rules: {}, roundFlags: [] }, "category-a");
+    database.default.close();
+
+    vi.resetModules();
+    database = await import("./index");
+    expect(database.getStartupTournamentId()).toBe(locked);
+    database.default.close();
+  });
+
+  it("falls back for old data and clears a deleted selection", async () => {
+    const database = await loadIsolatedDatabase();
+    const previous = database.createTournament("Previous", "A");
+    const latest = database.createTournament("Latest", "B");
+    expect(database.getStartupTournamentId()).toBe(latest);
+    database.setSelectedTournamentId(previous);
+    database.default.prepare("DELETE FROM tournaments WHERE id = ?").run(previous);
+    expect(database.getSelectedTournamentId()).toBeNull();
+    expect(database.getStartupTournamentId()).toBe(latest);
+    database.default.close();
+  });
+
+  it("keeps independent DATA_DIR selections", async () => {
+    let first = await loadIsolatedDatabase();
+    const firstDirectory = process.env.DATA_DIR;
+    const firstId = first.createTournament("First", "A");
+    first.setSelectedTournamentId(firstId);
+    first.default.close();
+
+    const second = await loadIsolatedDatabase();
+    expect(second.getSelectedTournamentId()).toBeNull();
+    const secondId = second.createTournament("Second", "B");
+    second.setSelectedTournamentId(secondId);
+    second.default.close();
+
+    vi.stubEnv("DATA_DIR", firstDirectory);
+    vi.resetModules();
+    first = await import("./index");
+    expect(first.getSelectedTournamentId()).toBe(firstId);
+    first.default.close();
+  });
+});
+
 describe("category tournament association", () => {
   it("keeps legacy history unassigned and isolates repeated A/B registration", async () => {
     const database = await loadIsolatedDatabase();

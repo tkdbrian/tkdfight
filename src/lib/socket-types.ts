@@ -1,4 +1,5 @@
 import type { MatchState, RuleSetSparring } from "@/engine/types";
+import type { CategoryDeletionTombstone } from "@/lib/category-deletion-contract";
 
 export interface MatchInfo {
   id: string;
@@ -6,6 +7,7 @@ export interface MatchInfo {
   ringId: string;
   category?: string;
   matchMode?: 'sparring' | 'patterns' | 'tul';
+  goldenPoint?: boolean;
   red: { id: string; name: string; club?: string };
   blue: { id: string; name: string; club?: string };
 }
@@ -41,6 +43,7 @@ export interface RoundFlagResult {
 }
 
 export interface ServerState {
+  categoryDeletions?: CategoryDeletionTombstone[];
   rules: RuleSetSparring | null;
   match: MatchInfo | null;
   categoryId?: string | null;
@@ -52,6 +55,7 @@ export interface ServerState {
     resultStatus: string | null;
   } | null;
   resultConfirmed?: boolean;
+  resultRevision?: number;
   legacyMatchAssociationWarning?: string | null;
   matchState: MatchState | null;
   matchPaused: boolean;

@@ -1,4 +1,4 @@
-﻿import express, { type NextFunction, type Request, type Response } from 'express'
+import express, { type NextFunction, type Request, type Response } from 'express'
 import helmet from 'helmet'
 import rateLimit from 'express-rate-limit'
 import { createServer } from 'node:http'
@@ -13,22 +13,32 @@ import {
   createTournament,
   getActiveMatchLock,
   getCategoryTournamentId,
-  getLatestTournament,
+  getStartupTournamentId,
+  getRetiredIdleTournamentId,
   getMatchResult,
   isFightPending,
   loadMatchSnapshot,
+  setSelectedTournamentId,
 } from './db/index.js'
 import { state } from './state.js'
 import { createMatch } from '../src/engine/match-machine.js'
+import { recoverIndividualFlagMatchState } from './recovery.js'
 import type { RuleSetSparring, WinReason } from '../src/engine/types.js'
 import type { MatchInfo } from './state.js'
 import { registerJudgeRoute } from './routes/judge.js'
 import { registerTvRoute } from './routes/tv.js'
 import { registerQrRoute } from './routes/qr.js'
 import { registerRingRoute } from './routes/ring.js'
+import { registerCategoryRestartBodyParser } from './routes/category-restart.js'
+import { registerCategoryDeletionBodyParser } from './routes/category-deletion.js'
 import { registerHistoryRoute } from './routes/history.js'
 import { registerPresetsRoute } from './routes/presets.js'
+import { registerFullBackupRoutes } from './routes/full-backup.js'
 import { logger } from './logger.js'
+import { LocalRuntime, parseLocalRuntimeConfig, registerLocalRuntime } from './local-runtime.js'
+import { getRestoreReceipt, isSqlIdle } from './db/full-backup.js'
+import { stopTicker } from './timer.js'
+import db from './db/index.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
@@ -68,6 +78,16 @@ const io = new Server(server, {
 })
 
 const PORT = Number.parseInt(process.env.PORT ?? '3001', 10)
+let backupMaintenanceActive: () => boolean = () => false
+const runtime = new LocalRuntime(parseLocalRuntimeConfig(process.env), PORT, () => {
+  const reasons: string[] = []
+  if (state.match && !state.resultConfirmed) reasons.push('loaded-match')
+  if (getActiveMatchLock()) reasons.push('active-lock')
+  if (!isSqlIdle()) reasons.push('pending-result')
+  if (backupMaintenanceActive() || getRestoreReceipt()?.status === 'pending') reasons.push('maintenance')
+  return reasons
+}, () => shutdown('portable-supervisor', false))
+registerLocalRuntime(app, io, runtime)
 const localIp = getLocalIp()
 // En producción (Render) usamos la URL pública; en modo portable siempre la IP local.
 const publicUrl = process.env.RENDER_EXTERNAL_URL ?? null
@@ -75,25 +95,27 @@ setServerUrl(publicUrl ?? `http://${localIp}:${PORT}`)
 
 // ── Init DB ───────────────────────────────────────────────────────────────────
 
-const latestTournament = getLatestTournament()
-if (!latestTournament) {
-  state.activeTournamentId = createTournament('Torneo', '')
-} else {
-  state.activeTournamentId = latestTournament.id
-}
+const startupTournamentId = getStartupTournamentId()
+const retiredIdleTournamentId = getRetiredIdleTournamentId()
+state.activeTournamentId = startupTournamentId ?? retiredIdleTournamentId ?? createTournament('Torneo', '')
+if (startupTournamentId !== null || retiredIdleTournamentId === null) setSelectedTournamentId(state.activeTournamentId)
 
 // ── Restore emergency snapshot (si el servidor se reinició en medio de un combate) ─
 
 try {
   const snapshot = loadMatchSnapshot()
   const lock = getActiveMatchLock()
+  const operationalState = snapshot?.data?.matchState
+    ? recoverIndividualFlagMatchState(snapshot.data) : null
   if (snapshot && lock && lock.fightId === snapshot.fightId) {
-    if (!snapshot.categoryId || !snapshot.data || snapshot.corrupted) {
+    if (!snapshot.categoryId || !snapshot.data || snapshot.corrupted
+      || (snapshot.data.matchState && !operationalState)
+      || ((snapshot.data.match?.goldenPoint || snapshot.data.match?.requireIndividualFlags) && !operationalState)) {
       state.matchCategoryId = snapshot.categoryId
       state.matchTournamentId = snapshot.tournamentId
       state.legacyMatchAssociationWarning = snapshot.categoryId === null
         ? `El combate ${snapshot.fightId} conserva un lock histórico sin categoryId; no se reasignó.`
-        : `El snapshot del combate ${snapshot.fightId} está dañado; no se liberó automáticamente.`
+        : `El snapshot del combate ${snapshot.fightId} no conserva todos los eventos de mesa; no se liberó ni se recontaron sanciones automáticamente.`
       logger.warn({ fightId: snapshot.fightId, categoryId: snapshot.categoryId, corrupted: snapshot.corrupted }, '[startup] Snapshot no recuperable; nuevas cargas bloqueadas')
     } else if (getCategoryTournamentId(snapshot.categoryId) === snapshot.tournamentId && isFightPending(snapshot.fightId, snapshot.tournamentId)) {
     const { match, rules, roundFlags, pendingResult } = snapshot.data
@@ -115,9 +137,18 @@ try {
       winner: flag.winner as 'red' | 'blue' | 'draw',
       votes: flag.votes ?? {},
     }))
+    if (restoredRules.judgingMode === 'flags' && !restoredMatch.goldenPoint) {
+      for (let i = 1; i <= restoredRules.judgesCount; i++) {
+        const judgeId = `J${i}`
+        const vote = snapshot.data.judgeVotes?.[judgeId]
+        if (vote === 'red' || vote === 'blue' || vote === 'draw') {
+          state.judgeVotes.set(judgeId, vote)
+        }
+      }
+    }
     const baseMatchState = createMatch(restoredRules)
     const storedResult = getMatchResult(snapshot.categoryId, snapshot.fightId)
-    state.matchState = {
+    state.matchState = operationalState ?? {
       ...baseMatchState,
       phase: pendingResult || storedResult?.status === 'pending_confirmation'
         ? 'finished'
@@ -132,7 +163,7 @@ try {
           ? { winner: storedResult.winner, reason: storedResult.reason as WinReason }
           : null,
     }
-    state.matchPaused = true
+    state.matchPaused = state.matchState.phase !== 'golden_point'
     logger.info({ fightId: snapshot.fightId, categoryId: snapshot.categoryId, completedRounds }, '[startup] Combate restaurado desde snapshot de emergencia')
     } else {
       state.matchCategoryId = snapshot.categoryId
@@ -162,7 +193,7 @@ app.use(
   }),
 )
 
-// ── CORS ─────────────────────────────────────────────────────────────────────
+// ── CORS allow-list ──────────────────────────────────────────────────────────
 
 app.use((req, res, next) => {
   const origin = req.headers.origin
@@ -195,6 +226,9 @@ app.get('/health', (_req, res) => { res.json({ ok: true, uptime: process.uptime(
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
+backupMaintenanceActive = registerFullBackupRoutes(app, io, PORT)
+registerCategoryRestartBodyParser(app)
+registerCategoryDeletionBodyParser(app)
 app.use(express.json({ limit: '100kb' }))
 registerJudgeRoute(app)
 registerTvRoute(app)
@@ -244,7 +278,7 @@ process.on('uncaughtException', (err) => {
 
 // ── Start ────────────────────────────────────────────────────────────────────
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, runtime.enabled ? '127.0.0.1' : '0.0.0.0', () => {
   logger.info(
     {
       local: `http://localhost:${PORT}`,
@@ -270,15 +304,19 @@ server.listen(PORT, '0.0.0.0', () => {
 // On SIGTERM (Render redeploy) close sockets and HTTP cleanly so in-flight
 // writes flush before the process exits.
 
-function shutdown(signal: string) {
+let shutdownStarted = false
+function shutdown(signal: string, forceTimeout = true): void {
+  if (shutdownStarted) return
+  shutdownStarted = true
   logger.info({ signal }, 'graceful shutdown')
-  io.close()
-  server.close((err) => {
-    if (err) logger.error({ err }, 'server.close error during shutdown')
-    process.exit(err ? 1 : 0)
+  stopTicker()
+  // Socket.IO closes its attached HTTP server and waits for in-flight replies.
+  io.close(() => {
+    try { db.close(); process.exit(0) }
+    catch (error) { logger.error({ error }, 'database close failed'); process.exit(1) }
   })
-  // Force-exit fallback in case something hangs.
-  setTimeout(() => process.exit(1), 10_000).unref()
+  // Portable shutdown never force-kills the process. The supervisor reports a hang.
+  if (forceTimeout) setTimeout(() => process.exit(1), 10_000).unref()
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('SIGINT', () => shutdown('SIGINT'))

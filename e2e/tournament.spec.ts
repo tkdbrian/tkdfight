@@ -26,7 +26,7 @@ async function seedTournament(
   await setup.startCategory();
 }
 
-test.describe("TKD Tournament - Flujo Completo", () => {
+test.describe("TKD Fight - Flujo Completo", () => {
   test("Fight: cargar combate muestra controles y fase 'Listo'", async ({ page }) => {
     test.setTimeout(30_000);
     await seedTournament(page);
@@ -84,8 +84,8 @@ test.describe("TKD Tournament - Flujo Completo", () => {
     // La TV no requiere torneo activo — verifica que la página carga correctamente
     await page.goto("/tv", { waitUntil: "domcontentloaded" });
 
-    // El texto en el DOM es "TKD Tournament" (el CSS uppercase lo muestra en mayúsculas visualmente)
-    await expect(page.getByText("TKD Tournament", { exact: true })).toBeVisible();
+    // El CSS uppercase muestra TKD Fight en mayúsculas visualmente.
+    await expect(page.getByText("TKD Fight", { exact: true })).toBeVisible();
 
     // Timer central usando la clase real del componente
     await expect(

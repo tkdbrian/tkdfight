@@ -24,6 +24,8 @@ import {
   Loader2, AlertCircle, Users, BarChart3, Circle, WifiOff, Trash2, Download,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { ArchivedCategoryHistoryFields } from "@/lib/category-restart-contract";
+import type { CategoryDeletionTombstone } from "@/lib/category-deletion-contract";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -40,7 +42,8 @@ interface HistoryFight {
   blueTeam: string | null;
 }
 
-interface HistoryTournament {
+interface HistoryTournament extends Partial<ArchivedCategoryHistoryFields> {
+  replacementDeleted?: CategoryDeletionTombstone;
   id: number;
   name: string;
   category: string;
@@ -103,6 +106,37 @@ function formatDate(iso: string) {
 }
 
 const MEDALS = ["🥇", "🥈", "🥉"];
+
+function ArchivedExecution({ tournament }: { tournament: HistoryTournament }): React.JSX.Element | null {
+  const snapshot = tournament.fullSnapshot;
+  const archive = tournament.archive;
+  if (!tournament.readOnly || !snapshot || !archive) return null;
+  return <section aria-label="Ejecución archivada" className="space-y-3">
+    <h2 className="font-semibold">Ejecución archivada · Solo lectura</h2>
+    <p>Conservada tal como fue registrada (as-recorded). Archivo: {formatDate(archive.archivedAt)}.</p>
+    {tournament.replacementDeleted ? <p role="note">Reemplazo eliminado definitivamente. El archivo anterior se conserva; no se puede recuperar esa ejecución.</p> : <a href={`#history-execution-${archive.replacementTournamentId}`} className="text-primary underline">
+      Ver ejecución de reemplazo ({archive.replacementCategoryId})
+    </a>}
+    {[...new Set(archive.warnings)].map((warning) => <p key={warning} role="note">{warning}</p>)}
+    <p>{snapshot.config.categoryName} · {snapshot.config.tournamentName} · {snapshot.config.mode}</p>
+    <details><summary>Configuración completa</summary><pre className="overflow-auto text-xs">{JSON.stringify(snapshot.config, null, 2)}</pre></details>
+    <ul>{snapshot.competitors.map((competitor) => <li key={competitor.id}>{competitor.name}{competitor.team ? ` · ${competitor.team}` : ""}</li>)}</ul>
+    <section aria-label="Fixture archivado">
+      {snapshot.fights.map((fight) => <p key={fight.id}>
+        {fight.groupId ?? "Combate"}: {fight.red.name} vs {fight.blue.name} · {fight.completed
+          ? fight.winner === "red" ? `Ganó ${fight.red.name}` : fight.winner === "blue" ? `Ganó ${fight.blue.name}` : "Empate"
+          : "Pendiente"} · {fight.flagsRed ?? 0} / {fight.flagsBlue ?? 0}
+      </p>)}
+    </section>
+    {snapshot.bracketMatches.length > 0 && <section aria-label="Llave archivada">
+      {snapshot.bracketMatches.map((match) => <p key={match.id}>
+        Ronda {match.round + 1}: {match.red.competitor?.name ?? "Por definir"} vs {match.blue.competitor?.name ?? "Por definir"}
+        {match.completed ? ` · Ganó ${snapshot.competitors.find((competitor) => competitor.id === match.winnerId)?.name ?? "Pase automático"}` : " · Pendiente"}
+      </p>)}
+    </section>}
+    <details><summary>Registro completo de la ejecución</summary><pre className="overflow-auto text-xs">{JSON.stringify(snapshot, null, 2)}</pre></details>
+  </section>;
+}
 
 // ── Sub-components ───────────────────────────────────────────────────────────
 
@@ -438,6 +472,8 @@ export function HistoryPage() {
   const [deleteTarget, setDeleteTarget] = React.useState<HistoryTournament | null>(null);
   const [clearAllOpen, setClearAllOpen] = React.useState(false);
   const [deleting, setDeleting] = React.useState(false);
+  const protectedIds = new Set(data?.flatMap((tournament) => tournament.archive
+    ? [tournament.archive.sourceTournamentId, tournament.archive.replacementTournamentId] : []) ?? []);
 
   const loadHistory = React.useCallback(() => {
     setLoading(true);
@@ -548,7 +584,7 @@ export function HistoryPage() {
             <Download className="size-3.5 mr-1" />
             Descargar datos
           </Button>
-          {data && data.filter((t) => !t.isActive).length > 0 && !fromCache && (
+          {data?.some((t) => !t.isActive && !protectedIds.has(t.id)) && !fromCache && (
             <Button
               size="sm"
               variant="outline"
@@ -610,7 +646,7 @@ export function HistoryPage() {
             const isOpen = openId === t.id;
             const allDone = t.fightsCompleted === t.fightsTotal && t.fightsTotal > 0;
             return (
-              <Card key={t.id} className={cn("transition-all", t.isActive && "ring-1 ring-primary/40")}>
+              <Card key={t.id} id={`history-execution-${t.id}`} className={cn("transition-all", t.isActive && "ring-1 ring-primary/40")}>
                 <CardHeader
                   className="py-3 px-4 cursor-pointer select-none"
                   onClick={() => setOpenId(isOpen ? null : t.id)}
@@ -633,7 +669,7 @@ export function HistoryPage() {
                         ✓ Finalizada
                       </Badge>
                     )}
-                    {!t.isActive && !fromCache && (
+                    {!t.isActive && !fromCache && !t.readOnly && !protectedIds.has(t.id) && (
                       <button
                         type="button"
                         onClick={(e) => { e.stopPropagation(); setDeleteTarget(t); }}
@@ -662,6 +698,7 @@ export function HistoryPage() {
                 </CardHeader>
                 {isOpen && (
                   <CardContent className="px-4 pb-4">
+                    <ArchivedExecution tournament={t} />
                     <TournamentDetail tournament={t} />
                   </CardContent>
                 )}

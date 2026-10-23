@@ -1,8 +1,8 @@
-# Sistema Round Robin Taekwondo - PORTABLE v1.0.0
+# TKD Fight - Sistema Portable de Torneos v2026
 
 ## 📱 VERSIÓN PORTABLE - OFFLINE
 
-Esta es la versión portable del Sistema Round Robin para Taekwondo, diseñada para funcionar completamente **sin conexión a internet**.
+Esta es la versión portable de TKD Fight para torneos de Taekwondo, diseñada para funcionar **sin conexión a internet**.
 
 ### 🚀 Inicio Rápido
 
@@ -123,7 +123,7 @@ En caso de fallos durante competencia:
 ### 🛠️ Desarrollo
 
 **Versión del Sistema:**
-- Base: Sistema Round Robin v2.0
+- Base: TKD Fight v2026
 - Portable: v1.0.0
 - Fecha: Enero 2025
 - Desarrollador: Brian E. Lipnjak

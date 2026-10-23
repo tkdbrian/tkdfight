@@ -2,6 +2,11 @@ import { cn } from "@/lib/utils";
 import { useTournamentStore } from "@/store/tournament";
 import { useSocket } from "@/hooks/useSocket";
 import { CategoryTabs } from "@/components/CategoryTabs";
+import { CategoryDeletionRecovery } from "@/components/CategoryDeletionRecovery";
+import { useCategoryDeletionState } from "@/store/category-deletion-state";
+import { CategoryFormatFallback } from "@/components/CategoryFormatFallback";
+import { isCategoryFormatRouteAvailable } from "@/lib/category-navigation";
+import { getFightPageEntry } from "@/lib/fight-navigation";
 import {
   Trophy,
   Users,
@@ -51,6 +56,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
 
 export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   const phase = useTournamentStore((s) => s.phase);
+  const deletionBlocked = useCategoryDeletionState((state) => state.pending || state.recoveryRequired);
   const categoryId = useTournamentStore((s) => s.config.id);
   const categoryRevision = useTournamentStore((s) => s.categoryRevision);
   const categoryOperationReason = useTournamentStore((s) => s.categoryOperationReason);
@@ -64,10 +70,12 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
   const { connected, stateReady, state: serverState } = useSocket();
   const ringAlias = serverState.ringAlias;
   const location = useLocation();
+  const localFights = useTournamentStore((state) => state.fights);
+  const passiveEntry = getFightPageEntry(location.state, categoryId, localFights).mode === "passive";
   const navigate = useNavigate();
   const visibleNavGroups = NAV_GROUPS.map((group) => ({
     ...group,
-    items: group.items.filter((item) => !(item.to === "/standings" && tournamentMode === "elimination")),
+    items: group.items.filter((item) => isCategoryFormatRouteAvailable(item.to, tournamentMode)),
   }));
   const visibleNavItemsFlat = visibleNavGroups.flatMap((group) => group.items);
   const localEntries = getCategoryEntries();
@@ -233,7 +241,10 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
           </div>
           <div className="text-[10px] text-muted-foreground/70 leading-tight">
             <div className="font-semibold text-primary/80 tracking-wide">BL System v{__APP_VERSION__}</div>
-            <div>Creado por Master Brian Lipnjak</div>
+            <div className="text-[11px]">Creado por Master Brian Lipnjak</div>
+            <a className="text-[10px] hover:text-primary transition-colors" href="mailto:tkdbrian@gmail.com">
+              tkdbrian@gmail.com
+            </a>
           </div>
         </div>
       </aside>
@@ -267,29 +278,41 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
         </header>
 
         <CategoryTabs connected={connected} stateReady={stateReady} serverState={serverState} />
+        <CategoryDeletionRecovery connected={connected} stateReady={stateReady} serverState={serverState} />
 
         {/* Page content */}
         <div
           id="category-panel"
+          inert={deletionBlocked}
           role="tabpanel"
           aria-labelledby={`category-tab-${categoryId}`}
           key={categoryId}
           className="relative flex-1 flex flex-col overflow-hidden"
         >
-          {recoveryDataMissing ? (
+          {!isCategoryFormatRouteAvailable(location.pathname, tournamentMode) ? (
+            <CategoryFormatFallback mode={tournamentMode} setup={phase === "setup"} />
+          ) : location.pathname === "/fight" && (!passiveEntry ||
+            (recoveryDataMissing && recoveryLock?.categoryId === categoryId)) && (
+            !connected || !stateReady || recoveryDataMissing ||
+            (recoveryLock && recoveryLock.categoryId !== categoryId)
+          ) ? (
             <div className="flex flex-1 items-center justify-center overflow-auto p-6">
               <div className="max-w-xl rounded-lg border border-destructive/40 bg-destructive/5 p-5 text-center">
-                <h1 className="text-lg font-bold text-destructive">Recuperación pendiente</h1>
+                <h1 className="text-lg font-bold text-destructive">Combate no disponible en esta categoría</h1>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  El servidor conserva el combate {recoveryLock?.fightId ?? "sin identidad verificable"}, pero la llave local no contiene esa pelea. No se aplicó el resultado a otra categoría ni se descartó información.
+                  {recoveryDataMissing
+                    ? `El servidor conserva el combate ${recoveryLock?.fightId ?? "sin identidad verificable"}, pero la llave local no lo contiene.`
+                    : !connected || !stateReady
+                      ? "Esperando al servidor; no se puede operar el tatami sin confirmar su estado."
+                      : "Hay un combate de otra categoría en este tatami."}
                 </p>
                 <p className="mt-2 text-sm text-muted-foreground">
-                  No inicies otra categoría desde este tatami hasta recuperar o importar la llave correspondiente.
+                  Podés consultar o preparar otras categorías sin modificar el combate activo.
                 </p>
               </div>
             </div>
           ) : children}
-          {!recoveryDataMissing && categoryOperationReason && (
+          {categoryOperationReason && (
             <div role="status" className="absolute inset-0 z-40 flex items-center justify-center bg-background/80 p-6 backdrop-blur-[1px]">
               <p className="max-w-sm rounded-md border border-border bg-card px-4 py-3 text-center text-sm font-medium shadow-lg">
                 {categoryOperationReason}

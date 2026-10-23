@@ -1,0 +1,29 @@
+TKD FIGHT - ARRANQUE DE UN CLIC
+
+1. En cada PC Windows 10/11 x64, extraiga TODO el ZIP en una carpeta propia.
+   No ejecute dentro del ZIP. No requiere Internet ni Visual Studio.
+2. Abra ABRIR TKD.exe. Elija el tatami solamente la primera vez.
+   Se abrira Chrome o Edge cuando el sistema este listo. No hace falta
+   mantener una ventana negra abierta. Normalmente no pide administrador;
+   si falta VC++ x64, su reparacion diagnosticada puede pedir permiso.
+3. Cerrar el navegador o la ventana Estado NO detiene el sistema.
+   Abra otra vez ABRIR TKD.exe para volver al MISMO sistema y datos.
+4. Para salir: junto al reloj de Windows, busque el icono TKD Fight
+   (puede estar dentro de la flecha de iconos ocultos), boton derecho,
+   Cerrar sistema. Si hay una pelea o resultado pendiente no permitira salir.
+   Ver estado muestra el puerto y las instrucciones para reintentar.
+
+Cada PC funciona INDEPENDIENTE: no comparte datos con otros tatamis.
+El paquete esta vacio. Conserve TODA la carpeta despues de cargar el torneo:
+los datos estan en sistema\data-<rol>, y la identidad/direccion de esta copia
+esta en sistema\portable-runtime. No borre ni copie solo una parte.
+Haga respaldos completos desde la app y copielos a otro dispositivo.
+
+Si otro programa ocupa el puerto guardado, TKD NO lo cierra ni cambia
+silenciosamente la direccion. Cierre esa aplicacion y pulse Reintentar.
+Si necesita soporte, conserve los datos y envie el mensaje de Estado junto
+con sistema\portable-runtime\launcher.log y sistema\data-<rol>\logs.
+No comparta installation.json: contiene la clave privada del supervisor.
+
+Antes de usar en el torneo: probar este ZIP completo en ESA PC sin Internet,
+disputar una categoria, cerrar/abrir y probar respaldo y recuperacion.

@@ -16,5 +16,30 @@ test-results/
 
 bin/
 TKD_Torneo_2026.zip
-data-t1     /
-data-t2 /
+data-t1/
+data-t2/
+data-t3/
+data-central/
+
+# Local installations, generated packages and operator data (never publish).
+/release/
+/TKD_Fight_2026/
+/TKD_Fight_3.0.0/
+/TKD_Torneo_2026/
+/preview-*/
+/dist-produccion-respaldo-*/
+/logs/
+*.zip
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+*.tkd-backup.json
+**/browser-profile/
+**/portable-runtime/
+**/server.pid
+**/.server.stop
+.unblocked
+.env
+.env.*
+!.env.example

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { ArchiveRestore, ChevronLeft, ChevronRight, Plus, X } from "lucide-react";
@@ -14,6 +14,7 @@ import { useTournamentStore, type TournamentCategoryEntry } from "@/store/tourna
 import type { ServerState } from "@/lib/socket-types";
 import { cn } from "@/lib/utils";
 import { categoryTabSummary } from "@/lib/category-tab-summary";
+import { useCategoryInteractionBlocked } from "@/hooks/useCategoryInteractionBlocked";
 
 interface CategoryTabsProps {
   connected: boolean;
@@ -25,7 +26,7 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
   const navigate = useNavigate();
   const location = useLocation();
   const scrollRef = useRef<HTMLDivElement>(null);
-  const categoryRevision = useTournamentStore((store) => store.categoryRevision);
+  useTournamentStore((store) => store.categoryRevision);
   const activeCategoryId = useTournamentStore((store) => store.config.id);
   const activeCategoryName = useTournamentStore((store) => store.config.categoryName);
   const activeTournamentName = useTournamentStore((store) => store.config.tournamentName);
@@ -36,7 +37,8 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const operationInProgressRef = useRef(false);
   const [isBusy, setIsBusy] = useState(false);
-  const actionsDisabled = isBusy || !!operationReason;
+  const restartBlocked = useCategoryInteractionBlocked();
+  const actionsDisabled = isBusy || !!operationReason || restartBlocked;
 
   const store = useTournamentStore.getState();
   const entries = store.getCategoryEntries();
@@ -64,7 +66,7 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
   );
   const recoveryDataMissing = !!serverLock && !localFightRecovered;
 
-  async function runOperation(operation: () => Promise<void>) {
+  async function runOperation(operation: () => Promise<unknown>) {
     if (operationInProgressRef.current || useTournamentStore.getState().categoryOperationReason) return;
     operationInProgressRef.current = true;
     setIsBusy(true);
@@ -80,88 +82,32 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
     }
   }
 
-  useEffect(() => {
-    if (!serverLock?.categoryId || !localFightRecovered || activeCategoryId === serverLock.categoryId) return;
-    const lockedEntry = entries.find((entry) => entry.id === serverLock.categoryId);
-    if (!lockedEntry) return;
-    if (!lockedEntry.visible) store.reopenCategory(lockedEntry.id);
-    if (store.selectCategory(lockedEntry.id)) {
-      setNotice(`Se restauró la categoría ${lockedEntry.name} para continuar la recuperación del combate.`);
-    }
-  }, [serverLock?.categoryId, serverLock?.fightId, localFightRecovered, activeCategoryId, categoryRevision]);
-
-  function blockedReason(targetCategoryId?: string): string | null {
-    if (!connected || !stateReady) return "Esperando una respuesta del servidor para confirmar que es seguro cambiar de categoría.";
+  function blockedReason(): string | null {
     if (operationReason) return operationReason;
-    if (serverLock) {
-      if (targetCategoryId === serverLock.categoryId && localFightRecovered) return null;
-      const fightLabel = serverLock.fightId ? ` ${serverLock.fightId}` : "";
-      if (recoveryDataMissing) {
-        return `Recuperación pendiente: el servidor conserva el combate${fightLabel}, pero la llave local no contiene sus datos. No se cambió ni descartó información.`;
-      }
-      return `El combate de ${lockCategory?.name ?? "otra categoría"} sigue pendiente de confirmación o recuperación. Confirmalo antes de cambiar de categoría.`;
-    }
     if (!store.hasValidCategoryRegistry()) return "No se pudo leer el registro local de categorías. No se sobrescribieron los datos.";
     return null;
   }
 
-  async function activateServerCategory(entry: TournamentCategoryEntry): Promise<boolean> {
-    if (serverLock && entry.id === serverLock.categoryId && localFightRecovered) return true;
-    const setOperationReason = useTournamentStore.getState().setCategoryOperationReason;
-    setOperationReason(`Activando ${entry.name} en el servidor…`);
-    try {
-      const response = await fetch("/api/ring/activate-category", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          categoryId: entry.id,
-          categoryName: entry.name === "Nueva categoría" ? "" : entry.name,
-          tournamentName: entry.tournamentName,
-        }),
-      });
-      const result = await response.json() as { error?: string; warning?: string };
-      if (!response.ok) throw new Error(result.error ?? "El servidor rechazó el cambio de categoría.");
-      if (result.warning) toast.warning(result.warning);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "No se pudo activar la categoría en el servidor.";
-      setNotice(message);
-      toast.error(message);
-      return false;
-    } finally {
-      setOperationReason(null);
-    }
-  }
-
-  async function selectEntry(entry: TournamentCategoryEntry) {
-    const reason = blockedReason(entry.id);
+  async function selectEntry(entry: TournamentCategoryEntry): Promise<boolean> {
+    const reason = blockedReason();
     if (reason) {
       setNotice(reason);
       toast.warning(reason);
-      return;
+      return false;
     }
     if (!entry.visible) {
       setNotice(`Reabrí ${entry.name} antes de seleccionarla.`);
-      return;
+      return false;
     }
-    const previousEntry = entries.find((candidate) => candidate.id === activeCategoryId);
-    if (!await activateServerCategory(entry)) return;
     if (!store.selectCategory(entry.id)) {
-      if (previousEntry) void fetch("/api/ring/activate-category", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          categoryId: previousEntry.id,
-          categoryName: previousEntry.name === "Nueva categoría" ? "" : previousEntry.name,
-          tournamentName: previousEntry.tournamentName,
-        }),
-      });
       const message = "No se pudo restaurar la categoría. El registro está dañado o no disponible; no se modificó.";
       setNotice(message);
       toast.error(message);
-      return;
+      return false;
     }
     setNotice("");
+    if (location.pathname === "/fight") navigate(entry.mode === "elimination" ? "/bracket" : "/standings");
+    return true;
   }
 
   async function createCategory() {
@@ -171,7 +117,6 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
       toast.warning(reason);
       return;
     }
-    const previousId = activeCategoryId;
     const categoryId = store.createCategory();
     if (!categoryId) {
       const message = "No se pudo guardar el registro de categorías. La categoría actual quedó intacta.";
@@ -179,27 +124,16 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
       toast.error(message);
       return;
     }
-    const newEntry = store.getCategoryEntries().find((entry) => entry.id === categoryId);
-    if (!newEntry || !await activateServerCategory(newEntry)) {
-      store.cancelCategoryCreation(categoryId);
-      const previousEntry = entries.find((entry) => entry.id === previousId);
-      if (previousEntry) void fetch("/api/ring/activate-category", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          categoryId: previousEntry.id,
-          categoryName: previousEntry.name === "Nueva categoría" ? "" : previousEntry.name,
-          tournamentName: previousEntry.tournamentName,
-        }),
-      });
-      return;
-    }
     setNotice("");
     navigate("/");
   }
 
   async function hideCategory(entry: TournamentCategoryEntry) {
-    const reason = blockedReason(entry.id === serverLock?.categoryId ? entry.id : undefined);
+    if (serverLock?.categoryId === entry.id) {
+      toast.warning("No se puede ocultar la categoría que tiene el combate activo.");
+      return;
+    }
+    const reason = blockedReason();
     if (reason) {
       setNotice(reason);
       toast.warning(reason);
@@ -214,10 +148,6 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
     const fallback = entry.id === activeCategoryId
       ? visibleCategories.find((candidate) => candidate.id !== entry.id)?.id
       : undefined;
-    if (fallback) {
-      const fallbackEntry = entries.find((candidate) => candidate.id === fallback);
-      if (!fallbackEntry || !await activateServerCategory(fallbackEntry)) return;
-    }
     if (!store.hideCategory(entry.id, fallback)) {
       const message = "No se pudo ocultar la categoría; sus datos siguen guardados.";
       setNotice(message);
@@ -225,10 +155,14 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
       return;
     }
     setNotice("");
+    if (fallback && location.pathname === "/fight") navigate("/");
+    toast.success("Categoría ocultada", { action: { label: "Recuperar", onClick: () => {
+      if (!useTournamentStore.getState().reopenCategory(entry.id)) toast.error("No se pudo recuperar la categoría.");
+    } } });
   }
 
   async function reopenCategory(entry: TournamentCategoryEntry) {
-    const reason = blockedReason(entry.id === serverLock?.categoryId ? entry.id : undefined);
+    const reason = blockedReason();
     if (reason) {
       setNotice(reason);
       toast.warning(reason);
@@ -240,12 +174,15 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
       toast.error(message);
       return;
     }
-    if (entry.id === serverLock?.categoryId) await selectEntry({ ...entry, visible: true });
-    else setNotice("");
+    setNotice("");
   }
 
   async function cancelDraft() {
     if (!draftEntry) return;
+    if (serverLock?.categoryId === draftEntry.id) {
+      toast.warning("No se puede descartar la categoría que tiene el combate activo.");
+      return;
+    }
     const reason = blockedReason();
     if (reason) {
       setNotice(reason);
@@ -254,7 +191,7 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
       return;
     }
     const returnEntry = entries.find((entry) => entry.id !== draftEntry.id && entry.visible);
-    if (!returnEntry || !await activateServerCategory(returnEntry)) return;
+    if (!returnEntry) return;
     if (!store.cancelCategoryCreation(draftEntry.id)) {
       const message = "No se pudo cancelar el borrador. Las demás categorías permanecen intactas.";
       setNotice(message);
@@ -396,19 +333,28 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
 
         {draftEntry && (
           <div className="mt-1 flex items-center justify-between gap-2 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-xs">
-            <span className="text-amber-700 dark:text-amber-300">Borrador de categoría. La categoría anterior sigue guardada.</span>
+            <span className="text-amber-700 dark:text-amber-300">
+              <strong>Categoría en preparación.</strong>{" "}Agregá los competidores para continuar.
+            </span>
             <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setCancelDialogOpen(true)} disabled={actionsDisabled}>
               Cancelar creación
             </Button>
           </div>
         )}
 
-        {serverLock && !recoveryDataMissing && (
-          <p role="status" className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-            {serverState.match
-              ? `Combate pendiente en ${lockCategory?.name ?? "una categoría"}; el cambio está bloqueado hasta confirmar.`
-              : `Recuperando el combate ${serverLock.fightId} de ${lockCategory?.name ?? "la categoría"}; no se cargó automáticamente.`}
-          </p>
+        {serverLock && (
+          <div role="status" className="mt-1 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+            <span>Combate en {lockCategory?.name ?? "categoría no disponible"}</span>
+            {lockCategory && activeCategoryId !== lockCategory.id && (
+              <Button type="button" size="sm" variant="outline" className="h-7 text-xs"
+                onClick={() => void runOperation(async () => {
+                  if (!lockCategory.visible) store.reopenCategory(lockCategory.id);
+                  if (await selectEntry({ ...lockCategory, visible: true })) navigate("/fight");
+                })}>
+                Volver al combate
+              </Button>
+            )}
+          </div>
         )}
         {recoveryDataMissing && (
           <div role="alert" className="mt-1 rounded border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
@@ -420,7 +366,7 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
         )}
         {notice && !recoveryDataMissing && <p role="status" className="mt-1 text-xs text-amber-700 dark:text-amber-300">{notice}</p>}
         {!connected || !stateReady ? (
-          <p role="status" className="mt-1 text-xs text-muted-foreground">Esperando estado del servidor; cambiar de categoría está temporalmente bloqueado.</p>
+          <p role="status" className="mt-1 text-xs text-muted-foreground">Sin conexión: se pueden consultar y preparar categorías, pero no operar el tatami.</p>
         ) : null}
         {!store.hasValidCategoryRegistry() && (
           <p role="alert" className="mt-1 text-xs text-destructive">El registro local de categorías no se pudo leer. No se sobrescribió.</p>

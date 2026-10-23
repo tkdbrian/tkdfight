@@ -23,7 +23,8 @@ export class SetupPage {
 
   /** Click a category button by the exact visible text */
   async selectCategoryOption(label: string): Promise<void> {
-    const button = this.page.getByRole("button", { name: label, exact: true });
+    const accessibleLabel = label === "M" ? "Masculino" : label === "F" ? "Femenino" : label;
+    const button = this.page.getByRole("button", { name: accessibleLabel, exact: true });
     await button.click();
     await this.page.waitForTimeout(200); // Small delay for UI update
   }
@@ -84,12 +85,9 @@ export class SetupPage {
   /** Start the category with competitors */
   async startCategory(): Promise<void> {
     await this.startCategoryButton.click();
-    // El alta de peleas incluye fetch + persist asíncrono.
-    // Dejamos una espera corta y navegamos a /fight para que cada test
-    // espere su estado específico sin suposiciones rígidas aquí.
-    await this.page.waitForTimeout(800);
-    // React Router's navigate("/fight") does not change the browser URL in Playwright
-    // for this nested-Routes SPA. Navigate directly so the page rehydrates from localStorage.
-    await this.page.goto("/fight", { waitUntil: "domcontentloaded" });
+    await this.page.waitForFunction(() => {
+      const raw = localStorage.getItem("tkd-tournament");
+      return raw && JSON.parse(raw).state.phase === "fighting";
+    });
   }
 }

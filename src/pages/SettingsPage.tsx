@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
 import { useTournamentStore } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
 import { useSocket } from "@/hooks/useSocket";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,13 +18,12 @@ import {
 import { RotateCcw, AlertTriangle, Check, Loader2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { isTimePresetActive } from "@/lib/category-age";
+import { yusanConfigPatch } from "@/lib/yusan-profile";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
 import {
   type TimePreset,
-  COPA_DANES_26,
-  getPresetForCategoryFormat,
   fetchPresets,
   savePreset,
   deleteServerPreset,
@@ -70,19 +71,28 @@ function ToggleGroup<T extends string>({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-  const { config, setConfig, reset } = useTournamentStore(
-    useShallow((s) => ({ config: s.config, setConfig: s.setConfig, reset: s.reset }))
+  const navigate = useNavigate();
+  const { config, setConfig, resetAllLocalCategories, createCategory, startNewTournament } = useTournamentStore(
+    useShallow((s) => ({
+      config: s.config,
+      setConfig: s.setConfig,
+      resetAllLocalCategories: s.resetAllLocalCategories,
+      createCategory: s.createCategory,
+      startNewTournament: s.startNewTournament,
+    }))
   );
-  const { state: serverState, socket } = useSocket();
+  const { connected, stateReady, state: serverState, socket } = useSocket();
   const [resetOpen, setResetOpen] = useState(false);
   const [resetting, setResetting] = useState(false);
 
   useEffect(() => {
     if (!socket) return;
-    function onFullReset() { reset(); }
+    function onFullReset() {
+      if (!resetAllLocalCategories()) toast.error("El reinicio fue aceptado, pero no se pudo completar el guardado local. Revisá antes de continuar.");
+    }
     socket.on("ring:full-reset", onFullReset);
     return () => { socket.off("ring:full-reset", onFullReset); };
-  }, [socket, reset]);
+  }, [socket, resetAllLocalCategories]);
 
   // ── Nombre del tatami ────────────────────────────────────────────────────
   const [alias, setAlias] = useState("");
@@ -147,18 +157,14 @@ export function SettingsPage() {
   }, []);
 
   function applyPreset(p: TimePreset) {
-    const isAgePreset = p.ageFrom !== undefined;
-    const presetFormat = config.mode === "round-robin" ? "round-robin" : "elimination";
-    const applied = getPresetForCategoryFormat(p, presetFormat);
-    update({ count: applied.roundCount, duration_seconds: applied.durationSeconds });
-    if (!isAgePreset || presetFormat !== "round-robin") {
-      setConfig({
-        finalRounds: p.finalRounds,
-        finalSeconds: p.finalSeconds,
-        tiebreakerSeconds: p.tiebreakerSeconds,
-        maxTiebreakers: p.maxTiebreakers,
-      });
-    }
+    update({ count: p.roundCount, duration_seconds: p.durationSeconds });
+    setConfig({
+      finalRounds: p.finalRounds,
+      finalSeconds: p.finalSeconds,
+      tiebreakerSeconds: p.tiebreakerSeconds,
+      maxTiebreakers: p.maxTiebreakers,
+      profileApplied: false,
+    });
   }
 
   async function handleSavePreset() {
@@ -220,6 +226,20 @@ export function SettingsPage() {
 
   return (
     <div className="flex-1 overflow-auto p-6 space-y-4 max-w-2xl">
+      <section className="rounded-xl border border-border bg-muted/30 p-4 space-y-2">
+        <h2 className="font-semibold">Respaldo y recuperación</h2>
+        <p className="text-sm text-muted-foreground">
+          Se abrirá mantenimiento fuera del torneo. Cierre las demás pestañas antes de continuar.
+        </p>
+        <div className="flex flex-wrap gap-3">
+          <a className="rounded bg-primary px-4 py-2 text-primary-foreground" href="/maintenance">
+            Guardar respaldo completo
+          </a>
+          <a className="rounded border border-border px-4 py-2" href="/maintenance">
+            Recuperar respaldo
+          </a>
+        </div>
+      </section>
       <div>
         <h1 className="text-2xl font-bold">Configuración</h1>
         <p className="text-sm text-muted-foreground mt-0.5">
@@ -230,26 +250,39 @@ export function SettingsPage() {
       {/* ── Configuración rápida — afecta todos los ajustes ── */}
       <div id="tour-settings-presets" className="rounded-xl border border-border/50 bg-muted/30 px-4 py-3 space-y-3">
         <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">⚡ Configuración rápida</p>
-        <div className="space-y-1.5">
-          <Label className="text-xs text-muted-foreground">Copa Danes 26</Label>
-          <div className="flex gap-2 flex-wrap">
-            {COPA_DANES_26.map((p) => (
-              <button
-                key={p.name}
-                type="button"
-                onClick={() => applyPreset(p)}
-                className={cn(
-                  "px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors",
-                  isPresetActive(p)
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground",
-                )}
-              >
-                {p.name}
-              </button>
-            ))}
-          </div>
+        <div className="space-y-2">
+          <Label className="text-xs text-muted-foreground">Perfil del torneo</Label>
+          <p className="text-xs text-muted-foreground">
+            Yusan 2026 se hereda en categorías nuevas. Las existentes conservan sus tiempos hasta aplicarlo expresamente.
+          </p>
+          {config.profileId === "yusan-2026" && (
+            <p className="text-xs text-muted-foreground">
+              Este perfil solo ajusta duraciones; no modifica el motor, los desempates ni Punto de Oro.
+            </p>
+          )}
+          {!config.profileId ? (
+            <Button type="button" size="sm" variant="outline" onClick={() => setConfig({
+              eventId: config.eventId ?? crypto.randomUUID(),
+              profileId: "yusan-2026",
+              profileApplied: false,
+            })}>Seleccionar Yusan 2026</Button>
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-medium">Yusan 2026</span>
+              {!config.profileApplied && <Button type="button" size="sm" onClick={() => {
+                const patch = yusanConfigPatch(config, config, config.mode, BASE);
+                if (!patch) { toast.error("Elegí edad y grado en Configurar categoría antes de aplicar el perfil."); return; }
+                setConfig(patch);
+              }}>Aplicar Yusan 2026 a esta categoría</Button>}
+            </div>
+          )}
         </div>
+        <Button type="button" size="sm" variant="outline" onClick={() => {
+          const categoryId = createCategory();
+          if (!categoryId) { toast.error("No se pudo guardar la categoría actual."); return; }
+          startNewTournament("");
+          navigate("/setup");
+        }}>Nuevo torneo (categoría nueva)</Button>
 
         {serverPresets.length > 0 && (
           <div className="space-y-1.5">
@@ -541,7 +574,7 @@ export function SettingsPage() {
             </CardHeader>
             <CardContent className="flex items-center justify-between gap-4">
               <p className="text-sm text-muted-foreground">
-                Borra todos los combates, resultados y competidores. Afecta todas las tabs abiertas de este cuadrilátero.
+                Borra todas las categorías de este navegador y reinicia las peleas y competidores del torneo activo en este tatami.
               </p>
               <Button
                 variant="destructive"
@@ -549,7 +582,7 @@ export function SettingsPage() {
                 className="shrink-0"
               >
                 <RotateCcw className="size-4" />
-                Reiniciar categoría actual
+                Reiniciar datos locales
               </Button>
             </CardContent>
           </Card>
@@ -562,14 +595,13 @@ export function SettingsPage() {
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2 text-destructive">
               <AlertTriangle className="size-5" />
-              ¿Reiniciar categoría?
+              ¿Reiniciar datos locales y torneo activo?
             </DialogTitle>
           </DialogHeader>
           <p className="text-sm text-muted-foreground">
-            Se borrarán los competidores, combates y resultados{" "}
-            <strong className="text-foreground">de la categoría activa</strong>.
-            Las categorías anteriores del Historial{" "}
-            <strong className="text-foreground">no se tocan</strong>. Esta acción no se puede deshacer.
+            Se borrarán <strong className="text-foreground">todas las categorías de este navegador</strong>{" "}
+            y las peleas, resultados y competidores del torneo activo en este tatami.
+            El historial de otros torneos no se elimina. Esta acción no se puede deshacer.
           </p>
           <DialogFooter>
             <Button variant="outline" onClick={() => setResetOpen(false)} disabled={resetting}>
@@ -579,12 +611,25 @@ export function SettingsPage() {
               variant="destructive"
               disabled={resetting}
               onClick={async () => {
+                if (!connected || !stateReady || serverState.activeMatchLock
+                  || (serverState.match && !serverState.resultConfirmed)) {
+                  toast.error("No se puede reiniciar el tatami mientras hay un combate activo o sin conexión.");
+                  return;
+                }
                 setResetting(true);
                 try {
-                  await fetch("/api/ring/full-reset", { method: "POST" });
-                } catch {
-                  // server may be down — reset locally anyway
-                  reset();
+                  const response = await fetch("/api/ring/full-reset", { method: "POST" });
+                  if (!response.ok) throw new Error("El servidor rechazó el reinicio; no se borraron datos locales.");
+                  const acknowledgement: unknown = await response.json();
+                  if (!acknowledgement || typeof acknowledgement !== "object" ||
+                    !("ok" in acknowledgement) || acknowledgement.ok !== true) {
+                    throw new Error("El servidor no confirmó el reinicio; no se borraron datos locales.");
+                  }
+                  if (!resetAllLocalCategories()) {
+                    throw new Error("El servidor aceptó el reinicio, pero no se pudo completar el guardado local. Revisá antes de continuar.");
+                  }
+                } catch (error) {
+                  toast.error(error instanceof Error ? error.message : "No se pudo reiniciar el tatami.");
                 } finally {
                   setResetting(false);
                   setResetOpen(false);
@@ -592,7 +637,7 @@ export function SettingsPage() {
               }}
             >
               {resetting ? <Loader2 className="size-4 animate-spin" /> : <RotateCcw className="size-4" />}
-              {resetting ? "Reiniciando…" : "Sí, reiniciar categoría"}
+              {resetting ? "Reiniciando…" : "Sí, reiniciar datos"}
             </Button>
           </DialogFooter>
         </DialogContent>

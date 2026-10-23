@@ -2,7 +2,7 @@ import type { Server } from 'socket.io'
 import { state } from './state.js'
 import { computeJudgeTotals, computePenaltyCounts } from './helpers.js'
 import { getRingConfig } from './ring-config.js'
-import { getActiveMatchLock } from './db/index.js'
+import { getActiveMatchLock, getMatchResultRevision, getCategoryDeletionTombstones } from './db/index.js'
 
 export let serverUrl = 'http://localhost:3001'
 
@@ -18,7 +18,9 @@ export function broadcast(io: Server) {
     categoryId: state.matchCategoryId,
     tournamentId: state.matchTournamentId,
     activeMatchLock: getActiveMatchLock(),
+    categoryDeletions: getCategoryDeletionTombstones(),
     resultConfirmed: state.resultConfirmed,
+    resultRevision: state.matchCategoryId && state.match ? getMatchResultRevision(state.matchCategoryId, state.match.id) : 0,
     legacyMatchAssociationWarning: state.legacyMatchAssociationWarning,
     matchState: state.matchState,
     matchPaused: state.matchPaused,

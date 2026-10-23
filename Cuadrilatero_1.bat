@@ -1,4 +1,4 @@
 @echo off
-set DATA_DIR=%~dp0data-t1
-title TKD - Cuadrilatero 1
-call "%~dp0Iniciar_TKD_2026.bat"
+REM T1 reiniciado: usar solo la instancia aislada en 3101.
+call "%~dp0TKD_Fight_3.0.0\ABRIR_TKD.bat" 1
+

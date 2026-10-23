@@ -86,4 +86,6 @@ export interface MatchState {
   firstPoint: Competitor | null   // who scored first overall (for tiebreak)
   result: MatchResult | null
   pendingJuryDecision: boolean
+  /** Punto de Oro: un voto por juez y por intento; nunca depende del cronómetro. */
+  goldenPoint?: { attempt: number; votes: Record<string, Competitor> }
 }

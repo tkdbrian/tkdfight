@@ -2,8 +2,12 @@
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useSocket } from "@/hooks/useSocket";
+import { useCategoryInteractionBlocked } from "@/hooks/useCategoryInteractionBlocked";
+import { categoryRestartInteractionBlocked } from "@/store/category-restart-state";
+import { categoryExecutionUnavailable } from "@/lib/category-deletion-persistence";
 import { useTournamentStore } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
+import { getFightPageEntry } from "@/lib/fight-navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -43,18 +47,79 @@ import {
 import { cn } from "@/lib/utils";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
-import type { ServerState } from "@/lib/socket-types";
-import type { FightEntry } from "@/store/tournament";
+import type { PenaltyCounts, ServerState } from "@/lib/socket-types";
+import type { FightEntry, TournamentMode } from "@/store/tournament";
+import {
+  applyBoutDurationOverride,
+  applyFightTiming,
+  parseBoutDurationOverride,
+  withoutRegularRoundRobinTiebreak,
+} from "@/lib/fight-timing";
+import { isMiniRoundRobinBout } from "@/lib/round-robin-playoff";
+import { closedGroupBasis, isAuthorizedPlayoffFight, nextDirectFightIsGoldenPoint } from "@/lib/round-robin-resolution";
+import { getCanonicalEliminationContinuation, syncProposedFights } from "@/lib/sync-proposed-fights";
+import { clearFightProposal, getOrCreateFightProposal } from "@/lib/pending-fight-proposals";
+import { eliminationContinuationSchema } from "@/lib/elimination-continuation-contract";
+import { describeFightLock, type BlockedFightInfo } from "@/lib/pending-fight-lock";
 
 const DEFAULT_RULES = itfRules as RuleSetSparring;
+
+/** Each bout that contributes flags to a Round Robin table needs real individual votes. */
+export function requiresIndividualFlagsForBout(mode: TournamentMode, fight: FightEntry): boolean {
+  if (mode === "elimination" || fight.isGoldenPointFight || fight.importedFrom ||
+    fight.groupId?.startsWith("EXT:")) return false;
+  if (fight.playoffKind === "mini") return true;
+  return !fight.isFinalFight && !fight.isTiebreakExtra;
+}
 const MATCH_CONTEXT_EVENTS = new Set([
   "match:start", "match:event", "match:finishRound", "match:confirmPenalties",
   "match:resolveJury", "match:reset", "judge:vote", "match:undo",
   "match:undoArbiter", "match:pause", "match:resume", "match:dq",
   "match:medical", "match:saveFallo", "timer:addSeconds",
   "match:skipToFlags", "mesa:flagVote", "mesa:confirmRound",
-  "mesa:undoRound", "tul:finish", "tul:reset",
+  "mesa:undoRound", "mesa:goldenVote", "mesa:confirmGoldenOutcome", "tul:finish", "tul:reset",
+  "mesa:setSanctionCount",
 ]);
+
+export function withMatchContext(
+  event: string,
+  data: unknown,
+  categoryId: string,
+  matchId: string,
+): unknown {
+  if (!MATCH_CONTEXT_EVENTS.has(event)) return data;
+  const payload = data && typeof data === "object" && !Array.isArray(data)
+    ? data as Record<string, unknown>
+    : {};
+  return { ...payload, categoryId, matchId };
+}
+
+export function hasReopenedFlagUpdate(
+  next: ServerState,
+  categoryId: string,
+  matchId: string,
+  expectedRevision: number,
+): boolean {
+  return next.categoryId === categoryId && next.match?.id === matchId &&
+    next.resultRevision === expectedRevision && !next.resultConfirmed &&
+    next.matchState?.phase === "rest" && next.matchState.result === null;
+}
+
+export function hasConfirmedGoldenOutcomeUpdate(
+  next: ServerState,
+  categoryId: string,
+  matchId: string,
+  attempt: number,
+  winner: "red" | "blue" | null,
+): boolean {
+  if (next.categoryId !== categoryId || next.match?.id !== matchId) return false;
+  if (winner) {
+    return next.matchState?.phase === "finished" && next.matchState.result?.winner === winner;
+  }
+  // Another table-chief client may already have recorded votes in the next attempt.
+  return next.matchState?.phase === "golden_point" &&
+    next.matchState.goldenPoint?.attempt === attempt + 1;
+}
 
 interface MatchResultRecord {
   fightId: string;
@@ -68,6 +133,72 @@ interface MatchResultRecord {
   foulsRed: number;
   foulsBlue: number;
   status: "pending_confirmation" | "confirmed";
+  revision?: number;
+}
+
+interface GoldenActionReply {
+  ok: boolean;
+  code?: string;
+  error?: string;
+  attempt?: number;
+}
+
+interface MatchLoadReply extends Partial<BlockedFightInfo> {
+  ok: boolean;
+  error?: string;
+  warning?: string;
+}
+
+type SanctionSide = "red" | "blue";
+type SanctionKind = "warning" | "minus_point";
+
+interface SanctionActionReply {
+  ok: boolean;
+  code?: string;
+  error?: string;
+  counts?: PenaltyCounts;
+  pendingResult?: MatchResultRecord | null;
+  alreadyApplied?: boolean;
+}
+
+function sanctionCount(counts: PenaltyCounts, side: SanctionSide, kind: SanctionKind): number {
+  return kind === "warning" ? counts.warnings[side] : counts.fouls[side];
+}
+
+export function scoreSanctionEventType(kind: SanctionKind, delta: -1 | 1): string {
+  if (kind === "warning") return delta === 1 ? "warning_minor" : "remove_warning";
+  return delta === 1 ? "minus_point" : "remove_minus_point";
+}
+
+export function dispatchScoreSanctionAction(
+  side: SanctionSide,
+  kind: SanctionKind,
+  delta: -1 | 1,
+  live: boolean,
+  review: boolean,
+  emitLive: (side: SanctionSide, eventType: string) => void,
+  editPostClock: (side: SanctionSide, kind: SanctionKind, delta: -1 | 1) => void,
+): void {
+  if (live) emitLive(side, scoreSanctionEventType(kind, delta));
+  else if (review) editPostClock(side, kind, delta);
+}
+
+export function hasSanctionCountUpdate(
+  next: ServerState,
+  categoryId: string,
+  matchId: string,
+  side: SanctionSide,
+  kind: SanctionKind,
+  count: number,
+): boolean {
+  return next.categoryId === categoryId && next.match?.id === matchId &&
+    sanctionCount(next.penaltyCounts, side, kind) === count;
+}
+
+export function canReviewPostClockSanctions(phase: string, resultReason?: string | null): boolean {
+  if (phase === "rest" || phase === "penalties") return true;
+  return phase === "finished" && resultReason != null &&
+    resultReason !== "golden_point" && resultReason !== "dq";
 }
 
 function judgesLabel(count: number): string {
@@ -307,8 +438,9 @@ function FlagPanelFooter({ canVote, roundActive, roundNum, onEmit }: Readonly<{
   );
 }
 
-function JefeMesaPanel({
-  judgesCount, judgeVotes, roundFlags, phase, pendingJuryDecision, onEmit, mode, tulMode,
+export function JefeMesaPanel({
+  judgesCount, judgeVotes, roundFlags, phase, pendingJuryDecision, onEmit, mode, tulMode, goldenPoint,
+  onGoldenVote, onConfirmGoldenOutcome, goldenActionPending = false,
 }: Readonly<{
   judgesCount: number;
   judgeVotes: Record<string, string>;
@@ -318,8 +450,86 @@ function JefeMesaPanel({
   onEmit: (event: string, data?: unknown) => void;
   mode: "mesa" | "porjuez";
   tulMode?: boolean;
+  goldenPoint?: { attempt: number; votes: Record<string, "red" | "blue"> };
+  onGoldenVote?: (judgeId: string, competitor: "red" | "blue", attempt: number) => void;
+  onConfirmGoldenOutcome?: (attempt: number) => void;
+  goldenActionPending?: boolean;
 }>) {
   const ids = Array.from({ length: judgesCount }, (_, i) => `J${i + 1}`);
+  if (phase === "golden_point" && goldenPoint) {
+    const redVotes = Object.values(goldenPoint.votes).filter((vote) => vote === "red").length;
+    const blueVotes = Object.values(goldenPoint.votes).filter((vote) => vote === "blue").length;
+    const majority = Math.floor(judgesCount / 2) + 1;
+    const winner = redVotes >= majority ? "red" : blueVotes >= majority ? "blue" : null;
+    const isDraw = !winner && redVotes + blueVotes === judgesCount && redVotes === blueVotes;
+    return (
+      <div className="space-y-3">
+        <p className="text-center font-bold text-yellow-300">
+          ⚡ Punto de Oro · Intento {goldenPoint.attempt} · Sin reloj
+        </p>
+        <p className="text-center text-xs text-muted-foreground">
+          Marcá cada juez por separado. Podés cambiar un voto antes de confirmar el intento;
+          se necesita mayoría de {majority}.
+        </p>
+        <p
+          data-testid="gp-provisional"
+          className="rounded-md border border-yellow-700/50 bg-yellow-950/30 px-3 py-2 text-center text-sm font-semibold text-yellow-200"
+        >
+          Resultado provisional · todavía no confirmado
+        </p>
+        <p data-testid="gp-votes" className="text-center font-bold">
+          🔴 {redVotes} — {blueVotes} 🔵
+        </p>
+        {ids.map((judgeId) => (
+          <div key={judgeId} className="flex items-center gap-2">
+            <span className="w-9 text-xs font-bold">{judgeId}</span>
+            <Button
+              data-testid={`gp-vote-${judgeId}-red`}
+              aria-pressed={goldenPoint.votes[judgeId] === "red"}
+              className="flex-1 bg-red-800 hover:bg-red-700"
+              disabled={goldenActionPending || goldenPoint.votes[judgeId] === "red" || !onGoldenVote}
+              onClick={() => onGoldenVote?.(judgeId, "red", goldenPoint.attempt)}
+            >
+              Punto rojo
+            </Button>
+            <Button
+              data-testid={`gp-vote-${judgeId}-blue`}
+              aria-pressed={goldenPoint.votes[judgeId] === "blue"}
+              className="flex-1 bg-blue-800 hover:bg-blue-700"
+              disabled={goldenActionPending || goldenPoint.votes[judgeId] === "blue" || !onGoldenVote}
+              onClick={() => onGoldenVote?.(judgeId, "blue", goldenPoint.attempt)}
+            >
+              Punto azul
+            </Button>
+            <span className="w-5">
+              {goldenPoint.votes[judgeId] === "red"
+                ? "🔴"
+                : goldenPoint.votes[judgeId] === "blue" ? "🔵" : "—"}
+            </span>
+          </div>
+        ))}
+        <p className="text-center text-xs text-muted-foreground">
+          {winner
+            ? `Mayoría provisional para ${winner === "red" ? "rojo" : "azul"}. Revisá los votos antes de confirmar.`
+            : isDraw
+              ? "Empate provisional: confirmar abre otro intento sin reloj."
+              : "Esperando votos para definir mayoría o empate."}
+        </p>
+        <Button
+          data-testid="gp-confirm-outcome"
+          className="w-full bg-yellow-600 hover:bg-yellow-500 text-white"
+          disabled={goldenActionPending || (!winner && !isDraw) || !onConfirmGoldenOutcome}
+          onClick={() => onConfirmGoldenOutcome?.(goldenPoint.attempt)}
+        >
+          {goldenActionPending
+            ? "Guardando..."
+            : winner
+              ? `Confirmar ganador ${winner === "red" ? "rojo" : "azul"}`
+              : isDraw ? "Confirmar empate y seguir" : "Faltan votos"}
+        </Button>
+      </div>
+    );
+  }
   const roundActive = tulMode ? false : (phase === "round" || phase === "golden_point");
   const canVote = tulMode ? true : ((phase !== "idle" && phase !== "finished") || (phase === "finished" && pendingJuryDecision));
   const canConfirm = tulMode ? true : (canVote && !roundActive);
@@ -358,7 +568,7 @@ function JefeMesaPanel({
             {roundFlags.map((r, i) => (
               <RoundHistoryBadge key={`r${i + 1}-${r.red}-${r.blue}`} round={r} idx={i} />
             ))}
-            {!roundActive && (
+            {!roundActive && phase !== "finished" && (
               <button
                 type="button"
                 onClick={() => onEmit("mesa:undoRound")}
@@ -911,6 +1121,160 @@ function PenaltyFloatPanel({ phase, redName, blueName, penaltyCounts, onEmit, on
   );
 }
 
+export function ScoreSanctionControls({
+  side,
+  fighterName,
+  layout,
+  counts,
+  enabled,
+  busy,
+  onAdjust,
+}: Readonly<{
+  side: SanctionSide;
+  fighterName: string;
+  layout: "desktop" | "mobile";
+  counts: PenaltyCounts;
+  enabled: boolean;
+  busy: boolean;
+  onAdjust: (side: SanctionSide, kind: SanctionKind, delta: -1 | 1) => void;
+}>) {
+  const warnings = counts.warnings[side];
+  const directPoints = counts.fouls[side];
+  const canAdjust = enabled && !busy;
+  const mobile = layout === "mobile";
+  const testId = (kind: SanctionKind, action: "add" | "remove") =>
+    `score-sanction-${side}-${kind}-${action}-${layout}`;
+  const buttonClass = mobile
+    ? "min-h-11 text-[11px] font-bold py-1.5 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+    : "text-sm font-bold py-2 rounded-xl disabled:opacity-30 disabled:cursor-not-allowed transition-colors";
+  const subject = `${fighterName} (${side === "red" ? "rojo" : "azul"})`;
+  return (
+    <div className={mobile ? "grid grid-cols-2 gap-1 w-full" : "w-full space-y-2 mt-1"}
+      data-testid={`score-sanctions-${side}-${layout}`}>
+      <div className={mobile ? "contents" : "flex gap-2"}>
+        <button type="button" data-testid={testId("warning", "add")}
+          aria-label={`${subject}: agregar advertencia`}
+          disabled={!canAdjust || warnings >= 99}
+          onClick={() => onAdjust(side, "warning", 1)}
+          className={cn(buttonClass, mobile ? "" : "flex-1",
+            "border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30")}>
+          {mobile ? "+Adv" : "+ Advertencia"}
+        </button>
+        <button type="button" data-testid={testId("warning", "remove")}
+          aria-label={`${subject}: quitar advertencia`}
+          disabled={!canAdjust || warnings === 0}
+          onClick={() => onAdjust(side, "warning", -1)}
+          className={cn(buttonClass, mobile ? "" : "px-4",
+            "border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20")}
+          title="Deshacer advertencia">
+          {mobile ? "↩Adv" : "↩ Adv"}
+        </button>
+      </div>
+      <div className={mobile ? "contents" : "flex gap-2"}>
+        <button type="button" data-testid={testId("minus_point", "add")}
+          aria-label={`${subject}: agregar punto en contra directo`}
+          disabled={!canAdjust || directPoints >= 99}
+          onClick={() => onAdjust(side, "minus_point", 1)}
+          className={cn(buttonClass, mobile ? "" : "flex-1",
+            side === "red"
+              ? "border border-red-600 text-red-300 bg-red-950/40 hover:bg-red-900/50"
+              : "border border-blue-600 text-blue-300 bg-blue-950/40 hover:bg-blue-900/50")}>
+          {mobile ? "−Pto" : "− Punto directo"}
+        </button>
+        <button type="button" data-testid={testId("minus_point", "remove")}
+          aria-label={`${subject}: quitar punto en contra directo`}
+          disabled={!canAdjust || directPoints === 0}
+          onClick={() => onAdjust(side, "minus_point", -1)}
+          className={cn(buttonClass, mobile ? "" : "px-4",
+            "border border-border text-muted-foreground hover:bg-secondary")}
+          title="Deshacer punto directo">
+          {mobile ? "↩Pto" : "↩ Pto"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+export function PostClockSanctionReview({
+  redName,
+  blueName,
+  counts,
+  busy,
+  editable,
+  stage,
+  onAdjust,
+}: Readonly<{
+  redName: string;
+  blueName: string;
+  counts: PenaltyCounts;
+  busy: boolean;
+  editable: boolean;
+  stage: "voting" | "result";
+  onAdjust: (side: SanctionSide, kind: SanctionKind, delta: -1 | 1) => void;
+}>) {
+  return (
+    <section className="space-y-2 rounded-xl border border-amber-700/40 bg-amber-950/20 p-3"
+      data-testid="sanction-review-pending">
+      <div className="space-y-0.5">
+        <p className="text-sm font-bold text-amber-300">
+          {stage === "result" ? "Resultado sin confirmar · revisar sanciones" : "Reloj finalizado · sin confirmar · revisar sanciones"}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {stage === "result"
+            ? "Podés corregirlas antes de confirmar oficialmente el fallo. No cambian un empate 2–2 de banderines."
+            : "Registrá advertencias y puntos en contra antes de cerrar el fallo. No cambian los votos de los jueces."}
+        </p>
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        {(["red", "blue"] as const).map((side) => {
+          const warnings = counts.warnings[side];
+          const directPoints = counts.fouls[side];
+          return (
+            <div key={side} className={cn(
+              "space-y-2 rounded-lg border p-2",
+              side === "red" ? "border-red-900/60 bg-red-950/20" : "border-blue-900/60 bg-blue-950/20",
+            )}>
+              <p className={cn("truncate text-xs font-bold", side === "red" ? "text-red-300" : "text-blue-300")}
+                title={side === "red" ? redName : blueName}>
+                {side === "red" ? redName : blueName}
+              </p>
+              <div className="flex items-center justify-between gap-1 text-xs">
+                <span>Advertencias</span>
+                <strong data-testid={`sanction-${side}-warning-count`}>{warnings}</strong>
+              </div>
+              <div className="grid grid-cols-2 gap-1">
+                <Button size="sm" variant="outline" className="h-8 px-1 text-xs"
+                  data-testid={`sanction-${side}-warning-add`} disabled={busy || !editable || warnings >= 99}
+                  onClick={() => onAdjust(side, "warning", 1)}>+ Adv</Button>
+                <Button size="sm" variant="outline" className="h-8 px-1 text-xs"
+                  data-testid={`sanction-${side}-warning-remove`} disabled={busy || !editable || warnings === 0}
+                  onClick={() => onAdjust(side, "warning", -1)}>− Adv</Button>
+              </div>
+              <div className="flex items-center justify-between gap-1 text-xs">
+                <span>Puntos en contra directos</span>
+                <strong data-testid={`sanction-${side}-minus_point-count`}>{directPoints}</strong>
+              </div>
+              <div className="grid grid-cols-2 gap-1">
+                <Button size="sm" variant="outline" className="h-8 px-1 text-xs"
+                  data-testid={`sanction-${side}-minus_point-add`} disabled={busy || !editable || directPoints >= 99}
+                  onClick={() => onAdjust(side, "minus_point", 1)}>+ Punto</Button>
+                <Button size="sm" variant="outline" className="h-8 px-1 text-xs"
+                  data-testid={`sanction-${side}-minus_point-remove`} disabled={busy || !editable || directPoints === 0}
+                  onClick={() => onAdjust(side, "minus_point", -1)}>− Punto</Button>
+              </div>
+              <p className="text-[10px] text-muted-foreground">
+                Descuento total: {totalPenaltyPoints(warnings, directPoints)}
+              </p>
+            </div>
+          );
+        })}
+      </div>
+      {busy && <p className="text-center text-xs text-amber-200">Guardando y verificando en el servidor…</p>}
+      {!editable && <p className="text-center text-xs text-red-300">Sin conexión o pelea ya confirmada: no se pueden cambiar sanciones.</p>}
+    </section>
+  );
+}
+
 function ServerStatus({ connected, judgesCount }: Readonly<{ connected: boolean; judgesCount: number }>) {
   return (
     <div className={cn(
@@ -1057,6 +1421,8 @@ function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
           <button
             key={fight.id}
             ref={(el) => { refs.current[i] = el; }}
+            data-testid={`fight-progress-${fight.id}`}
+            aria-current={isCurrent ? "step" : undefined}
             type="button"
             onClick={() => onSelect(i)}
             title={tooltipParts.join(" — ")}
@@ -1224,15 +1590,15 @@ function FightPicker({
         <div className="space-y-1 max-h-48 overflow-y-auto pr-1">
           {(() => {
             const localFights = fights.filter((f) => !f.importedFrom);
-            const regular = localFights.filter((f) => !f.isTiebreakExtra && !f.isFinalFight);
+            const regular = localFights.filter((f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight);
             const finals = localFights.filter((f) => f.isFinalFight);
-            const tiebreaks = localFights.filter((f) => f.isTiebreakExtra);
+            const tiebreaks = localFights.filter((f) => f.isTiebreakExtra || f.isGoldenPointFight);
             const groups = Array.from(new Set(regular.map((f) => f.groupId ?? "—")));
             const isGrouped = groups.some((g) => g !== "—");
 
             const regularSection = isGrouped
               ? groups.map((gid) => {
-                  const gFights = fights.map((f, i) => ({ f, i })).filter(({ f }) => !f.isTiebreakExtra && !f.isFinalFight && !f.importedFrom && (f.groupId ?? "—") === gid);
+                  const gFights = fights.map((f, i) => ({ f, i })).filter(({ f }) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight && !f.importedFrom && (f.groupId ?? "—") === gid);
                   return (
                     <div key={gid}>
                       <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-1 pt-1 pb-0.5">
@@ -1484,7 +1850,7 @@ function MatchControls({
   const canPause = isRunning && !matchPaused;
   const canResume = isRunning && matchPaused;
   const canFinish =
-    (isRunning || matchPaused) && (phase === "round" || phase === "overtime" || phase === "golden_point");
+    (isRunning || matchPaused) && (phase === "round" || phase === "overtime");
 
   // eslint-disable-next-line react-hooks/rules-of-hooks
   const [dqConfirm, setDqConfirm] = React.useState<"red" | "blue" | null>(null);
@@ -1500,6 +1866,10 @@ function MatchControls({
         onFinishAndNext={onFinishAndNext}
       />
     );
+  }
+
+  if (phase === "golden_point") {
+    return <p className="text-center text-sm font-semibold text-yellow-300">⚡ Punto de Oro activo: sin reloj ni finalización manual. Esperando mayoría de jueces.</p>;
   }
 
   return (
@@ -1666,13 +2036,59 @@ function FlagCounterField({
   );
 }
 
-export function FightPage() {
+function PreFightDurationControl({
+  configuredSeconds,
+  input,
+  inputId,
+  onChange,
+}: Readonly<{
+  configuredSeconds: number;
+  input: string | null;
+  inputId: string;
+  onChange: (value: string | null) => void;
+}>) {
+  return (
+    <div className="flex flex-col items-center gap-1.5 text-sm">
+      <label htmlFor={inputId} className="text-muted-foreground">
+        Duración de este combate (segundos)
+      </label>
+      <div className="flex items-center gap-2">
+        <input
+          id={inputId}
+          type="number"
+          min={1}
+          max={3600}
+          step={1}
+          value={input ?? String(configuredSeconds)}
+          onChange={(event) => onChange(event.target.value)}
+          className="w-24 rounded-md border border-input bg-background px-2 py-1.5 text-center font-bold"
+        />
+        {input !== null && (
+          <Button type="button" size="sm" variant="ghost" onClick={() => onChange(null)}>
+            Usar tiempo de categoría
+          </Button>
+        )}
+      </div>
+      {input !== null && <p className="text-xs text-amber-300">Solo cambia esta pelea.</p>}
+    </div>
+  );
+}
+
+export interface FightPageProps {
+  navigationIntent?: unknown;
+  navigationEntryKey?: string;
+}
+
+export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: FightPageProps = {}): React.JSX.Element {
   const { connected, stateReady, state: socketState, emit: emitSocket, request, socket } = useSocket();
+  const latestConnectionRef = React.useRef({ connected, stateReady, state: socketState });
+  latestConnectionRef.current = { connected, stateReady, state: socketState };
   const navigate = useNavigate();
-  const { fights, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, addImportedFights, addTiebreakFights, postponeFight, resetFight, reset, addGuestFight } =
+  const { fights, groups, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, bracketMatches, addImportedFights, addTiebreakFights, postponeFight, resetFight, addGuestFight } =
     useTournamentStore(
       useShallow((s) => ({
         fights: s.fights,
+        groups: s.groups,
         currentFightIndex: s.currentFightIndex,
         setCurrentFightIndex: s.setCurrentFightIndex,
         completeFight: s.completeFight,
@@ -1684,12 +2100,29 @@ export function FightPage() {
         addTiebreakFights: s.addTiebreakFights,
         postponeFight: s.postponeFight,
         resetFight: s.resetFight,
-        reset: s.reset,
         addGuestFight: s.addGuestFight,
       }))
     );
 
-  const state = socketState.categoryId && socketState.categoryId !== config.id
+  const selectedFight = fights[currentFightIndex];
+  const selectedMatchesServer = socketState.categoryId === config.id &&
+    socketState.match?.id === selectedFight?.id;
+  // An operative server bout remains reviewable even if a stale local snapshot says completed.
+  const currentFight = selectedFight?.completed && selectedMatchesServer && !socketState.resultConfirmed
+    ? { ...selectedFight, completed: false } : selectedFight;
+  const entry = getFightPageEntry(navigationIntent, config.id, fights);
+  const passiveEntryRef = React.useRef(entry.mode !== "normal");
+  const previousIntentRef = React.useRef(navigationIntent);
+  const previousEntryKeyRef = React.useRef(navigationEntryKey);
+  const resolvedEntryRef = React.useRef<{ key: string | null; fresh: boolean }>({ key: null, fresh: false });
+  if (previousIntentRef.current !== navigationIntent || previousEntryKeyRef.current !== navigationEntryKey) {
+    previousIntentRef.current = navigationIntent;
+    previousEntryKeyRef.current = navigationEntryKey;
+    if (entry.mode !== "normal") passiveEntryRef.current = true;
+  }
+  const entryInvalid = entry.mode === "invalid";
+  // The socket describes the operational bout, not whichever result is being reviewed.
+  const state = !selectedMatchesServer
     ? {
         ...socketState,
         rules: null,
@@ -1705,17 +2138,39 @@ export function FightPage() {
       }
     : socketState;
 
-  const [loaded, setLoaded] = React.useState(false);
+  const [matchLoaded, setLoaded] = React.useState(false);
+  const loaded = matchLoaded && selectedMatchesServer && !currentFight?.completed;
+  const userSelectedFightRef = React.useRef<string | null>(null);
   const [confirmRedo, setConfirmRedo] = React.useState(false);
   const [bottomTab, setBottomTab] = React.useState<"mesa" | "porjuez" | "remotos">(
     () => (useTournamentStore.getState().config.matchType === "tul" ? "mesa" : "porjuez")
   );
+  // Round Robin rankings use the real flags of each judge. A single "Mesa decide"
+  // choice would copy one vote to every judge and corrupt that tiebreak criterion.
+  const tableChiefRoundRobin = config.mode !== "elimination" && config.matchType === "sparring";
+  const selectedBottomTab = tableChiefRoundRobin ? "porjuez" : bottomTab;
+  React.useEffect(() => {
+    if (tableChiefRoundRobin && bottomTab !== "porjuez") setBottomTab("porjuez");
+  }, [tableChiefRoundRobin, bottomTab]);
   const [showFightList, setShowFightList] = React.useState(false);
+  const [loadRefusal, setLoadRefusal] = React.useState<{
+    categoryId: string; matchId: string; serverState: ServerState; info: BlockedFightInfo;
+  } | null>(null);
   const [resultDialogOpen, setResultDialogOpen] = React.useState(false);
+  const resultDialogContextRef = React.useRef<{ categoryId: string; matchId: string; revision: number } | null>(null);
   const [isConfirmingResult, setIsConfirmingResult] = React.useState(false);
+  const continuationActionRef = React.useRef(false);
   const [resultFlagsRed, setResultFlagsRed] = React.useState(0);
   const [resultFlagsBlue, setResultFlagsBlue] = React.useState(0);
   const [winnerOverlayOpen, setWinnerOverlayOpen] = React.useState(false);
+  const [goldenActionPending, setGoldenActionPending] = React.useState(false);
+  const goldenActionRef = React.useRef(false);
+  const [flagCorrectionPending, setFlagCorrectionPending] = React.useState(false);
+  const [flagCorrectionView, setFlagCorrectionView] = React.useState<ServerState | null>(null);
+  const [flagCorrectionError, setFlagCorrectionError] = React.useState<string | null>(null);
+  const flagCorrectionRef = React.useRef(false);
+  const [sanctionActionPending, setSanctionActionPending] = React.useState(false);
+  const sanctionActionRef = React.useRef(false);
   const [guestDialogOpen, setGuestDialogOpen] = React.useState(false);
   const [guestForm, setGuestForm] = React.useState({ red: "", blue: "", category: "", ring: "" });
   // Default: tiebreakerSeconds del config (configurado en Settings), luego overtime_seconds de las reglas, luego 30s
@@ -1723,23 +2178,105 @@ export function FightPage() {
     const cfg = useTournamentStore.getState().config;
     return cfg.tiebreakerSeconds ?? (cfg.ruleSet as RuleSetSparring)?.rounds?.overtime_seconds ?? 30;
   });
+  const [preloadDurationInput, setPreloadDurationInput] = React.useState<string | null>(null);
   const prevIsFinishedRef = React.useRef<boolean | null>(null);
   const prevPhaseRef = React.useRef<string>("idle");
 
-  const currentFight = fights[currentFightIndex];
+  function selectFight(index: number): void {
+    const selected = fights[index];
+    if (!selected) return;
+    userSelectedFightRef.current = selected.id;
+    setLoaded(false);
+    setWinnerOverlayOpen(false);
+    setFlagCorrectionView(null);
+    setFlagCorrectionError(null);
+    setResultDialogOpen(false);
+    setLoadRefusal(null);
+    setCurrentFightIndex(index);
+  }
+  // History navigation is explicit local selection, not bout loading or queue progression.
+  // A later fresh broadcast may resolve the own loaded bout once, unless the user browsed away.
+  React.useLayoutEffect(() => {
+    if (entry.mode !== "passive") return;
+    const previous = resolvedEntryRef.current;
+    const newEntry = previous.key !== navigationEntryKey;
+    const fresh = connected && stateReady;
+    if (!newEntry && (previous.fresh || !fresh || userSelectedFightRef.current !== null)) return;
+    const latest = useTournamentStore.getState();
+    if (latest.config.id !== config.id) return;
+    const validated = getFightPageEntry(navigationIntent, latest.config.id, latest.fights);
+    if (validated.mode !== "passive") return;
+    const lock = describeFightLock(socketState, latest.config.id, latest.fights);
+    const targetId = fresh && lock?.categoryId === latest.config.id && lock.localIndex !== null
+      ? lock.fightId : validated.intent.fightId;
+    const index = latest.fights.findIndex((fight) => fight.id === targetId);
+    resolvedEntryRef.current = { key: navigationEntryKey, fresh };
+    if (newEntry) userSelectedFightRef.current = null;
+    if (index >= 0 && latest.currentFightIndex !== index) latest.setCurrentFightIndex(index);
+  }, [navigationEntryKey, navigationIntent, entry.mode, config.id, connected, stateReady, socketState]);
+  const refusedInfo = loadRefusal?.categoryId === config.id && loadRefusal.matchId === currentFight?.id &&
+    loadRefusal.serverState === socketState ? loadRefusal.info : null;
+  const fightLockNotice = describeFightLock(socketState, config.id, fights, refusedInfo);
+  const otherFightLocked = !!fightLockNotice &&
+    (fightLockNotice.categoryId !== config.id || fightLockNotice.fightId !== currentFight?.id);
+  const reviewingOtherFight = otherFightLocked;
+  const categoryInteractionBlocked = useCategoryInteractionBlocked();
+  const canLoadFight = connected && stateReady && !otherFightLocked && !entryInvalid && !categoryInteractionBlocked;
+  const canOperateFight = canLoadFight && selectedMatchesServer && socketState.matchState !== null
+    && !socketState.resultConfirmed;
+  const canRedoFight = canLoadFight;
+
+  function beginExplicitOperation(requireLoaded = true): boolean {
+    if (categoryRestartInteractionBlocked()) return false;
+    const latest = latestConnectionRef.current;
+    const local = useTournamentStore.getState();
+    const selected = local.fights[local.currentFightIndex];
+    const lock = describeFightLock(latest.state, local.config.id, local.fights);
+    if (!latest.connected || !latest.stateReady || categoryExecutionUnavailable(local.config.id) || local.config.id !== config.id
+      || selected?.id !== currentFight?.id || !selected
+      || getFightPageEntry(navigationIntent, local.config.id, local.fights).mode === "invalid"
+      || (lock && (lock.categoryId !== local.config.id || lock.fightId !== selected.id))
+      || (requireLoaded && (latest.state.categoryId !== local.config.id
+        || latest.state.match?.id !== selected.id || !latest.state.matchState
+        || latest.state.resultConfirmed))) return false;
+    passiveEntryRef.current = false;
+    return true;
+  }
+
+  function returnToLockedFight(): void {
+    if (!fightLockNotice || fightLockNotice.categoryId !== config.id) return;
+    const latest = useTournamentStore.getState();
+    if (latest.config.id !== config.id) return;
+    const index = latest.fights.findIndex((fight) => fight.id === fightLockNotice.fightId);
+    if (index === -1 || fights[index]?.id !== fightLockNotice.fightId) return;
+    selectFight(index);
+  }
+  const currentGroupIds = currentFight
+    ? groups.find((group) => group.id === (currentFight.groupId ?? "G1"))?.competitors.map((competitor) => competitor.id)
+    : undefined;
+  const isMiniPlayoff = currentFight ? isMiniRoundRobinBout(currentFight, fights) : false;
+  const configuredFightSeconds = currentFight
+    ? applyFightTiming(
+        (config.ruleSet as RuleSetSparring) ?? DEFAULT_RULES,
+        config,
+        currentFight,
+        bracketMatches,
+      ).rounds.duration_seconds
+    : 0;
   function emit(event: string, data?: unknown) {
-    if (!MATCH_CONTEXT_EVENTS.has(event) || !currentFight) {
-      emitSocket(event, data);
-      return;
-    }
-    const payload = data && typeof data === "object" && !Array.isArray(data)
-      ? data as Record<string, unknown>
-      : {};
-    emitSocket(event, { ...payload, categoryId: config.id, matchId: currentFight.id });
+    if (!beginExplicitOperation()) return;
+    emitSocket(event, currentFight
+      ? withMatchContext(event, data, config.id, currentFight.id)
+      : data);
   }
   const { matchState, matchPaused, judges } = state;
-  const penaltyCounts = state.penaltyCounts ?? { warnings: { red: 0, blue: 0 }, fouls: { red: 0, blue: 0 } };
-  const phase = matchState?.phase ?? "idle";
+  const penaltyCounts = currentFight?.completed
+    ? {
+        warnings: { red: currentFight.warningsRed ?? 0, blue: currentFight.warningsBlue ?? 0 },
+        fouls: { red: currentFight.foulsRed ?? 0, blue: currentFight.foulsBlue ?? 0 },
+      }
+    : state.penaltyCounts ?? { warnings: { red: 0, blue: 0 }, fouls: { red: 0, blue: 0 } };
+  const phase = currentFight?.completed ? "finished" : matchState?.phase ?? "idle";
   const isFinished = phase === "finished";
   const _roundsWon = countRoundsWon(state.roundFlags ?? []);
   // Cuántos jueces van ganando por puntos acumulados (móvil)
@@ -1772,7 +2309,7 @@ export function FightPage() {
   const displayScore = (currentFight?.completed && !loaded)
     ? { red: currentFight.flagsRed ?? 0, blue: currentFight.flagsBlue ?? 0 }
     : scoreDisplay;
-  const timeLeft = matchState?.timeLeft ?? 0;
+  const timeLeft = currentFight?.completed ? 0 : matchState?.timeLeft ?? 0;
   const currentRound = matchState?.currentRound ?? 1;
   const totalRounds = state.rules?.rounds.count ?? 2;
   const isLastRound = currentRound >= totalRounds;
@@ -1783,19 +2320,47 @@ export function FightPage() {
     const gid = currentFight.groupId;
     if (!gid) return false;
     const groupFights = fights.filter(
-      (f) => f.groupId === gid && !f.importedFrom && !f.isTiebreakExtra && !f.isFinalFight
+      (f) => f.groupId === gid && !f.importedFrom && !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight
     );
     return groupFights.filter((f) => f.id !== currentFight.id && !f.completed).length === 0;
   })();
   /** Modo Tul: los competidores ejecutan formas, los jueces votan rojo/azul */
   const isTul = config.matchType === 'tul';
+  const canEditLiveSanctions = loaded && !isTul && canOperateFight &&
+    (phase === "round" || phase === "overtime");
+  const canReviewSanctions = loaded && !isTul && canOperateFight && !state.resultConfirmed &&
+    state.categoryId === config.id && state.match?.id === currentFight?.id &&
+    canReviewPostClockSanctions(phase, matchState?.result?.reason);
+  const canEditPreloadDuration = !isTul && !currentFight?.isGoldenPointFight &&
+    !currentFight?.isTiebreakExtra &&
+    !(state.match?.id === currentFight?.id && state.categoryId === config.id);
   const tulPhase = state.tulPhase ?? "idle";
+
+  React.useEffect(() => {
+    const displayed = resultDialogContextRef.current;
+    if (!resultDialogOpen || !displayed) return;
+    if (state.categoryId === displayed.categoryId && state.match?.id === displayed.matchId &&
+      (state.resultRevision ?? 0) === displayed.revision && state.matchState?.result &&
+      state.matchState.phase === "finished") return;
+    resultDialogContextRef.current = null;
+    setResultDialogOpen(false);
+    toast.warning("El resultado cambió en el tatami. Revisá la votación actual antes de confirmar.");
+  }, [resultDialogOpen, state.categoryId, state.match?.id, state.resultRevision, state.matchState?.phase, state.matchState?.result]);
+
+  React.useEffect(() => {
+    setPreloadDurationInput(null);
+  }, [config.id, currentFight?.id]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: setLoaded/setConfirmRedo are stable state setters — no need in deps
   React.useEffect(() => {
     setLoaded(false);
     setConfirmRedo(false);
-  }, [currentFightIndex]);
+  }, [config.id, currentFight?.id]);
+
+  // Reconnect is recovery again; an ordinary click is only navigation.
+  React.useEffect(() => {
+    if (!connected) userSelectedFightRef.current = null;
+  }, [connected]);
 
   // Chicharra de campana al terminar el round (round → rest/penalties/finished)
   React.useEffect(() => {
@@ -1816,7 +2381,7 @@ export function FightPage() {
     if (prev === false && isFinished && matchState?.result != null && loaded) {
       setWinnerOverlayOpen(true);
     }
-    if (!isFinished) {
+    if (!isFinished && !flagCorrectionRef.current) {
       setWinnerOverlayOpen(false);
     }
   // biome-ignore lint/correctness/useExhaustiveDependencies: matchState.result identity changes on every broadcast — use isFinished as proxy
@@ -1827,6 +2392,7 @@ export function FightPage() {
   React.useEffect(() => {
     if (!socket) return;
     function onFightsImported(payload: { categoryId?: string | null; fights: Array<{ id: string; red: { id: string; name: string }; blue: { id: string; name: string }; completed: boolean; groupId?: string }>; sourceRingLabel?: string | null }) {
+      if (passiveEntryRef.current) return;
       if (payload.categoryId !== config.id) return;
       const srcLabel = payload.sourceRingLabel ?? "Mesa Central";
       addImportedFights(
@@ -1860,6 +2426,7 @@ export function FightPage() {
       flagsBlue: number;
       completedIn: string;
     }) {
+      if (passiveEntryRef.current) return;
       if (payload.categoryId !== config.id) return;
       const localFight = useTournamentStore.getState().fights.find((fight) => fight.id === payload.fightId);
       if (!localFight || localFight.completed) return;
@@ -1882,6 +2449,7 @@ export function FightPage() {
   // Guest fights (EXT: prefix) are intentional and stay.
   // biome-ignore lint/correctness/useExhaustiveDependencies: run once on mount to clear stale imported fights
   React.useEffect(() => {
+    if (passiveEntryRef.current) return;
     useTournamentStore.setState((s) => ({
       fights: s.fights.filter((f) => !f.importedFrom || f.groupId?.startsWith("EXT:")),
     }));
@@ -1893,9 +2461,11 @@ export function FightPage() {
   // ya tenga peleas de un torneo local.
   // biome-ignore lint/correctness/useExhaustiveDependencies: keyed category remounts this page to sync its server queue
   React.useEffect(() => {
+    if (passiveEntryRef.current) return;
     fetch(`/api/ring/queue?categoryId=${encodeURIComponent(config.id)}`)
       .then((r) => r.json())
       .then((queue: Array<{ fight: { id: string; categoryId?: string | null; sourceRing: string | null; red: { id: string; name: string }; blue: { id: string; name: string } } }>) => {
+        if (passiveEntryRef.current || useTournamentStore.getState().config.id !== config.id) return;
         if (!Array.isArray(queue) || queue.length === 0) return;
         // Only import fights that came from another ring (sourceRing != null).
         // Local fights (sourceRing == null) already live in the Zustand store — importing
@@ -1914,35 +2484,6 @@ export function FightPage() {
       })
       .catch(() => { /* non-critical */ });
   }, [config.id]);
-
-  // Auto-sync: garantiza que el servidor DB tiene todas las peleas pendientes.
-  // INSERT OR IGNORE → seguro llamarlo varias veces, no resetea estado.
-  // Depende de fights.length para re-disparar después de Zustand persist hydration.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: fights.length re-triggers after Zustand hydration; other deps are stable
-  React.useEffect(() => {
-    if (fights.length === 0) return;
-    const pending = fights.filter((f) => !f.completed);
-    if (pending.length === 0) return;
-    const uniqueCompetitors = Array.from(
-      new Map(
-        fights.flatMap((f) => [
-          [f.red.id, { id: f.red.id, name: f.red.name, team: f.red.team }],
-          [f.blue.id, { id: f.blue.id, name: f.blue.name, team: f.blue.team }],
-        ])
-      ).values()
-    );
-    fetch("/api/ring/sync-fights", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        categoryId: config.id,
-        categoryName: config.categoryName,
-        tournamentName: config.tournamentName,
-        competitors: uniqueCompetitors,
-        fights: fights.map((f) => ({ id: f.id, red_id: f.red.id, blue_id: f.blue.id, completed: f.completed })),
-      }),
-    }).catch(() => { /* non-critical */ });
-  }, [fights.length, config.id, config.categoryName, config.tournamentName]);
 
   const loadingMatchRef = React.useRef<string | null>(null);
   function waitForSocketState(predicate: (next: ServerState) => boolean, timeoutMs = 5000): Promise<boolean> {
@@ -1963,39 +2504,339 @@ export function FightPage() {
     });
   }
 
-  async function handleLoad() {
-    if (!currentFight) return;
+  function requestMatchAction(
+    event: "mesa:goldenVote" | "mesa:confirmGoldenOutcome" | "mesa:undoRound",
+    payload: Record<string, unknown>,
+    matchesUpdate: (next: ServerState) => boolean,
+    actionLabel = "Punto de Oro",
+  ): Promise<void> {
+    if (!socket || !currentFight || !beginExplicitOperation()) {
+      return Promise.reject(new Error("No hay conexión con el tatami; no se registró la acción."));
+    }
+    return new Promise((resolve, reject) => {
+      let acknowledged = false;
+      let updated = false;
+      let settled = false;
+      let timeoutId = 0;
+      const cleanup = (): void => {
+        window.clearTimeout(timeoutId);
+        socket.off("state:update", onStateUpdate);
+      };
+      const fail = (message: string): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error(message));
+      };
+      const complete = (): void => {
+        if (settled || !acknowledged || !updated) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const onStateUpdate = (next: ServerState): void => {
+        if (!matchesUpdate(next)) return;
+        updated = true;
+        complete();
+      };
+      socket.on("state:update", onStateUpdate);
+      timeoutId = window.setTimeout(() => {
+        fail(acknowledged
+          ? "El servidor aceptó la acción, pero la pantalla no recibió el estado actualizado. Revisá antes de repetir."
+          : "El servidor no confirmó la acción. El voto no avanzó en esta pantalla.");
+      }, 6500);
+      void request<GoldenActionReply>(event, withMatchContext(event, payload, config.id, currentFight.id))
+        .then((reply) => {
+          if (!reply?.ok) {
+            fail(reply?.error ?? "El servidor rechazó la acción de Punto de Oro.");
+            return;
+          }
+          acknowledged = true;
+          complete();
+        })
+        .catch((error: unknown) => {
+          fail(error instanceof Error ? error.message : `No se pudo registrar ${actionLabel}.`);
+        });
+    });
+  }
+
+  async function handleGoldenVote(judgeId: string, competitor: "red" | "blue", attempt: number): Promise<void> {
+    if (!beginExplicitOperation()) return;
+    if (goldenActionRef.current) return;
+    if (!currentFight || state.categoryId !== config.id || state.match?.id !== currentFight.id ||
+      phase !== "golden_point" || matchState?.goldenPoint?.attempt !== attempt) {
+      toast.error("El Punto de Oro cambió de pelea o intento. Revisá el estado antes de votar.");
+      return;
+    }
+    goldenActionRef.current = true;
+    setGoldenActionPending(true);
+    try {
+      await requestMatchAction("mesa:goldenVote", { judgeId, competitor, attempt }, (next) =>
+        next.categoryId === config.id && next.match?.id === currentFight.id &&
+        next.matchState?.phase === "golden_point" &&
+        next.matchState.goldenPoint?.attempt === attempt &&
+        next.matchState.goldenPoint.votes[judgeId] === competitor);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo registrar el voto.");
+    } finally {
+      goldenActionRef.current = false;
+      setGoldenActionPending(false);
+    }
+  }
+
+  async function handleConfirmGoldenOutcome(attempt: number): Promise<void> {
+    if (!beginExplicitOperation()) return;
+    if (goldenActionRef.current) return;
+    const votes = matchState?.goldenPoint?.votes;
+    if (!currentFight || state.categoryId !== config.id || state.match?.id !== currentFight.id ||
+      phase !== "golden_point" || matchState?.goldenPoint?.attempt !== attempt || !votes) {
+      toast.error("El Punto de Oro cambió de pelea o intento. Revisá antes de confirmar.");
+      return;
+    }
+    const judgeCount = state.rules?.judgesCount ?? config.judgesCount;
+    const redVotes = Object.values(votes).filter((vote) => vote === "red").length;
+    const blueVotes = Object.values(votes).filter((vote) => vote === "blue").length;
+    const majority = Math.floor(judgeCount / 2) + 1;
+    const winner = redVotes >= majority ? "red" : blueVotes >= majority ? "blue" : null;
+    const isDraw = !winner && redVotes + blueVotes === judgeCount && redVotes === blueVotes;
+    if (!winner && !isDraw) {
+      toast.error("Todavía no hay mayoría ni empate completo para confirmar.");
+      return;
+    }
+    goldenActionRef.current = true;
+    setGoldenActionPending(true);
+    try {
+      await requestMatchAction("mesa:confirmGoldenOutcome", { attempt }, (next) =>
+        hasConfirmedGoldenOutcomeUpdate(next, config.id, currentFight.id, attempt, winner));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo confirmar el intento.");
+    } finally {
+      goldenActionRef.current = false;
+      setGoldenActionPending(false);
+    }
+  }
+
+  function requestSanctionAction(
+    side: SanctionSide,
+    kind: SanctionKind,
+    expectedCount: number,
+    count: number,
+  ): Promise<SanctionActionReply> {
+    if (!socket || !currentFight || !beginExplicitOperation()) {
+      return Promise.reject(new Error("Sin conexión con el tatami; no se registró la sanción."));
+    }
+    const categoryId = config.id;
+    const matchId = currentFight.id;
+    return new Promise((resolve, reject) => {
+      let reply: SanctionActionReply | null = null;
+      let updated = false;
+      let settled = false;
+      const cleanup = (): void => {
+        window.clearTimeout(timeoutId);
+        socket.off("state:update", onStateUpdate);
+      };
+      const fail = (message: string): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(new Error(message));
+      };
+      const complete = (): void => {
+        if (settled || !reply || !updated) return;
+        settled = true;
+        cleanup();
+        resolve(reply);
+      };
+      const onStateUpdate = (next: ServerState): void => {
+        if (!hasSanctionCountUpdate(next, categoryId, matchId, side, kind, count)) return;
+        updated = true;
+        complete();
+      };
+      socket.on("state:update", onStateUpdate);
+      const timeoutId = window.setTimeout(() => fail(reply
+        ? "La sanción se aceptó, pero no llegó el estado actualizado. Revisá antes de reintentar."
+        : "El servidor no confirmó la sanción. Revisá antes de reintentar."), 7500);
+      void request<SanctionActionReply>("mesa:setSanctionCount", {
+        categoryId,
+        matchId,
+        competitor: side,
+        kind,
+        expectedCount,
+        count,
+      }, 7000).then((response) => {
+        if (!response?.ok) {
+          fail(response?.error ?? (response?.code === "stale_count"
+            ? "Otra mesa cambió la sanción. Revisá los valores actuales antes de reintentar."
+            : "El servidor rechazó el cambio de sanción."));
+          return;
+        }
+        if (!response.counts || sanctionCount(response.counts, side, kind) !== count) {
+          fail("La respuesta del servidor no coincide con el valor solicitado. Revisá la sanción.");
+          return;
+        }
+        reply = response;
+        complete();
+      }).catch((error: unknown) => {
+        fail(error instanceof Error ? error.message : "No se pudo guardar la sanción.");
+      });
+    });
+  }
+
+  async function handleReviewSanction(
+    side: SanctionSide,
+    kind: SanctionKind,
+    delta: -1 | 1,
+  ): Promise<void> {
+    if (sanctionActionRef.current) return;
+    if (!canReviewSanctions || !currentFight) {
+      toast.error("La revisión de sanciones ya no está disponible para esta pelea.");
+      return;
+    }
+    const expectedCount = sanctionCount(penaltyCounts, side, kind);
+    const count = expectedCount + delta;
+    if (count < 0) return;
+    sanctionActionRef.current = true;
+    setSanctionActionPending(true);
+    try {
+      const reply = await requestSanctionAction(side, kind, expectedCount, count);
+      if (phase === "finished") {
+        const checked = await request<{ ok: boolean; result: MatchResultRecord | null }>(
+          "match:result:get", { categoryId: config.id, matchId: currentFight.id },
+        );
+        const result = checked?.result;
+        if (!checked?.ok || !result || result.fightId !== currentFight.id ||
+          result.categoryId !== config.id || !reply.counts ||
+          result.warningsRed !== reply.counts.warnings.red ||
+          result.warningsBlue !== reply.counts.warnings.blue ||
+          result.foulsRed !== reply.counts.fouls.red ||
+          result.foulsBlue !== reply.counts.fouls.blue) {
+          throw new Error("El estado cambió, pero no se pudo verificar el fallo guardado. Revisá antes de confirmar.");
+        }
+      }
+      toast.success("Sanción guardada y verificada en el servidor.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo confirmar la sanción.");
+    } finally {
+      sanctionActionRef.current = false;
+      setSanctionActionPending(false);
+    }
+  }
+
+  function handleScoreSanction(
+    side: SanctionSide,
+    kind: SanctionKind,
+    delta: -1 | 1,
+  ): void {
+    dispatchScoreSanctionAction(side, kind, delta, canEditLiveSanctions, canReviewSanctions,
+      (competitor, type) => emit("match:event", { judgeId: "arbiter", competitor, type }),
+      (competitor, sanctionKind, adjustment) => {
+        void handleReviewSanction(competitor, sanctionKind, adjustment);
+      });
+  }
+
+  async function handleLoad(): Promise<boolean> {
+    if (!currentFight) return false;
+    if (!beginExplicitOperation(false)) return false;
+    if (config.mode !== "elimination" && !isAuthorizedPlayoffFight(currentFight, fights, currentGroupIds)) {
+      toast.error("Esta pelea extra no fue creada después de cerrar la llave. Revisá la clasificación antes de cargarla.");
+      return false;
+    }
+    let overrideSeconds: number | null;
+    try {
+      overrideSeconds = canEditPreloadDuration
+        ? parseBoutDurationOverride(preloadDurationInput)
+        : null;
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Duración inválida.");
+      return false;
+    }
+    if (!canLoadFight) {
+      toast.error(otherFightLocked ? fightLockNotice?.message : "No hay conexión sincronizada con el tatami. La pelea no se cargó.");
+      return false;
+    }
+    const recordRefusal = (info: BlockedFightInfo): string => {
+      const latest = useTournamentStore.getState();
+      const latestState = latestConnectionRef.current.state;
+      // A refusal belongs to the attempted selection, not a different tab/fight
+      // opened while its acknowledgement was in flight. A new broadcast supersedes it.
+      if (latest.config.id === config.id && latest.fights[latest.currentFightIndex]?.id === currentFight.id &&
+        !(latestState.match?.id === info.blockedFightId && latestState.categoryId === info.blockedCategoryId && latestState.resultConfirmed)) {
+        setLoadRefusal({ categoryId: config.id, matchId: currentFight.id, serverState: latestState, info });
+      }
+      return describeFightLock(latestState, config.id, latest.fights, info)?.message ?? "Otro combate ocupa el tatami.";
+    };
     const requestKey = `${config.id}:${currentFight.id}`;
-    if (loadingMatchRef.current === requestKey) return;
+    if (loadingMatchRef.current === requestKey) return false;
     loadingMatchRef.current = requestKey;
     useTournamentStore.getState().setCategoryOperationReason("Confirmando la carga del combate con el servidor…");
+    try {
+      const statusResponse = await fetch("/api/ring/status");
+      if (!statusResponse.ok) throw new Error("No se pudo verificar el estado del tatami.");
+      const status = await statusResponse.json() as {
+        activeMatchLock?: { categoryId: string | null; fightId?: string; resultStatus?: string | null } | null;
+      };
+      if (status.activeMatchLock && (status.activeMatchLock.categoryId !== config.id ||
+        (status.activeMatchLock.fightId && status.activeMatchLock.fightId !== currentFight.id))) {
+        const lock = status.activeMatchLock;
+        throw new Error(lock.fightId ? recordRefusal({ blockedFightId: lock.fightId,
+          blockedCategoryId: lock.categoryId, pendingConfirmation: lock.resultStatus === "pending_confirmation" })
+          : "Otro combate ocupa este tatami. Volvé a su categoría para revisar su estado antes de cargar otra pelea.");
+      }
+      const uniqueCompetitors = Array.from(new Map(fights.flatMap((fight) => [
+        [fight.red.id, { id: fight.red.id, name: fight.red.name, team: fight.red.team }],
+        [fight.blue.id, { id: fight.blue.id, name: fight.blue.name, team: fight.blue.team }],
+      ])).values());
+      if (!beginExplicitOperation(false)) throw new Error("El estado del tatami cambió; no se cargó el combate.");
+      const syncResponse = await fetch("/api/ring/sync-fights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          categoryId: config.id,
+          categoryName: config.categoryName,
+          tournamentName: config.tournamentName,
+          competitors: uniqueCompetitors,
+          fights: fights.map((fight) => ({
+            id: fight.id, red_id: fight.red.id, blue_id: fight.blue.id, completed: fight.completed,
+          })),
+        }),
+      });
+      if (!syncResponse.ok) {
+        const result = await syncResponse.json().catch(() => null) as { error?: string } | null;
+        throw new Error(result?.error ?? "El servidor rechazó la sincronización de peleas.");
+      }
+    } catch (error) {
+      loadingMatchRef.current = null;
+      useTournamentStore.getState().setCategoryOperationReason(null);
+      toast.error(error instanceof Error ? error.message : "No se pudo sincronizar la categoría.");
+      return false;
+    }
+    if (!beginExplicitOperation(false)) {
+      loadingMatchRef.current = null;
+      useTournamentStore.getState().setCategoryOperationReason(null);
+      return false;
+    }
     const baseRules = (config.ruleSet as RuleSetSparring) ?? DEFAULT_RULES;
     // judgingMode must match the UI mode: mobile judges score points, mesa judges vote flags
     let rules: RuleSetSparring = {
       ...baseRules,
-      judgingMode: bottomTab === "remotos" ? "points" : "flags",
+      judgingMode: selectedBottomTab === "remotos" ? "points" : "flags",
     };
-    // Desempate: sobreescribir a 1 round con duración personalizada
-    if (currentFight.tiebreakerSeconds != null) {
-      rules = { ...rules, rounds: { ...rules.rounds, count: 1, duration_seconds: currentFight.tiebreakerSeconds } };
-    }
-    // Final: aplicar cantidad de rounds y/o duración configurada para la final
-    if (currentFight.isFinalFight && config.finalRounds != null) {
-      rules = { ...rules, rounds: { ...rules.rounds, count: config.finalRounds } };
-    }
-    if (currentFight.isFinalFight && config.finalSeconds != null) {
-      rules = { ...rules, rounds: { ...rules.rounds, duration_seconds: config.finalSeconds } };
-    }
-    // Punto de Oro: round de 1 segundo + golden_point → entra inmediatamente en muerte súdita
+    rules = applyFightTiming(rules, config, currentFight, bracketMatches);
+    rules = applyBoutDurationOverride(rules, overrideSeconds);
+    // A normal round-robin draw is a valid result. Never let a legacy ruleset
+    // start an overtime or Golden Point inside that ordinary bout.
+    rules = withoutRegularRoundRobinTiebreak(rules, config.mode, currentFight);
     if (currentFight.isGoldenPointFight) {
-      rules = { ...rules, rounds: { ...rules.rounds, count: 1, duration_seconds: 1, golden_point: true, overtime_seconds: 0 } };
+      rules = { ...rules, rounds: { ...rules.rounds, golden_point: true, overtime_seconds: 0 } };
     }
-    const response = await request<{ ok: boolean; error?: string; warning?: string }>("match:load", {
+    const response = await request<MatchLoadReply>("match:load", {
       categoryId: config.id,
       tournamentName: config.tournamentName,
       rules,
       match: {
         id: currentFight.id,
+        goldenPoint: currentFight.isGoldenPointFight || undefined,
+        requireIndividualFlags: requiresIndividualFlagsForBout(config.mode, currentFight),
         ringId: "ring-1",
         category: config.categoryName || undefined,
     matchMode: (rules as { mode?: string }).mode === 'patterns' ? 'patterns' : config.matchType === 'tul' ? 'tul' : 'sparring',
@@ -2006,9 +2847,15 @@ export function FightPage() {
     loadingMatchRef.current = null;
     if (!response?.ok) {
       useTournamentStore.getState().setCategoryOperationReason(null);
-      toast.error(response?.error ?? "No se pudo confirmar la carga del combate. El estado local no avanzó.");
-      return;
+      const info = response?.blockedFightId &&
+        (typeof response.blockedCategoryId === "string" || response.blockedCategoryId === null)
+        ? { blockedFightId: response.blockedFightId, blockedCategoryId: response.blockedCategoryId,
+          pendingConfirmation: !!response.pendingConfirmation, blockedRedName: response.blockedRedName,
+          blockedBlueName: response.blockedBlueName } : null;
+      toast.error(info ? recordRefusal(info) : response?.error ?? "No se pudo confirmar la carga del combate. El estado local no avanzó.");
+      return false;
     }
+    setLoadRefusal(null);
     if (response.warning) toast.warning(response.warning);
     const stateSynced = await waitForSocketState((next) =>
       next.categoryId === config.id && next.match?.id === currentFight.id && !next.resultConfirmed,
@@ -2016,17 +2863,46 @@ export function FightPage() {
     useTournamentStore.getState().setCategoryOperationReason(null);
     if (!stateSynced) {
       toast.warning("El servidor aceptó la carga, pero todavía no confirmó su estado en esta pantalla. Se conserva el bloqueo del servidor.");
+      return false;
     }
     const selectedFight = useTournamentStore.getState().fights[useTournamentStore.getState().currentFightIndex];
     if (selectedFight?.id === currentFight.id && useTournamentStore.getState().config.id === config.id) {
       setLoaded(true);
+      return true;
     }
+    return false;
+  }
+
+  async function handleRedoFight(): Promise<void> {
+    if (!beginExplicitOperation(false)) return;
+    const latest = latestConnectionRef.current;
+    const local = useTournamentStore.getState();
+    const selected = local.fights[local.currentFightIndex];
+    const lock = latest.state.activeMatchLock;
+    const anotherLock = !!lock && (lock.categoryId !== config.id || lock.fightId !== currentFight?.id);
+    const anotherMatch = !!latest.state.match && !latest.state.resultConfirmed &&
+      (latest.state.categoryId !== config.id || latest.state.match.id !== currentFight?.id);
+    if (!latest.connected || !latest.stateReady || anotherLock || anotherMatch ||
+      local.config.id !== config.id || selected?.id !== currentFight?.id || !selected?.completed) {
+      toast.warning("No se puede rehacer este resultado mientras el tatami está ocupado o sin sincronizar.");
+      return;
+    }
+    // The server may reject a durable completed result. Never erase it locally
+    // until it has accepted and broadcast the replacement bout.
+    if (!await handleLoad()) return;
+    const afterLoad = useTournamentStore.getState();
+    if (afterLoad.config.id !== config.id || afterLoad.fights[afterLoad.currentFightIndex]?.id !== selected.id) return;
+    resetFight(selected.id);
+    setConfirmRedo(false);
   }
 
   // Auto-cargar combates de desempate y Punto de Oro cuando se convierten en el combate activo
   // biome-ignore lint/correctness/useExhaustiveDependencies: currentFight.id change is the signal; handleLoad uses latest closure
   React.useEffect(() => {
-    if ((currentFight?.isTiebreakExtra || currentFight?.isGoldenPointFight) && !loaded && !currentFight.completed && connected) {
+    if (passiveEntryRef.current) return;
+    if (userSelectedFightRef.current === currentFight?.id) return;
+    if ((currentFight?.isTiebreakExtra || currentFight?.isGoldenPointFight) && !loaded && !currentFight.completed && connected &&
+      (config.mode === "elimination" || isAuthorizedPlayoffFight(currentFight, fights, currentGroupIds))) {
       handleLoad();
     }
   }, [currentFight?.id, connected]);
@@ -2038,28 +2914,47 @@ export function FightPage() {
     if (loaded) return;
     if (!connected) return;
     if (!currentFight || currentFight.completed) return;
-    if (state.match?.id === currentFight.id && state.matchState != null) {
+    if (state.categoryId === config.id && state.match?.id === currentFight.id &&
+      state.matchState != null && !state.resultConfirmed) {
       setLoaded(true);
+      if (passiveEntryRef.current && state.matchState.phase === "finished" && state.matchState.result) {
+        setWinnerOverlayOpen(true);
+      }
     }
-  }, [connected, currentFight?.id, currentFight?.completed, state.match?.id, state.matchState, loaded]);
+  }, [connected, config.id, currentFight?.id, currentFight?.completed, state.categoryId,
+    state.match?.id, state.matchState, state.resultConfirmed, loaded]);
 
   // Reconcile a durable server result after reload/reconnect before allowing local progression.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reconnect and selected fight identify the recovery request
   React.useEffect(() => {
-    if (!connected || !stateReady || !currentFight) return;
+    if (passiveEntryRef.current) return;
+    if (!connected || !stateReady || !currentFight || currentFight.completed) return;
+    if (userSelectedFightRef.current === currentFight.id) return;
+    if (config.mode !== "elimination" && !isAuthorizedPlayoffFight(currentFight, fights, currentGroupIds)) return;
     let cancelled = false;
+    function canApplyRecovery(): boolean {
+      const latest = useTournamentStore.getState();
+      return !cancelled && latest.config.id === config.id &&
+        !passiveEntryRef.current &&
+        latest.fights[latest.currentFightIndex]?.id === currentFight?.id &&
+        !latest.fights.find((fight) => fight.id === currentFight?.id)?.completed &&
+        userSelectedFightRef.current !== currentFight?.id;
+    }
     void (async () => {
       const identity = { categoryId: config.id, matchId: currentFight.id };
       const response = await request<{ ok: boolean; result: MatchResultRecord | null }>("match:result:get", identity);
       if (cancelled || !response?.ok || !response.result) return;
+      // A late acknowledgement must not advance a result that was completed or
+      // deliberately selected for review while the recovery request was in flight.
+      if (!canApplyRecovery()) return;
       let result = response.result;
       if (result.status === "pending_confirmation"
         && (state.match?.id !== currentFight.id || state.categoryId !== config.id)) {
-        const recovered = await requestConfirmedResult(currentFight.id);
+        const recovered = await requestConfirmedResult(currentFight.id, undefined);
         if (!recovered) return;
         result = recovered;
       }
-      if (!cancelled && result.status === "confirmed" && applyConfirmedResult(result)) {
+      if (canApplyRecovery() && result.status === "confirmed" && applyConfirmedResult(result)) {
         advanceAfterConfirmedResult(result.fightId);
       }
     })();
@@ -2069,10 +2964,11 @@ export function FightPage() {
   // When judge mode changes while a fight is loaded in "idle", reload so judgingMode matches.
   // If mid-fight, just warn — change takes effect on next fight.
   // In Tul mode, skip: tab changes don't affect judgingMode (always flags), and reloading would reset tulPhase.
-  const prevBottomTabRef = React.useRef(bottomTab);
+  const prevBottomTabRef = React.useRef(selectedBottomTab);
   React.useEffect(() => {
-    if (prevBottomTabRef.current === bottomTab) return;
-    prevBottomTabRef.current = bottomTab;
+    if (prevBottomTabRef.current === selectedBottomTab) return;
+    prevBottomTabRef.current = selectedBottomTab;
+    if (passiveEntryRef.current) return;
     if (isTul) return;
     if (!loaded || !currentFight) return;
     if (phase === "idle") {
@@ -2082,11 +2978,59 @@ export function FightPage() {
     }
   });
 
-  async function requestConfirmedResult(matchId: string): Promise<MatchResultRecord | null> {
+  async function handleCorrectFlags(): Promise<void> {
+    if (flagCorrectionRef.current || !currentFight || !loaded || !connected || !stateReady ||
+      state.resultConfirmed || state.matchState?.phase !== "finished" ||
+      state.matchState.result?.reason !== "points") return;
+    if (!beginExplicitOperation()) return;
+    if (isTul) {
+      // Tul has its own existing voting flow; do not route it through sparring result invalidation.
+      emit("tul:undoFinish");
+      setWinnerOverlayOpen(false);
+      return;
+    }
+    const categoryId = config.id;
+    const matchId = currentFight.id;
+    const revision = state.resultRevision ?? 0;
+    flagCorrectionRef.current = true;
+    setFlagCorrectionView(state);
+    setFlagCorrectionError(null);
+    setFlagCorrectionPending(true);
+    try {
+      await requestMatchAction("mesa:undoRound", { expectedRevision: revision },
+        (next) => hasReopenedFlagUpdate(next, categoryId, matchId, revision + 1),
+        "corrección de banderines");
+      const latest = useTournamentStore.getState();
+      if (latest.config.id !== categoryId || latest.fights[latest.currentFightIndex]?.id !== matchId) return;
+      setResultDialogOpen(false);
+      setWinnerOverlayOpen(false);
+      setFlagCorrectionView(null);
+      toast.info("Corregí los banderines de cada juez y volvé a confirmar la votación.");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : "No se pudo reabrir la votación; el resultado sigue intacto.";
+      setFlagCorrectionError(message);
+      toast.error(message);
+    } finally {
+      flagCorrectionRef.current = false;
+      setFlagCorrectionPending(false);
+    }
+  }
+
+  async function requestConfirmedResult(matchId: string, expectedRevision: number | undefined): Promise<MatchResultRecord | null> {
     const identity = { categoryId: config.id, matchId };
+    // Confirm exactly the revision displayed to this chief; never silently adopt a newer winner.
+    if (expectedRevision === undefined) {
+      const recovered = await request<{ ok: boolean; result: MatchResultRecord | null }>("match:result:get", identity);
+      // Read-only recovery may apply an already confirmed result, never approve a
+      // newly discovered pending revision that this chief has not reviewed.
+      if (recovered?.ok && recovered.result?.status === "confirmed") return recovered.result;
+      toast.error("Volvé al combate activo y revisá su resultado antes de confirmarlo.");
+      return null;
+    }
+    if (!beginExplicitOperation()) return null;
     const confirmation = await request<{ ok: boolean; error?: string; result?: MatchResultRecord }>(
       "match:saveFallo",
-      identity,
+      { ...identity, expectedRevision },
     );
     if (confirmation?.ok && confirmation.result?.status === "confirmed") return confirmation.result;
 
@@ -2152,39 +3096,112 @@ export function FightPage() {
   }
 
   async function handleStartTiebreaker() {
-    if (!currentFight) return;
-    if (isConfirmingResult) return;
+    if (!currentFight || !beginExplicitOperation(!selectedFight?.completed)) return;
+    if (config.mode !== "elimination" &&
+      (!currentFight.isFinalFight && !currentFight.isTiebreakExtra && !currentFight.isGoldenPointFight ||
+        !isAuthorizedPlayoffFight(currentFight, fights, currentGroupIds))) return;
+    if (isMiniPlayoff) return;
+    if (continuationActionRef.current || isConfirmingResult || sanctionActionRef.current ||
+      flagCorrectionRef.current) return;
+    continuationActionRef.current = true;
     setIsConfirmingResult(true);
     const operationReason = "Confirmando el empate antes de continuar…";
     useTournamentStore.getState().setCategoryOperationReason(operationReason);
     try {
-      const result = await requestConfirmedResult(currentFight.id);
-      setIsConfirmingResult(false);
-      if (!result || result.winner !== "draw" || !applyConfirmedResult(result)) return;
-      const matchId = currentFight.bracketMatchId;
-      const freshFights = useTournamentStore.getState().fights;
-      const completedTbs = freshFights.filter(
-        (f) => f.isTiebreakExtra && f.completed && f.bracketMatchId === matchId
-      ).length;
-      const isGoldenPoint = completedTbs >= (config.maxTiebreakers ?? 1);
+      let result: MatchResultRecord | null = null;
+      if (config.mode !== "elimination") {
+        result = await requestConfirmedResult(currentFight.id,
+          resultDialogContextRef.current?.revision);
+        if (!result || result.winner !== "draw" || !applyConfirmedResult(result)) return;
+      }
+      // En una llave: pelea extra, desempate cronometrado y luego Punto de Oro.
+      // En la final directa: final, desempate cronometrado y luego Punto de Oro.
+      const isGoldenPoint = config.mode === "elimination"
+        ? Boolean(currentFight.isTiebreakExtra || currentFight.isGoldenPointFight)
+        : nextDirectFightIsGoldenPoint(currentFight, useTournamentStore.getState().fights);
+      const playoffBasis = config.mode === "elimination" ? undefined :
+        currentFight.playoffBasis ?? closedGroupBasis(currentFight.groupId ?? "G1", useTournamentStore.getState().fights, currentGroupIds);
+      if (config.mode !== "elimination" && !playoffBasis) return;
 
-      const nextFight: FightEntry = {
+      const proposalStage = JSON.stringify({
+        kind: "direct-continuation", currentFightId: currentFight.id,
+        playoffBasis, isGoldenPoint,
+      });
+      const [nextFight] = getOrCreateFightProposal(config.id, proposalStage, () => [{
         id: crypto.randomUUID(),
         red: currentFight.red,
         blue: currentFight.blue,
         completed: false,
         isTiebreakExtra: !isGoldenPoint,
         isGoldenPointFight: isGoldenPoint || undefined,
+        playoffKind: "direct",
+        playoffBasis: playoffBasis ?? undefined,
         bracketMatchId: currentFight.bracketMatchId ?? currentFight.id,
         tiebreakerSeconds: isGoldenPoint ? undefined : tiebreakerDuration,
         groupId: currentFight.groupId,
-      };
-      addTiebreakFights([nextFight]);
+        isFinalFight: currentFight.isFinalFight || undefined,
+        ...(config.mode === "elimination" ? {
+          continuationParentFightId: currentFight.id,
+          continuationStage: isGoldenPoint ? "golden-point" as const : "timed-extra" as const,
+        } : {}),
+      }]);
+      if (config.mode === "elimination" && !eliminationContinuationSchema.safeParse({
+        parentFightId: currentFight.id, parentRevision: 0,
+        proposedFight: { id: nextFight.id, red_id: nextFight.red.id,
+          blue_id: nextFight.blue.id,
+          stage: isGoldenPoint ? "golden-point" : "timed-extra" },
+      }).success) {
+        throw new Error("La propuesta de desempate guardada no es válida; revisá el historial antes de confirmar.");
+      }
+      // Journal and validate the proposed identity before confirming the drawn result.
+      if (config.mode === "elimination") {
+        result = await requestConfirmedResult(currentFight.id,
+          selectedFight?.completed ? undefined : resultDialogContextRef.current?.revision);
+        if (!result || result.winner !== "draw" || !applyConfirmedResult(result)) return;
+      }
+      const beforeAppend = useTournamentStore.getState();
+      const sameGroupFights = config.mode === "elimination"
+        ? beforeAppend.fights.filter((fight) => fight.id === currentFight.id) :
+        beforeAppend.fights.filter((fight) =>
+          (fight.groupId ?? "G1") === (currentFight.groupId ?? "G1") &&
+          !fight.importedFrom && !fight.groupId?.startsWith("EXT:"));
+      if (sameGroupFights.some((fight) => !fight.completed || !fight.winner))
+        throw new Error("Faltan peleas de la llave por confirmar antes de continuar.");
+      const requiredConfirmedFightIds = sameGroupFights.map((fight) => fight.id);
+      let durableFight = nextFight;
+      if (config.mode === "elimination") {
+        const stage = isGoldenPoint ? "golden-point" as const : "timed-extra" as const;
+        const revision = result?.revision ?? 0;
+        const canonical = await getCanonicalEliminationContinuation(config.id, currentFight.id) ??
+          await syncProposedFights(config, [...beforeAppend.fights, nextFight],
+            requiredConfirmedFightIds, { parentFightId: currentFight.id,
+              parentRevision: revision, proposedFight: { id: nextFight.id,
+                red_id: nextFight.red.id, blue_id: nextFight.blue.id, stage } });
+        if (!canonical || canonical.parentFightId !== currentFight.id ||
+          canonical.parentRevision !== revision || canonical.stage !== stage ||
+          canonical.red_id !== nextFight.red.id || canonical.blue_id !== nextFight.blue.id)
+          throw new Error("El desempate canónico no coincide con el empate confirmado.");
+        durableFight = { ...nextFight, id: canonical.id,
+          continuationParentFightId: canonical.parentFightId,
+          continuationStage: canonical.stage };
+      } else {
+        await syncProposedFights(config, [...beforeAppend.fights, nextFight],
+          requiredConfirmedFightIds);
+      }
+      if (useTournamentStore.getState().config.id !== config.id ||
+        useTournamentStore.getState().fights !== beforeAppend.fights) {
+        toast.warning("La categoría cambió durante la sincronización; no se avanzó localmente.");
+        return;
+      }
+      if (beforeAppend.fights.some((fight) => fight.id === durableFight.id)) return;
+      addTiebreakFights([durableFight]);
+      clearFightProposal(config.id, proposalStage, [nextFight]);
       setResultDialogOpen(false);
       setLoaded(false);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "No se pudo confirmar el empate.");
     } finally {
+      continuationActionRef.current = false;
       setIsConfirmingResult(false);
       if (useTournamentStore.getState().categoryOperationReason === operationReason) {
         useTournamentStore.getState().setCategoryOperationReason(null);
@@ -2194,10 +3211,20 @@ export function FightPage() {
 
   function handleOpenResultDialog() {
     if (!matchState?.result) return;
-    let fr = (state.roundFlags ?? []).reduce((s, r) => s + r.red, 0);
-    let fb = (state.roundFlags ?? []).reduce((s, r) => s + r.blue, 0);
+    if (!currentFight || state.categoryId !== config.id || state.match?.id !== currentFight.id) return;
+    resultDialogContextRef.current = { categoryId: config.id, matchId: currentFight.id,
+      revision: state.resultRevision ?? 0 };
+    const goldenVotes = matchState.result.reason === "golden_point"
+      ? Object.values(matchState.goldenPoint?.votes ?? {})
+      : null;
+    let fr = goldenVotes
+      ? goldenVotes.filter((vote) => vote === "red").length
+      : (state.roundFlags ?? []).reduce((s, r) => s + r.red, 0);
+    let fb = goldenVotes
+      ? goldenVotes.filter((vote) => vote === "blue").length
+      : (state.roundFlags ?? []).reduce((s, r) => s + r.blue, 0);
     // En modo puntos (jueces móviles) roundFlags no se llena — usar conteo de jueces líderes
-    if (fr === 0 && fb === 0) {
+    if (!goldenVotes && fr === 0 && fb === 0) {
       const jt = state.judgeTotals ?? {};
       for (const t of Object.values(jt)) {
         if ((t.red ?? 0) > (t.blue ?? 0)) fr++;
@@ -2212,18 +3239,24 @@ export function FightPage() {
   }
 
   async function handleConfirmResult() {
+    if (!beginExplicitOperation()) return;
     if (!currentFight) return;
-    if (isConfirmingResult) return;
+    if (config.mode !== "elimination" && !isAuthorizedPlayoffFight(currentFight, fights, currentGroupIds)) {
+      toast.error("La pelea extra requiere revisión; no se confirmó ni avanzó la llave.");
+      return;
+    }
+    if (isConfirmingResult || sanctionActionRef.current || flagCorrectionRef.current) return;
     const winner = matchState?.result?.winner;
     if (!winner) return;
     // En eliminación, final, desempate y Punto de Oro: los empates deben seguir peleando — nunca confirmar directo
-    const requiresWinner = config.mode === "elimination" || currentFight.isFinalFight || currentFight.isTiebreakExtra || currentFight.isGoldenPointFight;
+    const requiresWinner = config.mode === "elimination" || currentFight.isGoldenPointFight ||
+      ((currentFight.isFinalFight || currentFight.isTiebreakExtra) && !isMiniPlayoff);
     if (winner === "draw" && requiresWinner) return;
     setIsConfirmingResult(true);
     const operationReason = "Guardando el resultado confirmado…";
     useTournamentStore.getState().setCategoryOperationReason(operationReason);
     try {
-      const result = await requestConfirmedResult(currentFight.id);
+      const result = await requestConfirmedResult(currentFight.id, resultDialogContextRef.current?.revision);
       if (!result || result.winner !== winner || !applyConfirmedResult(result)) return;
       setResultDialogOpen(false);
       advanceAfterConfirmedResult(currentFight.id);
@@ -2241,15 +3274,19 @@ export function FightPage() {
     return (
       <div className="flex-1 flex flex-col items-center justify-center gap-4 text-muted-foreground">
         <p>No hay combates. Configura la categoría primero.</p>
-        <button
+        {entry.mode === "normal" && <button
           type="button"
           onClick={async () => {
-            try { await fetch("/api/ring/full-reset", { method: "POST" }); } catch { reset(); }
+            try {
+              if (!connected || !stateReady || socketState.activeMatchLock) return;
+              const response = await fetch("/api/ring/full-reset", { method: "POST" });
+              if (!response.ok) toast.error("El servidor rechazó el reinicio; no se borraron datos locales.");
+            } catch { toast.error("No se pudo reiniciar el tatami."); }
           }}
           className="text-xs text-destructive underline underline-offset-2 hover:opacity-80"
         >
           Limpiar estado anterior y empezar de cero
-        </button>
+        </button>}
       </div>
     );
   }
@@ -2258,22 +3295,36 @@ export function FightPage() {
   const redName = (loaded ? state.match?.red.name : undefined) ?? currentFight?.red.name ?? "Rojo";
   const blueName = (loaded ? state.match?.blue.name : undefined) ?? currentFight?.blue.name ?? "Azul";
 
+  const overlayState = flagCorrectionView ?? state;
+  const overlayMatchState = overlayState.matchState;
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
 
       {/* ── WINNER OVERLAY ──────────────────────────────────── */}
-      <Dialog open={winnerOverlayOpen} onOpenChange={setWinnerOverlayOpen}>
+      <Dialog open={loaded && winnerOverlayOpen} onOpenChange={(open) => {
+        if (flagCorrectionPending) return;
+        setWinnerOverlayOpen(open);
+        if (!open) { setFlagCorrectionView(null); setFlagCorrectionError(null); }
+      }}>
         <DialogContent className="max-w-sm p-0 overflow-hidden border-0 [&>button:last-child]:hidden">
           <DialogHeader className="sr-only">
             <DialogTitle>Resultado del combate</DialogTitle>
           </DialogHeader>
-          {matchState?.result && (() => {
-            const { winner, reason } = matchState.result;
+          {overlayMatchState?.result && (() => {
+            const { winner, reason } = overlayMatchState.result;
+            const isGoldenPointResult = reason === "golden_point";
             const label = winner === "draw" ? "Empate" : winner === "red" ? redName : blueName;
-            const lastRound = state.roundFlags[state.roundFlags.length - 1];
-            const votes = state.judgeVotes ?? {};
+            const lastRound = overlayState.roundFlags[overlayState.roundFlags.length - 1];
+            const votes = isGoldenPointResult
+              ? overlayMatchState.goldenPoint?.votes ?? {}
+              : overlayState.judgeVotes ?? {};
             const hasIndividualVotes = Object.keys(votes).length > 0;
-            const judgeIds = Array.from({ length: config.judgesCount ?? 4 }, (_, i) => `J${i + 1}`);
+            const judgeIds = Array.from({
+              length: isGoldenPointResult
+                ? state.rules?.judgesCount ?? config.judgesCount
+                : config.judgesCount,
+            }, (_, i) => `J${i + 1}`);
             return (
               <div className={cn(
                 "flex flex-col items-center gap-6 py-10 px-8 text-center",
@@ -2292,10 +3343,22 @@ export function FightPage() {
 
                 {/* Razón */}
                 <p className="text-base text-white/50 -mt-2">
-                  {WIN_REASON_LABELS[reason] ?? reason}
+                  {reason === "points" && tableChiefRoundRobin
+                    ? "Banderines de los jueces"
+                    : WIN_REASON_LABELS[reason] ?? reason}
                 </p>
+                {isGoldenPointResult && !state.resultConfirmed && (
+                  <p data-testid="gp-pending-result" className="rounded-md border border-yellow-400/40 bg-yellow-950/50 px-3 py-2 text-sm font-semibold text-yellow-100">
+                    Resultado pendiente de confirmación oficial. El intento de Punto de Oro ya fue cerrado.
+                  </p>
+                )}
 
                 {/* Banderas */}
+                {isGoldenPointResult && (
+                  <p data-testid="gp-result-votes" className="text-xl font-bold text-white">
+                    🔴 {Object.values(votes).filter((vote) => vote === "red").length} — {Object.values(votes).filter((vote) => vote === "blue").length} 🔵
+                  </p>
+                )}
                 {lastRound && reason === "points" && (
                   <div className={cn(
                     "flex items-center gap-5 rounded-2xl px-8 py-4 text-3xl font-black",
@@ -2337,6 +3400,7 @@ export function FightPage() {
 
                 {/* Acciones */}
                 <div className="flex flex-col gap-2 w-full pt-2">
+                  {flagCorrectionError && <p role="alert" className="text-sm text-yellow-200">{flagCorrectionError}</p>}
                   <Button
                     size="lg"
                     className={cn(
@@ -2345,21 +3409,24 @@ export function FightPage() {
                       winner === "blue" ? "bg-blue-600 hover:bg-blue-500 text-white" :
                       "bg-primary hover:bg-primary/90"
                     )}
+                    disabled={flagCorrectionPending || state.matchState?.phase !== "finished"}
                     onClick={() => { setWinnerOverlayOpen(false); handleOpenResultDialog(); }}
                   >
-                    Confirmar resultado →
+                    {isGoldenPointResult ? "Revisar y confirmar resultado →" : "Confirmar resultado →"}
                   </Button>
-                  <Button
+                  {!isGoldenPointResult && <Button
                     variant="ghost"
                     size="lg"
                     className="w-full text-white/60 hover:text-white hover:bg-white/10"
-                    onClick={() => {
-                      emit(isTul ? "tul:undoFinish" : "mesa:undoRound");
-                      setWinnerOverlayOpen(false);
-                    }}
+                    disabled={flagCorrectionPending || !canOperateFight || !connected || !stateReady || !!state.resultConfirmed || state.matchState?.phase !== "finished"}
+                    onClick={() => void handleCorrectFlags()}
                   >
-                    ↩ Corregir banderas
-                  </Button>
+                    {flagCorrectionPending ? "Reabriendo votación..." : "↩ Corregir banderines"}
+                  </Button>}
+                  {flagCorrectionError && !flagCorrectionPending && state.matchState?.phase === "rest" && <Button
+                    variant="outline"
+                    onClick={() => { setWinnerOverlayOpen(false); setFlagCorrectionView(null); setFlagCorrectionError(null); }}
+                  >Cerrar y revisar votación</Button>}
                 </div>
               </div>
             );
@@ -2502,6 +3569,8 @@ export function FightPage() {
                   className="flex-1 bg-purple-700 hover:bg-purple-600"
                   disabled={!canSubmit}
                   onClick={() => {
+                    const latest = useTournamentStore.getState();
+                    if (latest.config.id !== config.id || getFightPageEntry(navigationIntent, latest.config.id, latest.fights).mode === "invalid") return;
                     addGuestFight(guestForm.red, guestForm.blue, guestForm.category, guestForm.ring);
                     // Mantener la categoría seleccionada para el próximo, solo limpiar nombres
                     setGuestForm((f) => ({ ...f, red: "", blue: "" }));
@@ -2525,9 +3594,9 @@ export function FightPage() {
           </DialogHeader>
           <div className="max-h-[60vh] overflow-y-auto space-y-0.5 pr-1">
             {(() => {
-              const regular = fights.filter((f) => !f.isTiebreakExtra && !f.isFinalFight);
+              const regular = fights.filter((f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight);
               const finals = fights.filter((f) => f.isFinalFight);
-              const tiebreaks = fights.filter((f) => f.isTiebreakExtra);
+              const tiebreaks = fights.filter((f) => f.isTiebreakExtra || f.isGoldenPointFight);
               const groups = Array.from(new Set(regular.map((f) => f.groupId ?? "—")));
               const isGrouped = groups.some((g) => g !== "—");
 
@@ -2536,7 +3605,7 @@ export function FightPage() {
                 return (
                   <FightListRow
                     key={f.id} fight={f} index={i} active={i === currentFightIndex}
-                    onSelect={(idx) => { setCurrentFightIndex(idx); setShowFightList(false); }}
+                    onSelect={(idx) => { selectFight(idx); setShowFightList(false); }}
                   />
                 );
               };
@@ -2586,7 +3655,7 @@ export function FightPage() {
             <Button
               size="icon" variant="ghost" className="size-8"
               disabled={currentFightIndex === 0}
-              onClick={() => setCurrentFightIndex(currentFightIndex - 1)}
+              onClick={() => selectFight(currentFightIndex - 1)}
             >
               <ChevronLeft className="size-4" />
             </Button>
@@ -2596,7 +3665,7 @@ export function FightPage() {
             <Button
               size="icon" variant="ghost" className="size-8"
               disabled={currentFightIndex === fights.length - 1}
-              onClick={() => setCurrentFightIndex(currentFightIndex + 1)}
+              onClick={() => selectFight(currentFightIndex + 1)}
             >
               <ChevronRight className="size-4" />
             </Button>
@@ -2629,6 +3698,7 @@ export function FightPage() {
             <Button
               size="sm"
               variant="outline"
+              disabled={entryInvalid}
               className="shrink-0 text-purple-300 border-purple-700/60 hover:bg-purple-900/20"
               title="Agregar pelea de otro cuadrilátero"
               onClick={() => setGuestDialogOpen(true)}
@@ -2639,7 +3709,8 @@ export function FightPage() {
             {/* Postergar pelea — mueve la actual una posición hacia adelante */}
             {currentFight && !currentFight.completed && (() => {
               const canPostpone = fights.some((f, i) => i > currentFightIndex && !f.completed);
-              const isActive = loaded && phase !== "idle" && phase !== "finished";
+              const isActive = loaded && phase !== "idle" &&
+                (phase !== "finished" || matchState?.result?.reason === "golden_point");
               let postponeTitle = "Postergar: llama a la siguiente pelea primero";
               if (isActive) postponeTitle = "No se puede postergar con el combate en curso";
               if (!canPostpone) postponeTitle = "No hay peleas pendientes a continuación";
@@ -2648,9 +3719,9 @@ export function FightPage() {
                   size="sm"
                   variant="outline"
                   className="shrink-0 text-yellow-400 border-yellow-700/60 hover:bg-yellow-900/20"
-                  disabled={!canPostpone || isActive}
+                  disabled={!canPostpone || isActive || !canOperateFight}
                   title={postponeTitle}
-                  onClick={() => { postponeFight(currentFight.id); setLoaded(false); emit("match:reset"); }}
+                  onClick={() => { if (!beginExplicitOperation()) return; postponeFight(currentFight.id); setLoaded(false); emit("match:reset"); }}
                 >
                   <SkipForward className="size-3.5" />
                   Postergar
@@ -2659,8 +3730,8 @@ export function FightPage() {
             })()}
 
             {/* Reiniciar (solo cuando ya está cargado) */}
-            {loaded && (
-              <Button size="sm" variant="outline" className="shrink-0"
+            {loaded && phase !== "golden_point" && matchState?.result?.reason !== "golden_point" && (
+              <Button size="sm" variant="outline" className="shrink-0" disabled={!canOperateFight}
                 onClick={() => { emit("match:reset"); setLoaded(false); }}>
                 <RotateCcw className="size-3.5" />
                 Reiniciar
@@ -2681,8 +3752,32 @@ export function FightPage() {
         </div>
 
         {/* Fila 2: barra de progreso de combates */}
-        <FightProgressStrip fights={fights} currentIndex={currentFightIndex} onSelect={setCurrentFightIndex} />
+        <FightProgressStrip fights={fights} currentIndex={currentFightIndex} onSelect={selectFight} />
       </div>
+
+      {config.mode === "elimination" && selectedFight?.completed &&
+        selectedFight.winner === "draw" &&
+        !fights.some((fight) => fight.continuationParentFightId === selectedFight.id) && (
+          <div className="mx-3 mt-3 rounded-lg border border-orange-700/60 bg-orange-950/20 p-3 flex items-center justify-between gap-3">
+            <p className="text-sm text-orange-200">
+              Empate confirmado. El desempate aún no figura en la lista local.
+            </p>
+            <Button type="button" variant="outline" disabled={!canLoadFight ||
+              isConfirmingResult || continuationActionRef.current}
+              onClick={handleStartTiebreaker}>
+              Reanudar desempate
+            </Button>
+          </div>
+        )}
+
+      {reviewingOtherFight && fightLockNotice && (
+        <div role="status" data-testid="fight-review-notice" className="shrink-0 flex items-center justify-between gap-3 border-b border-amber-700/40 bg-amber-950/20 px-4 py-2 text-xs">
+          <span>Consulta local · {fightLockNotice.message}{!connected && " Sin conexión: se muestran los últimos datos recibidos."}</span>
+          {fightLockNotice.localIndex !== null && <Button size="sm" variant="outline" onClick={returnToLockedFight}>
+            {fightLockNotice.actionLabel}
+          </Button>}
+        </div>
+      )}
 
       {/* ── BANNER ÚLTIMA PELEA DE LA LLAVE ──────────────────── */}
       {isLastInGroup && (
@@ -2692,7 +3787,7 @@ export function FightPage() {
       )}
 
       {/* ── ARENA ────────────────────────────────────────────────── */}
-      <div className="flex-1 min-h-0 overflow-hidden">
+      <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden">
 
         {/* DESKTOP (md+): 3 columnas lado a lado */}
         <div className="hidden md:grid h-full grid-cols-[1fr_auto_1fr] relative">
@@ -2705,7 +3800,7 @@ export function FightPage() {
             <div className="text-[clamp(4rem,11vh,10rem)] font-black leading-none rounded-2xl px-[clamp(1.5rem,3vw,3.5rem)] py-[clamp(1rem,2vh,2rem)] bg-red-950/30 text-red-400 ring-card-red tabular-nums">
               {displayScore.red}
             </div>
-            {(penaltyCounts.warnings.red > 0 || penaltyCounts.fouls.red > 0) && (
+            {(penaltyCounts.warnings.red > 0 || penaltyCounts.fouls.red > 0) && phase !== "golden_point" && (
               <div className="flex items-center gap-1.5 text-sm font-bold">
                 {penaltyCounts.warnings.red > 0 && (
                   <span className="text-yellow-400">⚠ {penaltyCounts.warnings.red} adv</span>
@@ -2722,39 +3817,10 @@ export function FightPage() {
                 </span>
               </div>
             )}
-            {loaded && !isTul && (
-              <div className="w-full space-y-2 mt-1">
-                <div className="flex gap-2">
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished"}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "warning_minor" })}
-                    className="flex-1 text-sm font-bold py-2 rounded-xl border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    + Advertencia
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.red === 0}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_warning" })}
-                    className="px-4 text-sm font-bold py-2 rounded-xl border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title="Deshacer advertencia">
-                    ↩ Adv
-                  </button>
-                </div>
-                <div className="flex gap-2">
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished"}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "minus_point" })}
-                    className="flex-1 text-sm font-bold py-2 rounded-xl border border-red-600 text-red-300 bg-red-950/40 hover:bg-red-900/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    − Punto directo
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.red === 0}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_minus_point" })}
-                    className="px-4 text-sm font-bold py-2 rounded-xl border border-border text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title="Deshacer punto directo">
-                    ↩ Pto
-                  </button>
-                </div>
-              </div>
+            {loaded && !isTul && phase !== "golden_point" && (
+              <ScoreSanctionControls side="red" fighterName={redName} layout="desktop" counts={penaltyCounts}
+                enabled={canEditLiveSanctions || canReviewSanctions} busy={sanctionActionPending}
+                onAdjust={handleScoreSanction} />
             )}
           </div>
 
@@ -2801,12 +3867,7 @@ export function FightPage() {
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Button size="sm" variant="destructive" className="flex-1" onClick={() => {
-                            resetFight(currentFight.id);
-                            emit("match:reset");
-                            setConfirmRedo(false);
-                            handleLoad();
-                          }}>
+                          <Button size="sm" variant="destructive" className="flex-1" disabled={!canRedoFight} onClick={handleRedoFight}>
                             Sí, resetear
                           </Button>
                           <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
@@ -2819,6 +3880,8 @@ export function FightPage() {
                         size="sm"
                         variant="ghost"
                         className="text-muted-foreground/60 hover:text-amber-400 hover:bg-amber-950/30 text-xs"
+                        disabled={!canRedoFight}
+                        title={otherFightLocked ? "Volvé al combate activo antes de rehacer otro resultado" : undefined}
                         onClick={() => setConfirmRedo(true)}
                       >
                         ⚠ Rehacer combate
@@ -2857,13 +3920,13 @@ export function FightPage() {
                 </div>
                 <div className={cn(
                   "font-mono font-black leading-none",
-                  timerClass(timeLeft, isRunning, matchPaused),
+                  phase === "golden_point" ? "text-3xl text-yellow-300" : timerClass(timeLeft, isRunning, matchPaused),
                   isTul && "hidden",
                 )}>
-                  {formatTime(timeLeft)}
+                  {phase === "golden_point" ? "SIN RELOJ" : formatTime(timeLeft)}
                 </div>
                 {loaded ? (
-                  <MatchControls
+                  <fieldset disabled={!canOperateFight} className="contents"><MatchControls
                     loaded={loaded}
                     isFinished={isFinished}
                     phase={phase}
@@ -2874,10 +3937,19 @@ export function FightPage() {
                     isTul={isTul}
                     onEmit={emit}
                     onFinishAndNext={handleOpenResultDialog}
-                  />
+                  /></fieldset>
                 ) : (
                   <div className="flex flex-col items-center gap-3">
-                    <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
+                    {canEditPreloadDuration && (
+                      <PreFightDurationControl
+                        configuredSeconds={configuredFightSeconds}
+                        input={preloadDurationInput}
+                        inputId="bout-duration-desktop"
+                        onChange={setPreloadDurationInput}
+                      />
+                    )}
+                    <Button size="xl" className="bg-green-700 hover:bg-green-600" disabled={!canLoadFight}
+                      title={otherFightLocked ? fightLockNotice?.message : undefined} onClick={handleLoad}>
                       <Play />
                       {isTul ? 'Iniciar competencia' : 'Cargar combate'}
                     </Button>
@@ -2895,7 +3967,7 @@ export function FightPage() {
             <div className="text-[clamp(4rem,11vh,10rem)] font-black leading-none rounded-2xl px-[clamp(1.5rem,3vw,3.5rem)] py-[clamp(1rem,2vh,2rem)] bg-blue-950/30 text-blue-400 ring-card-blue tabular-nums">
               {displayScore.blue}
             </div>
-            {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && (
+            {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && phase !== "golden_point" && (
               <div className="flex items-center gap-1.5 text-sm font-bold">
                 {penaltyCounts.warnings.blue > 0 && (
                   <span className="text-yellow-400">⚠ {penaltyCounts.warnings.blue} adv</span>
@@ -2912,45 +3984,16 @@ export function FightPage() {
                 </span>
               </div>
             )}
-            {loaded && !isTul && (
-              <div className="w-full space-y-2 mt-1">
-                <div className="flex gap-2">
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished"}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "warning_minor" })}
-                    className="flex-1 text-sm font-bold py-2 rounded-xl border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    + Advertencia
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.blue === 0}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_warning" })}
-                    className="px-4 text-sm font-bold py-2 rounded-xl border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title="Deshacer advertencia">
-                    ↩ Adv
-                  </button>
-                </div>
-                <div className="flex gap-2">
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished"}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "minus_point" })}
-                    className="flex-1 text-sm font-bold py-2 rounded-xl border border-blue-600 text-blue-300 bg-blue-950/40 hover:bg-blue-900/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    − Punto directo
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.blue === 0}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_minus_point" })}
-                    className="px-4 text-sm font-bold py-2 rounded-xl border border-border text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-                    title="Deshacer punto directo">
-                    ↩ Pto
-                  </button>
-                </div>
-              </div>
+            {loaded && !isTul && phase !== "golden_point" && (
+              <ScoreSanctionControls side="blue" fighterName={blueName} layout="desktop" counts={penaltyCounts}
+                enabled={canEditLiveSanctions || canReviewSanctions} busy={sanctionActionPending}
+                onAdjust={handleScoreSanction} />
             )}
           </div>
         </div>
 
         {/* MOBILE (<md): layout vertical — timer arriba, scores lado a lado, controles abajo */}
-        <div className="flex flex-col h-full md:hidden">
+        <div className="flex flex-col min-h-full md:hidden">
 
           {/* Fase + Cronómetro */}
           <div className="shrink-0 flex items-center justify-center gap-3 px-4 py-2 border-b border-border">
@@ -2979,21 +4022,23 @@ export function FightPage() {
             )}
             <div className={cn(
               "font-mono font-black leading-none text-4xl tabular-nums",
-              timeLeft <= 10 && isRunning && !matchPaused ? "text-red-400" : "",
+              phase === "golden_point" ? "text-yellow-300 text-2xl" : timeLeft <= 10 && isRunning && !matchPaused ? "text-red-400" : "",
               isTul && "hidden",
             )}>
-              {formatTime(timeLeft)}
+              {phase === "golden_point" ? "SIN RELOJ" : formatTime(timeLeft)}
             </div>
           </div>
 
           {/* Scores 2 columnas */}
           <div className="shrink-0 grid grid-cols-2 border-b border-border">
             {/* ROJO */}
-            <div className="flex flex-col items-center justify-center gap-2 py-5 px-3 bg-red-950/50 border-r border-red-900/40">
+            <div className={cn("flex flex-col items-center justify-center px-3 bg-red-950/50 border-r border-red-900/40",
+              canReviewSanctions ? "gap-1 py-2" : "gap-2 py-5")}>
               <p className="text-sm font-black text-red-400 uppercase tracking-wide text-center leading-tight w-full truncate">
                 {redName}
               </p>
-              <div className="text-7xl font-black leading-none text-red-400 tabular-nums">
+              <div className={cn("font-black leading-none text-red-400 tabular-nums",
+                canReviewSanctions ? "text-6xl" : "text-7xl")}>
                 {displayScore.red}
               </div>
               {(penaltyCounts.warnings.red > 0 || penaltyCounts.fouls.red > 0) && (
@@ -3011,44 +4056,23 @@ export function FightPage() {
                   <span className="text-orange-400">−{totalPenaltyPoints(penaltyCounts.warnings.red, penaltyCounts.fouls.red)}pts</span>
                 </div>
               )}
-              {loaded && !isTul && (
-                <div className="grid grid-cols-2 gap-1 w-full">
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished"}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "warning_minor" })}
-                    className="text-[11px] font-bold py-1.5 rounded border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    +Adv
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.red === 0}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_warning" })}
-                    className="text-[11px] font-bold py-1.5 rounded border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    ↩Adv
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished"}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "minus_point" })}
-                    className="text-[11px] font-bold py-1.5 rounded border border-red-600 text-red-300 bg-red-950/40 hover:bg-red-900/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    −Pto
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.red === 0}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "red", type: "remove_minus_point" })}
-                    className="text-[11px] font-bold py-1.5 rounded border border-border text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    ↩Pto
-                  </button>
-                </div>
+              {loaded && !isTul && phase !== "golden_point" && (
+                <ScoreSanctionControls side="red" fighterName={redName} layout="mobile" counts={penaltyCounts}
+                  enabled={canEditLiveSanctions || canReviewSanctions} busy={sanctionActionPending}
+                  onAdjust={handleScoreSanction} />
               )}
             </div>
             {/* AZUL */}
-            <div className="flex flex-col items-center justify-center gap-2 py-5 px-3 bg-blue-950/50">
+            <div className={cn("flex flex-col items-center justify-center px-3 bg-blue-950/50",
+              canReviewSanctions ? "gap-1 py-2" : "gap-2 py-5")}>
               <p className="text-sm font-black text-blue-400 uppercase tracking-wide text-center leading-tight w-full truncate">
                 {blueName}
               </p>
-              <div className="text-7xl font-black leading-none text-blue-400 tabular-nums">
+              <div className={cn("font-black leading-none text-blue-400 tabular-nums",
+                canReviewSanctions ? "text-6xl" : "text-7xl")}>
                 {displayScore.blue}
               </div>
-              {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && (
+              {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && phase !== "golden_point" && (
                 <div className="flex items-center gap-1 text-xs font-bold">
                   {penaltyCounts.warnings.blue > 0 && (
                     <span className="text-yellow-400">⚠{penaltyCounts.warnings.blue}</span>
@@ -3063,33 +4087,10 @@ export function FightPage() {
                   <span className="text-orange-400">−{totalPenaltyPoints(penaltyCounts.warnings.blue, penaltyCounts.fouls.blue)}pts</span>
                 </div>
               )}
-              {loaded && !isTul && (
-                <div className="grid grid-cols-2 gap-1 w-full">
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished"}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "warning_minor" })}
-                    className="text-[11px] font-bold py-1.5 rounded border border-yellow-700/60 text-yellow-400 hover:bg-yellow-900/30 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    +Adv
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.warnings.blue === 0}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_warning" })}
-                    className="text-[11px] font-bold py-1.5 rounded border border-yellow-800/40 text-yellow-600 hover:bg-yellow-900/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    ↩Adv
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished"}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "minus_point" })}
-                    className="text-[11px] font-bold py-1.5 rounded border border-blue-600 text-blue-300 bg-blue-950/40 hover:bg-blue-900/50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    −Pto
-                  </button>
-                  <button type="button"
-                    disabled={phase === "idle" || phase === "finished" || penaltyCounts.fouls.blue === 0}
-                    onClick={() => emit("match:event", { judgeId: "arbiter", competitor: "blue", type: "remove_minus_point" })}
-                    className="text-[11px] font-bold py-1.5 rounded border border-border text-muted-foreground hover:bg-secondary disabled:opacity-30 disabled:cursor-not-allowed transition-colors">
-                    ↩Pto
-                  </button>
-                </div>
+              {loaded && !isTul && phase !== "golden_point" && (
+                <ScoreSanctionControls side="blue" fighterName={blueName} layout="mobile" counts={penaltyCounts}
+                  enabled={canEditLiveSanctions || canReviewSanctions} busy={sanctionActionPending}
+                  onAdjust={handleScoreSanction} />
               )}
             </div>
           </div>
@@ -3097,7 +4098,7 @@ export function FightPage() {
           {/* Controles */}
           <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4 py-4 overflow-y-auto">
             {loaded ? (
-              <MatchControls
+              <fieldset disabled={!canOperateFight} className="contents"><MatchControls
                 loaded={loaded}
                 isFinished={isFinished}
                 phase={phase}
@@ -3108,7 +4109,7 @@ export function FightPage() {
                 isTul={isTul}
                 onEmit={emit}
                 onFinishAndNext={handleOpenResultDialog}
-              />
+              /></fieldset>
             ) : currentFight?.completed ? (() => {
               const isDraw = currentFight.winner === "draw";
               const isRed = currentFight.winner === "red";
@@ -3147,12 +4148,7 @@ export function FightPage() {
                           </div>
                         </div>
                         <div className="flex gap-2">
-                          <Button size="sm" variant="destructive" className="flex-1" onClick={() => {
-                            resetFight(currentFight.id);
-                            emit("match:reset");
-                            setConfirmRedo(false);
-                            handleLoad();
-                          }}>
+                          <Button size="sm" variant="destructive" className="flex-1" disabled={!canRedoFight} onClick={handleRedoFight}>
                             Sí, resetear
                           </Button>
                           <Button size="sm" variant="outline" className="flex-1" onClick={() => setConfirmRedo(false)}>
@@ -3161,7 +4157,7 @@ export function FightPage() {
                         </div>
                       </div>
                     ) : (
-                      <Button size="sm" variant="ghost" className="text-muted-foreground/60 hover:text-amber-400 hover:bg-amber-950/30 text-xs" onClick={() => setConfirmRedo(true)}>
+                      <Button size="sm" variant="ghost" className="text-muted-foreground/60 hover:text-amber-400 hover:bg-amber-950/30 text-xs" disabled={!canRedoFight} title={otherFightLocked ? "Volvé al combate activo antes de rehacer otro resultado" : undefined} onClick={() => setConfirmRedo(true)}>
                         ⚠ Rehacer combate
                       </Button>
                     )}
@@ -3169,10 +4165,21 @@ export function FightPage() {
                 </div>
               );
             })() : (
-              <Button size="xl" className="bg-green-700 hover:bg-green-600" onClick={handleLoad}>
+              <div className="flex flex-col items-center gap-3">
+                {canEditPreloadDuration && (
+                  <PreFightDurationControl
+                    configuredSeconds={configuredFightSeconds}
+                    input={preloadDurationInput}
+                    inputId="bout-duration-mobile"
+                    onChange={setPreloadDurationInput}
+                  />
+                )}
+              <Button size="xl" className="bg-green-700 hover:bg-green-600" disabled={!canLoadFight}
+                title={otherFightLocked ? fightLockNotice?.message : undefined} onClick={handleLoad}>
                 <Play />
                 {isTul ? 'Iniciar competencia' : 'Cargar combate'}
               </Button>
+              </div>
             )}
           </div>
 
@@ -3181,16 +4188,19 @@ export function FightPage() {
 
       {/* ── PANEL INFERIOR (TABS) ─────────────────────────────────── */}
       {loaded && (
-        <div id="tour-bottom-tabs" className="shrink-0 border-t border-border bg-card/40 px-4 py-2 space-y-2 max-h-[42vh] overflow-y-auto">
+        <fieldset disabled={!canOperateFight} id="tour-bottom-tabs" className={cn(
+          "shrink-0 border-t border-border bg-card/40 px-4 py-2 space-y-2 overflow-y-auto",
+          canReviewSanctions ? "max-h-[32vh] md:max-h-[42vh]" : "max-h-[42vh]",
+        )}>
           {/* Tab bar */}
           <div className="flex items-center gap-1 border-b border-border/40 pb-1">
-            {(!isTul || tulPhase === "voting") && (
+            {!tableChiefRoundRobin && (!isTul || tulPhase === "voting") && (phase !== "golden_point" || state.rules?.judgingMode !== "points") && (
               <button
                 type="button"
                 onClick={() => setBottomTab("mesa")}
                 className={cn(
                   "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
-                  bottomTab === "mesa"
+                  selectedBottomTab === "mesa"
                     ? "border-primary text-primary"
                     : "border-transparent text-muted-foreground hover:text-foreground",
                 )}
@@ -3199,13 +4209,13 @@ export function FightPage() {
                 Mesa decide
               </button>
             )}
-            {(!isTul || tulPhase === "voting") && (
+            {(!isTul || tulPhase === "voting") && (phase !== "golden_point" || state.rules?.judgingMode !== "points") && (
               <button
                 type="button"
                 onClick={() => setBottomTab("porjuez")}
                 className={cn(
                   "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
-                  bottomTab === "porjuez"
+                  selectedBottomTab === "porjuez"
                     ? "border-primary text-primary"
                     : "border-transparent text-muted-foreground hover:text-foreground",
                 )}
@@ -3214,52 +4224,69 @@ export function FightPage() {
                 Por juez
               </button>
             )}
-            <button
+            {!tableChiefRoundRobin && (phase !== "golden_point" || state.rules?.judgingMode === "points") && <button
               type="button"
               onClick={() => setBottomTab("remotos")}
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
-                (bottomTab === "remotos" || (isTul && tulPhase !== "voting"))
+                (selectedBottomTab === "remotos" || (isTul && tulPhase !== "voting"))
                   ? "border-primary text-primary"
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
               <Smartphone className="size-3" />
               Remotos
-            </button>
+            </button>}
           </div>
 
           {/* Tab: Mesa decide */}
           {/* Tab: Mesa decide (sparring + tul voting) */}
-          {bottomTab === "mesa" && (!isTul || tulPhase === "voting") && (
+          {selectedBottomTab === "mesa" && (!isTul || tulPhase === "voting") && (
             <JefeMesaPanel
-              judgesCount={config.judgesCount}
+              judgesCount={phase === "golden_point"
+                ? state.rules?.judgesCount ?? config.judgesCount
+                : config.judgesCount}
               judgeVotes={state.judgeVotes}
               roundFlags={state.roundFlags ?? []}
               phase={phase}
               pendingJuryDecision={matchState?.pendingJuryDecision ?? false}
+              goldenPoint={matchState?.goldenPoint}
               onEmit={emit}
+              onGoldenVote={handleGoldenVote}
+              onConfirmGoldenOutcome={handleConfirmGoldenOutcome}
+              goldenActionPending={goldenActionPending}
               mode="mesa"
               tulMode={isTul}
             />
           )}
 
           {/* Tab: Por juez (sparring + tul voting) */}
-          {bottomTab === "porjuez" && (!isTul || tulPhase === "voting") && (
+          {selectedBottomTab === "porjuez" && (!isTul || tulPhase === "voting") && (
             <JefeMesaPanel
-              judgesCount={config.judgesCount}
+              judgesCount={phase === "golden_point"
+                ? state.rules?.judgesCount ?? config.judgesCount
+                : config.judgesCount}
               judgeVotes={state.judgeVotes}
               roundFlags={state.roundFlags ?? []}
               phase={phase}
               pendingJuryDecision={matchState?.pendingJuryDecision ?? false}
+              goldenPoint={matchState?.goldenPoint}
               onEmit={emit}
+              onGoldenVote={handleGoldenVote}
+              onConfirmGoldenOutcome={handleConfirmGoldenOutcome}
+              goldenActionPending={goldenActionPending}
               mode="porjuez"
               tulMode={isTul}
             />
           )}
 
           {/* Tab: Remotos */}
-          {(bottomTab === "remotos" || (isTul && tulPhase !== "voting")) && (
+          {(selectedBottomTab === "remotos" || (isTul && tulPhase !== "voting")) && (
+            <>
+            {phase === "golden_point" && matchState?.goldenPoint && <div className="rounded-lg border border-yellow-700/40 bg-yellow-950/20 px-3 py-2 text-center text-sm">
+              <p className="font-bold text-yellow-300">⚡ Intento {matchState.goldenPoint.attempt} · Sin reloj · Mayoría {Math.floor((state.rules?.judgesCount ?? config.judgesCount) / 2) + 1}</p>
+              <p>{Object.entries(matchState.goldenPoint.votes).map(([judgeId, vote]) => `${judgeId}: ${vote === "red" ? "🔴" : "🔵"}`).join(" · ") || "Esperando punto de los jueces"}</p>
+            </div>}
             <JudgeCornerGrid
               judgesCount={config.judgesCount}
               connectedJudges={judges}
@@ -3268,14 +4295,15 @@ export function FightPage() {
               serverUrl={state.serverUrl}
               ringToken={state.ringToken}
             />
+            </>
           )}
-        </div>
+        </fieldset>
       )}
 
       {/* ── DIALOG RESULTADO ─────────────────────────────────────── */}
       {matchState?.result != null && (
-        <Dialog open={resultDialogOpen} onOpenChange={setResultDialogOpen}>
-          <DialogContent className="max-w-sm p-0 overflow-hidden">
+        <Dialog open={loaded && resultDialogOpen} onOpenChange={setResultDialogOpen}>
+          <DialogContent className="max-w-md max-h-[90vh] p-0 overflow-y-auto">
             <DialogHeader className="sr-only">
               <DialogTitle>Registrar resultado del combate</DialogTitle>
             </DialogHeader>
@@ -3287,7 +4315,9 @@ export function FightPage() {
                   {winnerName(matchState?.result?.winner ?? "draw", state, currentFight)}
                 </div>
                 <p className="text-sm opacity-70">
-                  {matchState?.result?.winner === "draw"
+                  {matchState?.result?.reason === "golden_point"
+                    ? "Victoria por Punto de Oro"
+                    : matchState?.result?.winner === "draw"
                     ? "1 punto para cada uno (Empate)"
                     : matchState?.result?.winner
                       ? "3 puntos (Victoria)"
@@ -3301,7 +4331,7 @@ export function FightPage() {
                   <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Banderines</p>
                   <div className="grid grid-cols-2 gap-3">
                     <FlagCounterField
-                      isMesa={bottomTab === "mesa"}
+                      isMesa={selectedBottomTab === "mesa" && matchState?.result?.reason !== "golden_point"}
                       value={resultFlagsRed}
                       onChange={(v) => {
                         setResultFlagsRed(v);
@@ -3314,7 +4344,7 @@ export function FightPage() {
                       max={matchState?.result?.winner === "blue" ? Math.max(0, resultFlagsBlue - 1) : config.judgesCount}
                     />
                     <FlagCounterField
-                      isMesa={bottomTab === "mesa"}
+                      isMesa={selectedBottomTab === "mesa" && matchState?.result?.reason !== "golden_point"}
                       value={resultFlagsBlue}
                       onChange={(v) => {
                         setResultFlagsBlue(v);
@@ -3329,47 +4359,39 @@ export function FightPage() {
                   </div>
                 </div>
 
-                {/* Penalizaciones */}
-                <div className="space-y-2">
-                  <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Penalizaciones</p>
-                  <div className="grid grid-cols-2 gap-3">
-                    <div className="rounded-xl border border-red-900/40 bg-red-950/30 p-3 space-y-2">
-                      <p className="text-red-300 font-bold text-sm">{currentFight?.red.name ?? "Rojo"}</p>
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs text-muted-foreground">Advertencias</span>
-                        <span className={cn("text-lg font-black", penaltyCounts.warnings.red > 0 ? "text-yellow-300" : "text-muted-foreground/40")}>
-                          {penaltyCounts.warnings.red}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs text-muted-foreground">Faltas</span>
-                        <span className={cn("text-lg font-black", penaltyCounts.fouls.red > 0 ? "text-red-300" : "text-muted-foreground/40")}>
-                          {penaltyCounts.fouls.red}
-                        </span>
-                      </div>
-                    </div>
-                    <div className="rounded-xl border border-blue-900/40 bg-blue-950/30 p-3 space-y-2">
-                      <p className="text-blue-300 font-bold text-sm">{currentFight?.blue.name ?? "Azul"}</p>
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs text-muted-foreground">Advertencias</span>
-                        <span className={cn("text-lg font-black", penaltyCounts.warnings.blue > 0 ? "text-yellow-300" : "text-muted-foreground/40")}>
-                          {penaltyCounts.warnings.blue}
-                        </span>
-                      </div>
-                      <div className="flex justify-between items-center">
-                        <span className="text-xs text-muted-foreground">Faltas</span>
-                        <span className={cn("text-lg font-black", penaltyCounts.fouls.blue > 0 ? "text-red-300" : "text-muted-foreground/40")}>
-                          {penaltyCounts.fouls.blue}
-                        </span>
-                      </div>
-                    </div>
+                {/* Penalizaciones: se corrigen en el servidor antes del fallo oficial. */}
+                {matchState.result.reason === "golden_point" ? (
+                  <div className="text-xs text-muted-foreground">
+                    Penalizaciones registradas: rojo {penaltyCounts.warnings.red} advertencias y {penaltyCounts.fouls.red} puntos directos;
+                    azul {penaltyCounts.warnings.blue} advertencias y {penaltyCounts.fouls.blue} puntos directos.
                   </div>
-                </div>
+                ) : matchState.result.reason === "dq" ? (
+                  <p className="rounded-lg border border-red-800/50 bg-red-950/20 p-3 text-xs text-red-200">
+                    Descalificación: las sanciones no se corrigen aquí porque podrían cambiar el fallo.
+                  </p>
+                ) : state.resultConfirmed ? (
+                  <p className="rounded-lg border border-border bg-secondary/30 p-3 text-xs text-muted-foreground">
+                    Fallo confirmado: las sanciones ya no pueden modificarse.
+                  </p>
+                ) : (
+                  <PostClockSanctionReview
+                    redName={currentFight?.red.name ?? "Rojo"}
+                    blueName={currentFight?.blue.name ?? "Azul"}
+                    counts={penaltyCounts}
+                    busy={sanctionActionPending}
+                    editable={canReviewSanctions}
+                    stage="result"
+                    onAdjust={(side, kind, delta) => { void handleReviewSanction(side, kind, delta); }}
+                  />
+                )}
 
                 {/* Por juez */}
                 {(() => {
-                  const jTotals = state.judgeTotals ?? {};
-                  const jVotes = state.judgeVotes ?? {};
+                  const goldenVotes = matchState?.result?.reason === "golden_point"
+                    ? matchState.goldenPoint?.votes ?? {}
+                    : null;
+                  const jTotals = goldenVotes ? {} : state.judgeTotals ?? {};
+                  const jVotes = goldenVotes ?? state.judgeVotes ?? {};
                   const hasMobileTotals = Object.values(jTotals).some((t) => t.red > 0 || t.blue > 0);
                   const hasVotes = Object.keys(jVotes).length > 0;
                   if (!hasMobileTotals && !hasVotes) return null;
@@ -3423,20 +4445,11 @@ export function FightPage() {
                   const isDraw = matchState?.result?.winner === "draw";
                   const isGPFight = currentFight?.isGoldenPointFight;
                   // Elim/final/tiebreak/GP fights require a winner — draw must lead to another tiebreak or GP
-                  const isElim = config.mode === "elimination" || currentFight?.isFinalFight || currentFight?.isTiebreakExtra || isGPFight;
-                  // Calcular si el próximo será Punto de Oro
-                  const tbMatchId = currentFight?.bracketMatchId;
-                  const completedTbs = fights.filter(
-                    (f) => f.isTiebreakExtra && f.completed && f.bracketMatchId === tbMatchId
-                  ).length;
-                  // GP fights are not isTiebreakExtra but we're already past the limit, so force nextIsGoldenPoint=true
-                  const afterThisCount = isGPFight
-                    ? (config.maxTiebreakers ?? 1)
-                    : completedTbs + (currentFight?.isTiebreakExtra ? 1 : 0);
-                  const nextIsGoldenPoint = afterThisCount >= (config.maxTiebreakers ?? 1);
-
-                  // Round-robin group fights: draw is valid but referee can optionally tiebreak
-                  const isRoundRobinGroup = config.mode === "round-robin" && !currentFight?.isFinalFight && !isGPFight && !currentFight?.isTiebreakExtra;
+                  const isElim = config.mode === "elimination" || isGPFight ||
+                    ((currentFight?.isFinalFight || currentFight?.isTiebreakExtra) && !isMiniPlayoff);
+                  const nextIsGoldenPoint = currentFight && (config.mode === "elimination"
+                    ? Boolean(currentFight.isTiebreakExtra || isGPFight)
+                    : nextDirectFightIsGoldenPoint(currentFight, fights));
 
                   if (isDraw && isElim) {
                     return (
@@ -3448,7 +4461,7 @@ export function FightPage() {
                               Punto de Oro
                             </p>
                             <p className="text-xs text-muted-foreground mt-1">
-                              Sin tiempo — el primer punto gana.
+                              Sin reloj — gana el primer punto con mayoría de jueces.
                             </p>
                           </div>
                         ) : (
@@ -3472,7 +4485,8 @@ export function FightPage() {
                           </div>
                         )}
                         <Button
-                          disabled={isConfirmingResult}
+                          disabled={!(selectedFight?.completed ? canLoadFight : canOperateFight) ||
+                            isConfirmingResult || sanctionActionPending}
                           className={nextIsGoldenPoint
                             ? "w-full bg-yellow-600 hover:bg-yellow-500 text-white"
                             : "w-full bg-orange-700 hover:bg-orange-600 text-white"}
@@ -3480,50 +4494,14 @@ export function FightPage() {
                           onClick={handleStartTiebreaker}
                         >
                           <Zap className="size-4" />
-                          {isConfirmingResult ? "Guardando resultado..." : nextIsGoldenPoint ? "Iniciar Punto de Oro" : "Iniciar desempate"}
-                        </Button>
-                      </>
-                    );
-                  }
-                  if (isDraw && isRoundRobinGroup) {
-                    return (
-                      <>
-                        <div className="rounded-xl border border-orange-800/50 bg-orange-950/20 p-4 space-y-3">
-                          <p className="text-sm font-bold text-orange-300 flex items-center gap-2">
-                            <Zap className="size-4" />
-                            Desempate opcional
-                          </p>
-                          <div className="flex items-center gap-3">
-                            <label className="text-xs text-muted-foreground whitespace-nowrap">Duración (seg)</label>
-                            <input
-                              type="number"
-                              min={10}
-                              max={600}
-                              step={5}
-                              value={tiebreakerDuration}
-                              onChange={(e) => setTiebreakerDuration(Math.max(10, Math.min(600, Number(e.target.value))))}
-                              className="w-full rounded-md bg-background border border-input px-3 py-1.5 text-sm text-center font-bold tabular-nums"
-                            />
-                          </div>
-                        </div>
-                        <Button
-                          disabled={isConfirmingResult}
-                          className="w-full bg-orange-700 hover:bg-orange-600 text-white"
-                          size="lg"
-                          onClick={handleStartTiebreaker}
-                        >
-                          <Zap className="size-4" />
-                          {isConfirmingResult ? "Guardando resultado..." : "Iniciar desempate"}
-                        </Button>
-                        <Button disabled={isConfirmingResult} className="w-full" variant="outline" size="lg" onClick={handleConfirmResult}>
-                          <ChevronRight className="size-4" />
-                          Confirmar empate
+                          {isConfirmingResult ? "Guardando resultado..." : selectedFight?.completed
+                            ? "Reanudar desempate" : nextIsGoldenPoint ? "Iniciar Punto de Oro" : "Iniciar desempate"}
                         </Button>
                       </>
                     );
                   }
                   return (
-                    <Button disabled={isConfirmingResult} className="w-full" size="lg" onClick={handleConfirmResult}>
+                    <Button disabled={!canOperateFight || isConfirmingResult || sanctionActionPending} className="w-full" size="lg" onClick={handleConfirmResult}>
                       <ChevronRight className="size-4" />
                       {isConfirmingResult ? "Guardando resultado..." : "Confirmar y continuar"}
                     </Button>

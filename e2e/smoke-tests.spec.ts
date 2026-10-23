@@ -18,7 +18,7 @@ async function seedTournament(page: Parameters<typeof test>[0]["page"]): Promise
   await setup.startCategory();
 }
 
-test.describe("TKD Tournament - Smoke Tests", () => {
+test.describe("TKD Fight - Smoke Tests", () => {
   test("debe cargar todas las páginas sin errores JS", async ({ page }) => {
     const routes = ["/", "/fight", "/bracket", "/standings", "/results", "/tv", "/settings", "/central"];
 
@@ -97,7 +97,7 @@ test.describe("TKD Tournament - Smoke Tests", () => {
     await page.goto("/tv", { waitUntil: "networkidle" });
 
     // Verificar elementos clave de la pantalla TV
-    const title = await page.getByText("TKD Tournament", { exact: true }).isVisible();
+    const title = await page.getByText("TKD Fight", { exact: true }).isVisible();
     expect(title).toBe(true);
 
     // Debe mostrar estado de conexión y el marcador central

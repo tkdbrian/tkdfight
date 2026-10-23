@@ -54,6 +54,85 @@ export function createMatch(rules: RuleSetSparring): MatchState {
   }
 }
 
+/** A Golden Point is a separate, untimed bout, not a one-second round. */
+export function createGoldenPointMatch(rules: RuleSetSparring): MatchState {
+  return {
+    ...createMatch(rules),
+    phase: 'golden_point',
+    currentRound: 1,
+    timeLeft: 0,
+    rounds: [emptyRound(1)],
+    goldenPoint: { attempt: 1, votes: {} },
+  }
+}
+
+export function castGoldenPointVote(
+  state: MatchState,
+  judgeId: string,
+  competitor: Competitor,
+  attempt: number,
+  judgesCount: number,
+): MatchState {
+  if (state.phase !== 'golden_point' || !state.goldenPoint || attempt !== state.goldenPoint.attempt) return state
+  if (!Number.isInteger(judgesCount) || judgesCount < 1 || judgesCount > 5) return state
+  if (!Array.from({ length: judgesCount }, (_, i) => `J${i + 1}`).includes(judgeId)) return state
+  if (state.goldenPoint.votes[judgeId]) return state
+  const votes = { ...state.goldenPoint.votes, [judgeId]: competitor }
+  const count = Object.values(votes).filter((vote) => vote === competitor).length
+  if (count >= Math.floor(judgesCount / 2) + 1) {
+    return { ...state, phase: 'finished', result: { winner: competitor, reason: 'golden_point' }, goldenPoint: { attempt, votes } }
+  }
+  if (Object.keys(votes).length === judgesCount) {
+    return { ...state, goldenPoint: { attempt: attempt + 1, votes: {} } }
+  }
+  return { ...state, goldenPoint: { attempt, votes } }
+}
+
+/** Table-chief votes are provisional until the chief explicitly confirms the outcome. */
+export function setTableGoldenPointVote(
+  state: MatchState,
+  judgeId: string,
+  competitor: Competitor,
+  attempt: number,
+  judgesCount: number,
+): MatchState {
+  if (state.phase !== 'golden_point' || state.result || !state.goldenPoint ||
+    attempt !== state.goldenPoint.attempt) return state
+  if (!Number.isInteger(judgesCount) || judgesCount < 1 || judgesCount > 5) return state
+  if (!Array.from({ length: judgesCount }, (_, i) => `J${i + 1}`).includes(judgeId)) return state
+  if (state.goldenPoint.votes[judgeId] === competitor) return state
+  return { ...state, goldenPoint: {
+    attempt, votes: { ...state.goldenPoint.votes, [judgeId]: competitor },
+  } }
+}
+
+/** Recalculate the decision from the stored per-judge choices, never from mutable totals. */
+export function confirmTableGoldenOutcome(
+  state: MatchState,
+  attempt: number,
+  judgesCount: number,
+): MatchState {
+  if (state.phase !== 'golden_point' || state.result || !state.goldenPoint ||
+    attempt !== state.goldenPoint.attempt) return state
+  if (!Number.isInteger(judgesCount) || judgesCount < 1 || judgesCount > 5) return state
+  const votes = state.goldenPoint.votes
+  const judgeIds = Array.from({ length: judgesCount }, (_, i) => `J${i + 1}`)
+  if (Object.keys(votes).some((judgeId) => !judgeIds.includes(judgeId) ||
+    (votes[judgeId] !== 'red' && votes[judgeId] !== 'blue'))) return state
+  const red = Object.values(votes).filter((vote) => vote === 'red').length
+  const blue = Object.values(votes).filter((vote) => vote === 'blue').length
+  const threshold = Math.floor(judgesCount / 2) + 1
+  if (red >= threshold || blue >= threshold) {
+    return { ...state, phase: 'finished', result: {
+      winner: red >= threshold ? 'red' : 'blue', reason: 'golden_point',
+    } }
+  }
+  if (Object.keys(votes).length === judgesCount && red === blue) {
+    return { ...state, goldenPoint: { attempt: attempt + 1, votes: {} } }
+  }
+  return state
+}
+
 // ── Start ──────────────────────────────────────────────────────────────────
 
 export function startPhase(state: MatchState, rules: RuleSetSparring): MatchState {
@@ -84,7 +163,7 @@ export function addMatchEvent(
   raw: Omit<MatchEvent, 'id' | 'ts' | 'value' | 'isDQ'>,
   rules: RuleSetSparring
 ): MatchState {
-  if (state.phase !== 'round' && state.phase !== 'overtime' && state.phase !== 'golden_point' && state.phase !== 'penalties') {
+  if (state.phase !== 'round' && state.phase !== 'overtime' && state.phase !== 'penalties') {
     return state
   }
 
@@ -127,16 +206,76 @@ export function addMatchEvent(
     return { ...next, phase: 'finished', result: { winner, reason: 'dq' } }
   }
 
-  // Golden point: any scoring point ends the match immediately
-  if (state.phase === 'golden_point' && value > 0) {
-    return {
-      ...next,
-      phase: 'finished',
-      result: { winner: raw.competitor, reason: 'golden_point' },
+  return next
+}
+
+export type SanctionKind = 'warning' | 'minus_point'
+
+function activeSanctionEvents(
+  state: MatchState,
+  competitor: Competitor,
+  kind: SanctionKind,
+): MatchEvent[] {
+  const active: MatchEvent[] = []
+  for (const round of state.rounds) {
+    for (const event of round.events) {
+      if (event.judgeId !== 'arbiter' || event.competitor !== competitor) continue
+      if (kind === 'warning' && (event.type === 'warning_minor' || event.type === 'warning_serious')) {
+        active.push(event)
+      } else if (kind === 'minus_point' && event.type === 'minus_point') {
+        active.push(event)
+      } else if ((kind === 'warning' &&
+        (event.type === 'remove_warning' || event.type === 'remove_warning_serious')) ||
+        (kind === 'minus_point' && event.type === 'remove_minus_point')) {
+        active.pop()
+      }
     }
   }
+  return active
+}
 
-  return next
+export function getSanctionCount(
+  state: MatchState,
+  competitor: Competitor,
+  kind: SanctionKind,
+): number {
+  return activeSanctionEvents(state, competitor, kind).length
+}
+
+/** Change post-clock sanction metadata without recalculating an already decided winner or DQ. */
+export function setSanctionCount(
+  state: MatchState,
+  competitor: Competitor,
+  kind: SanctionKind,
+  count: number,
+  rules: RuleSetSparring,
+): MatchState {
+  if (!['rest', 'penalties', 'finished'].includes(state.phase) || !state.rounds.length ||
+    !Number.isInteger(count) || count < 0 || count > 99) return state
+  const active = activeSanctionEvents(state, competitor, kind)
+  if (active.length === count) return state
+  const events = [...currentRoundState(state).events]
+  const change = count > active.length ? 1 : -1
+  for (let index = active.length; index !== count; index += change) {
+    const original = change < 0 ? active.pop() : undefined
+    const type = change > 0
+      ? kind === 'warning' ? 'warning_minor' : 'minus_point'
+      : kind === 'warning'
+        ? original?.type === 'warning_serious' ? 'remove_warning_serious' : 'remove_warning'
+        : 'remove_minus_point'
+    const { value } = calculateEventValue(type, rules)
+    events.push({
+      id: Math.random().toString(36).slice(2),
+      ts: Date.now(),
+      judgeId: 'arbiter',
+      competitor,
+      type,
+      value: original ? -original.value : value,
+      isDQ: false,
+    })
+  }
+  const computed = computeRoundTotals(events)
+  return replaceLastRound(state, { ...currentRoundState(state), events, ...computed })
 }
 
 // ── Timer tick ─────────────────────────────────────────────────────────────
@@ -218,6 +357,7 @@ function evaluateMatch(state: MatchState, rules: RuleSetSparring): MatchState {
       currentRound: nextRound,
       timeLeft: 0,
       rounds: [...state.rounds, emptyRound(nextRound)],
+      goldenPoint: { attempt: 1, votes: {} },
     }
   }
 
@@ -243,6 +383,7 @@ function evaluateOvertime(state: MatchState, rules: RuleSetSparring): MatchState
       currentRound: nextRound,
       timeLeft: 0,
       rounds: [...state.rounds, emptyRound(nextRound)],
+      goldenPoint: { attempt: 1, votes: {} },
     }
   }
 

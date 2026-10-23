@@ -1,4 +1,6 @@
-import type { FightEntry, CompetitorEntry, TournamentConfig, BracketMatch } from "@/store/tournament";
+import type { FightEntry, CompetitorEntry, TournamentConfig, BracketMatch, TournamentGroup } from "@/store/tournament";
+import { roundRobinOutcome } from "@/lib/round-robin-resolution";
+import { resolveEliminationOutcome } from "@/lib/category-lifecycle";
 
 interface Standing {
   id: string;
@@ -9,25 +11,39 @@ interface Standing {
   losses: number;
   draws: number;
   points: number;
+  flagsFor: number;
+  foulsAgainst: number;
+  warnings: number;
 }
 
-function computeStandings(fights: FightEntry[], competitors: CompetitorEntry[]): Standing[] {
+function computeStandings(fights: FightEntry[], competitors: CompetitorEntry[], mode: TournamentConfig["mode"]): Standing[] {
   const map = new Map<string, Standing>();
   for (const c of competitors) {
-    map.set(c.id, { id: c.id, name: c.name, team: c.team, played: 0, wins: 0, losses: 0, draws: 0, points: 0 });
+    map.set(c.id, { id: c.id, name: c.name, team: c.team, played: 0, wins: 0, losses: 0, draws: 0, points: 0,
+      flagsFor: 0, foulsAgainst: 0, warnings: 0 });
   }
   for (const f of fights) {
-    if (!f.completed) continue;
+    if (!f.completed || f.groupId?.startsWith("EXT:") ||
+      (mode !== "elimination" && (f.isTiebreakExtra || f.isGoldenPointFight))) continue;
     const red = map.get(f.red.id);
     const blue = map.get(f.blue.id);
     if (!red || !blue) continue;
     red.played++;
     blue.played++;
+    red.flagsFor += f.flagsRed ?? 0;
+    blue.flagsFor += f.flagsBlue ?? 0;
+    red.foulsAgainst += f.foulsRed ?? 0;
+    blue.foulsAgainst += f.foulsBlue ?? 0;
+    red.warnings += f.warningsRed ?? 0;
+    blue.warnings += f.warningsBlue ?? 0;
     if (f.winner === "red") { red.wins++; red.points += 3; blue.losses++; }
     else if (f.winner === "blue") { blue.wins++; blue.points += 3; red.losses++; }
     else { red.draws++; red.points += 1; blue.draws++; blue.points += 1; }
   }
-  return [...map.values()].sort((a, b) => b.points - a.points || b.wins - a.wins || a.losses - b.losses);
+  return [...map.values()].sort((a, b) => mode === "elimination"
+    ? b.points - a.points || b.wins - a.wins || a.losses - b.losses
+    : b.points - a.points || b.flagsFor - a.flagsFor ||
+      a.foulsAgainst - b.foulsAgainst || a.warnings - b.warnings);
 }
 
 function roundLabel(round: number, maxRound: number, position: number): string {
@@ -87,13 +103,31 @@ export function exportTournamentHTML(
   fights: FightEntry[],
   competitors: CompetitorEntry[],
   config: TournamentConfig,
-  bracketMatches: BracketMatch[] = []
+  bracketMatches: BracketMatch[] = [],
+  groups: TournamentGroup[] = [],
+  confirmedResultIds: readonly string[] = [],
 ): void {
-  const standings = computeStandings(fights, competitors);
+  const standings = computeStandings(fights, competitors, config.mode);
+  const outcome = config.mode === "elimination" ? null : roundRobinOutcome(fights, groups.length > 0 ? groups : undefined);
+  const elimination = config.mode === "elimination" ? resolveEliminationOutcome({
+    phase: "results", config, competitors, fights, groups, bracketMatches,
+    bracketSeeds: [], currentFightIndex: 0, setupStarted: true,
+  }) : null;
+  const authorizedElimination = elimination?.status === "resolved" &&
+    elimination.requiredResultIds.length > 0 &&
+    elimination.requiredResultIds.every((id) => confirmedResultIds.includes(id));
+  const championId = authorizedElimination ? elimination.championId : outcome?.championId;
+  const runnerUpId = authorizedElimination ? elimination.runnerUpId : outcome?.runnerUpId;
+  const champion = standings.find((entry) => entry.id === championId);
+  const runnerUp = standings.find((entry) => entry.id === runnerUpId);
+  const podium = champion
+    ? [champion, ...(runnerUp ? [runnerUp] : []), ...standings.filter((entry) =>
+      entry.id !== champion.id && entry.id !== runnerUp?.id)]
+    : config.mode === "elimination" ? [] : standings;
   const completed = fights.filter((f) => f.completed);
   const date = new Date().toLocaleDateString("es-AR", { day: "2-digit", month: "long", year: "numeric" });
 
-  const podiumRows = standings.slice(0, 3).map((s, i) => {
+  const podiumRows = podium.slice(0, 3).map((s, i) => {
     const medal = ["🥇", "🥈", "🥉"][i];
     return `<tr class="podium-${i + 1}"><td>${medal}</td><td><strong>${s.name}</strong></td><td>${s.team ?? "—"}</td><td>${s.wins}G / ${s.losses}P</td></tr>`;
   }).join("\n");

@@ -1,6 +1,6 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { POINTS_WIN, POINTS_DRAW } from "@/rules/round-robin";
-import { useTournamentStore } from "@/store/tournament";
+import { useTournamentStore, type FightEntry } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,8 +16,12 @@ import {
 import { Trophy, RotateCcw, Download, Crown } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { WIN_REASON_LABELS } from "@/lib/fight-utils";
+import { roundRobinOutcome } from "@/lib/round-robin-resolution";
+import { resolveEliminationOutcome } from "@/lib/category-lifecycle";
 import { exportTournamentHTML } from "@/lib/export";
 import { BracketView } from "@/components/BracketView";
+import { useSocket } from "@/hooks/useSocket";
+import { toast } from "sonner";
 
 interface Standing {
   competitor: { id: string; name: string; team?: string };
@@ -26,6 +30,9 @@ interface Standing {
   draws: number;
   fought: number;
   points: number;
+  flagsFor: number;
+  foulsAgainst: number;
+  warnings: number;
 }
 
 type F = ReturnType<typeof useTournamentStore.getState>["fights"][number];
@@ -45,15 +52,20 @@ function computeStandingsForFights(
 
   let overrideWinnerId: string | null = null;
   if (opts.eliminationMode) {
+    const final = fights.filter((f) => f.isFinalFight && !f.isTiebreakExtra && !f.isGoldenPointFight);
+    const directFinal = final.length === 1 ? final[0] : null;
+    const sameFinalPair = (f: F): boolean => !!directFinal &&
+      [f.red.id, f.blue.id].sort().join("|") === [directFinal.red.id, directFinal.blue.id].sort().join("|");
     const decisive = [...fights]
       .reverse()
       .find(
         (f) =>
           f.completed &&
           f.winner !== "draw" &&
-          (f.isTiebreakExtra || f.isGoldenPointFight),
+          (f.isTiebreakExtra || f.isGoldenPointFight) &&
+          (!directFinal || sameFinalPair(f)),
       );
-    if (decisive) {
+    if (decisive && (!directFinal || directFinal.winner === "draw")) {
       overrideWinnerId =
         decisive.winner === "red" ? decisive.red.id : decisive.blue.id;
     }
@@ -64,7 +76,10 @@ function computeStandingsForFights(
     for (const side of ["red", "blue"] as const) {
       const c = f[side];
       if (!map.has(c.id)) {
-        map.set(c.id, { competitor: c, wins: 0, losses: 0, draws: 0, fought: 0, points: 0 });
+        map.set(c.id, {
+          competitor: c, wins: 0, losses: 0, draws: 0, fought: 0, points: 0,
+          flagsFor: 0, foulsAgainst: 0, warnings: 0,
+        });
       }
     }
     if (!f.completed) continue;
@@ -85,6 +100,12 @@ function computeStandingsForFights(
 
     redStanding.fought++;
     blueStanding.fought++;
+    redStanding.flagsFor += f.flagsRed ?? 0;
+    blueStanding.flagsFor += f.flagsBlue ?? 0;
+    redStanding.foulsAgainst += f.foulsRed ?? 0;
+    blueStanding.foulsAgainst += f.foulsBlue ?? 0;
+    redStanding.warnings += f.warningsRed ?? 0;
+    blueStanding.warnings += f.warningsBlue ?? 0;
 
     let effectiveWinner: F["winner"] = f.winner;
     if (
@@ -113,8 +134,9 @@ function computeStandingsForFights(
 
   return [...map.values()].sort((a, b) => {
     if (b.points !== a.points) return b.points - a.points;
-    if (b.wins !== a.wins) return b.wins - a.wins;
-    return a.losses - b.losses;
+    if (b.flagsFor !== a.flagsFor) return b.flagsFor - a.flagsFor;
+    if (a.foulsAgainst !== b.foulsAgainst) return a.foulsAgainst - b.foulsAgainst;
+    return a.warnings - b.warnings;
   });
 }
 
@@ -141,7 +163,7 @@ function computeStandingsByGroup(fights: F[]): Map<string, Standing[]> {
   const out = new Map<string, Standing[]>();
   for (const gid of sortedIds) {
     const eliminationMode = gid === "FINAL" || gid === "FINAL_AB";
-    out.set(gid, computeStandingsForFights(groups.get(gid)!, { eliminationMode }));
+    out.set(gid, computeStandingsForFights(groups.get(gid) ?? [], { eliminationMode }));
   }
   return out;
 }
@@ -161,8 +183,18 @@ function groupLabel(gid: string): string {
  */
 function computePodium(
   fights: ReturnType<typeof useTournamentStore.getState>["fights"],
-  fallbackStandings: Standing[]
+  fallbackStandings: Standing[],
+  roundRobinChampionId?: string | null,
+  roundRobinRunnerUpId?: string | null,
 ): Standing[] {
+  if (roundRobinChampionId !== undefined) {
+    if (!roundRobinChampionId) return fallbackStandings;
+    const champion = fallbackStandings.find((s) => s.competitor.id === roundRobinChampionId);
+    if (!champion) return fallbackStandings;
+    const runnerUp = fallbackStandings.find((s) => s.competitor.id === roundRobinRunnerUpId);
+    return [champion, ...(runnerUp ? [runnerUp] : []), ...fallbackStandings.filter((s) =>
+      s.competitor.id !== roundRobinChampionId && s.competitor.id !== roundRobinRunnerUpId)];
+  }
   const finalDone = fights.filter(f => f.groupId === "FINAL" && f.completed);
   if (finalDone.length === 0) return fallbackStandings;
 
@@ -209,8 +241,14 @@ function getFightPhaseLabel(f: ReturnType<typeof useTournamentStore.getState>["f
 }
 
 export function ResultsPage() {
-  const { fights, competitors, config, reset, bracketMatches } = useTournamentStore(
-    useShallow((s) => ({ fights: s.fights, competitors: s.competitors, config: s.config, reset: s.reset, bracketMatches: s.bracketMatches }))
+  const { connected, stateReady, state: serverState, request } = useSocket();
+  const requestRef = useRef(request);
+  requestRef.current = request;
+  const { fights, competitors, groups, config, reset, bracketMatches } = useTournamentStore(
+    useShallow((s) => ({
+      fights: s.fights, competitors: s.competitors, groups: s.groups,
+      config: s.config, reset: s.reset, bracketMatches: s.bracketMatches,
+    }))
   );
   const isTul = config.matchType === 'tul';
   const isElimination = config.mode === "elimination";
@@ -219,7 +257,7 @@ export function ResultsPage() {
   // Merge Golden Point sequences: hide GP fights, patch original with GP winner
   const displayFights = useMemo(() => {
     type F = typeof fights[number];
-    const pairKey = (f: F) => [f.red.id, f.blue.id].sort().join("|");
+    const pairKey = (f: F) => `${f.groupId ?? ""}|${[f.red.id, f.blue.id].sort().join("|")}`;
 
     // gpById: GP fight keyed by its bracketMatchId (= parent fight id) — works for new data
     // gpByPair: GP fight keyed by competitor pair — fallback for old data without bracketMatchId
@@ -232,25 +270,30 @@ export function ResultsPage() {
         const prev = gpById.get(f.bracketMatchId);
         if (!prev || decisive) gpById.set(f.bracketMatchId, f);
       }
-      const pk = pairKey(f);
-      const prev = gpByPair.get(pk);
-      if (!prev || decisive) gpByPair.set(pk, f);
+      if (!f.bracketMatchId) {
+        const pk = pairKey(f);
+        const prev = gpByPair.get(pk);
+        if (!prev || decisive) gpByPair.set(pk, f);
+      }
     }
 
     return fights
       .filter((f) => !f.isGoldenPointFight)
       .map((f) => {
-        // Only tiebreak fights can be resolved by GP
+        const linked = gpById.get(f.id);
+        const linkedGp = linked && pairKey(linked) === pairKey(f) ? linked : null;
+        // Ordinary RR matches are allowed to draw. Only a FINAL or playoff
+        // can inherit a later golden-point winner.
         if (!f.isTiebreakExtra) {
-          // Bracket fight: look up by bracketMatchId
-          if (!f.bracketMatchId) return f;
-          const gp = gpById.get(f.bracketMatchId);
-          if (!gp) return f;
+          if (!f.isFinalFight && !f.bracketMatchId) return f;
+          const bracketGp = f.bracketMatchId ? gpById.get(f.bracketMatchId) : null;
+          const gp = linkedGp ?? (bracketGp && pairKey(bracketGp) === pairKey(f) ? bracketGp : null);
+          if (!gp?.completed || gp.winner === "draw") return f;
           return { ...f, winner: gp.winner, winReason: "golden_point", completed: gp.completed } as F;
         }
         // Tiebreak group fight: try bracketMatchId chain first (new data), then pair fallback
-        const gp = gpById.get(f.id) ?? gpByPair.get(pairKey(f));
-        if (!gp) return f;
+        const gp = linkedGp ?? gpByPair.get(pairKey(f));
+        if (!gp?.completed || gp.winner === "draw") return f;
         return { ...f, winner: gp.winner, winReason: "golden_point", completed: gp.completed } as F;
       });
   }, [fights]);
@@ -258,9 +301,68 @@ export function ResultsPage() {
   const standings = computeStandings(fights);
   const standingsByGroup = useMemo(() => computeStandingsByGroup(fights), [fights]);
   const groupedView = standingsByGroup.size >= 2;
-  const podium = computePodium(fights, standings);
+  const roundRobinResult = isElimination ? null : roundRobinOutcome(fights, groups);
+  const eliminationOutcome = isElimination ? resolveEliminationOutcome({
+    phase: "results", config, competitors, fights, groups, bracketMatches,
+    bracketSeeds: [], currentFightIndex: 0, setupStarted: true,
+  }) : null;
+  const podium = eliminationOutcome?.status === "resolved"
+    ? computePodium([], standings, eliminationOutcome.championId,
+      eliminationOutcome.runnerUpId)
+    : computePodium(fights, standings, roundRobinResult?.championId,
+      roundRobinResult?.runnerUpId);
   const completed = fights.filter((f) => f.completed).length;
   const total = fights.length;
+  const confirmationKey = JSON.stringify([config.id,
+    bracketMatches.map((match) => [match.id, match.completed, match.winnerId]),
+    eliminationOutcome?.requiredResultIds, fights.map((fight) => [
+    fight.id, fight.completed, fight.winner, fight.flagsRed, fight.flagsBlue,
+    fight.foulsRed, fight.foulsBlue, fight.warningsRed, fight.warningsBlue,
+  ])]);
+  const [verified, setVerified] = useState<string | null>(null);
+  useEffect(() => {
+    if ((!isElimination && !roundRobinResult?.championId) ||
+      (isElimination && eliminationOutcome?.status !== "resolved") ||
+      !connected || !stateReady) return;
+    let cancelled = false;
+    const dependencies = isElimination
+      ? fights.filter((fight) => eliminationOutcome?.requiredResultIds.includes(fight.id))
+      : fights.filter((fight) => !fight.groupId?.startsWith("EXT:"));
+    void Promise.all(dependencies.map((fight) => requestRef.current<{
+      ok: boolean;
+      result: {
+        fightId: string;
+        categoryId: string;
+        status: string;
+        winner: FightEntry["winner"];
+        flagsRed: number;
+        flagsBlue: number;
+        foulsRed: number;
+        foulsBlue: number;
+        warningsRed: number;
+        warningsBlue: number;
+      } | null;
+    }>("match:result:get", { categoryId: config.id, matchId: fight.id }).then((response) => {
+      const result = response?.result;
+      const fields = ["flagsRed", "flagsBlue", "foulsRed", "foulsBlue", "warningsRed", "warningsBlue"] as const;
+      return Boolean(response?.ok && result?.status === "confirmed" &&
+        result.fightId === fight.id && result.categoryId === config.id &&
+        fight.completed && result.winner === fight.winner && fields.every((field) =>
+          isElimination ? fight[field] === undefined || fight[field] === result[field]
+            : Number.isInteger(fight[field]) && Number.isInteger(result[field]) &&
+              fight[field] === result[field]));
+    }))).then((checks) => {
+      if (!cancelled) setVerified(checks.length > 0 && checks.every(Boolean) ? confirmationKey : null);
+    }).catch(() => {
+      if (!cancelled) setVerified(null);
+    });
+    return () => { cancelled = true; };
+  }, [confirmationKey, config.id, connected, stateReady, isElimination,
+    roundRobinResult?.championId, eliminationOutcome?.status, fights]);
+  const officialRoundRobinResult = !isElimination && roundRobinResult?.championId &&
+    connected && stateReady && verified === confirmationKey;
+  const officialEliminationResult = isElimination && eliminationOutcome?.status === "resolved" &&
+    connected && stateReady && verified === confirmationKey;
 
   return (
     <div className="flex-1 overflow-auto p-6 space-y-6">
@@ -273,6 +375,14 @@ export function ResultsPage() {
           {config.categoryName && (
             <p className="text-muted-foreground text-sm mt-0.5">{config.categoryName}</p>
           )}
+          {eliminationOutcome?.status === "review" && (
+            <p role="status" className="text-amber-400 text-xs mt-1">
+              Pendiente de revisión: el historial de la llave o del desempate es ambiguo.
+            </p>
+          )}
+          {!(isElimination ? officialEliminationResult : officialRoundRobinResult) && (
+            <p className="text-amber-400 text-xs mt-1">Clasificación provisional: faltan combates, un desempate o verificar los resultados en el servidor.</p>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm text-muted-foreground">
@@ -281,8 +391,10 @@ export function ResultsPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={() => exportTournamentHTML(fights, competitors, config, bracketMatches)}
-            disabled={completed === 0}
+            onClick={() => exportTournamentHTML(fights, competitors, config, bracketMatches,
+              groups, officialEliminationResult ? eliminationOutcome?.requiredResultIds : [])}
+            disabled={completed === 0 || !(isElimination
+              ? officialEliminationResult : officialRoundRobinResult)}
           >
             <Download className="size-3.5" />
             Exportar HTML
@@ -290,7 +402,14 @@ export function ResultsPage() {
           <Button
             variant="outline"
             size="sm"
-            onClick={reset}
+            onClick={() => {
+              if (!connected || !stateReady || serverState.activeMatchLock?.categoryId === config.id
+                || (serverState.match && !serverState.resultConfirmed && serverState.categoryId === config.id)) {
+                toast.warning("No se puede borrar esta categoría sin confirmar que el combate terminó.");
+                return;
+              }
+              reset();
+            }}
             className="text-destructive border-destructive/50 hover:bg-destructive/10"
           >
             <RotateCcw className="size-4" />
@@ -300,7 +419,8 @@ export function ResultsPage() {
       </div>
 
       {/* Podio */}
-      {podium.length >= 1 && completed > 0 && (
+      {podium.length >= 1 && completed > 0 && (isElimination
+        ? officialEliminationResult : officialRoundRobinResult) && (
         <div className="grid grid-cols-3 gap-3 items-end">
           {podium[1] ? (
             <div className="flex flex-col items-center gap-2 rounded-xl border border-border bg-secondary/20 p-4 mt-4">
@@ -528,6 +648,9 @@ function StandingsCard({
                 <TableHead className="w-10">#</TableHead>
                 <TableHead>Competidor</TableHead>
                 {!isTul && !hidePoints && <TableHead className="text-center font-bold text-yellow-400">Puntos</TableHead>}
+                {!isTul && !hidePoints && <TableHead className="text-center">Banderines</TableHead>}
+                {!isTul && !hidePoints && <TableHead className="text-center">Pt. contra</TableHead>}
+                {!isTul && !hidePoints && <TableHead className="text-center">Advertencias</TableHead>}
                 {!isTul && <TableHead className="text-center">Ganados</TableHead>}
                 {!isTul && <TableHead className="text-center hidden sm:table-cell">Empates</TableHead>}
                 {!isTul && <TableHead className="text-center">Perdidos</TableHead>}
@@ -558,6 +681,9 @@ function StandingsCard({
                     </div>
                   </TableCell>
                   {!isTul && !hidePoints && <TableCell className="text-center font-black text-yellow-400 text-base">{s.points}</TableCell>}
+                  {!isTul && !hidePoints && <TableCell className="text-center">{s.flagsFor}</TableCell>}
+                  {!isTul && !hidePoints && <TableCell className="text-center">{s.foulsAgainst}</TableCell>}
+                  {!isTul && !hidePoints && <TableCell className="text-center">{s.warnings}</TableCell>}
                   {!isTul && <TableCell className="text-center text-green-400 font-bold">{s.wins}</TableCell>}
                   {!isTul && <TableCell className="text-center text-muted-foreground hidden sm:table-cell">{s.draws}</TableCell>}
                   {!isTul && <TableCell className="text-center text-red-400 font-bold">{s.losses}</TableCell>}

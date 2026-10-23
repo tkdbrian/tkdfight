@@ -37,7 +37,8 @@ export default defineConfig({
         navigateFallbackDenylist: [/^\/judge/, /^\/tv/, /^\/qr\//],
         runtimeCaching: [
           {
-            urlPattern: /^\/api\//,
+            // Maintenance/bootstrap checks must NEVER use a service-worker cached response.
+            urlPattern: /^\/api\/(?!backup\/|boot-status(?:$|\?)|build-id(?:$|\?))/,
             handler: "NetworkFirst",
             options: { cacheName: "api-cache" },
           },
@@ -53,6 +54,7 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
+      "/boot-status": apiTarget,
       "/api": apiTarget,
       "/socket.io": {
         target: apiTarget,

@@ -1,11 +1,11 @@
 @echo off
-title TKD Tournament System 2026
+title TKD Fight 2026
 color 0B
 cls
 
 echo.
 echo ============================================================
-echo    TKD TOURNAMENT SYSTEM 2026 - Sistema de Torneos
+echo    TKD FIGHT 2026 - Sistema de Torneos
 echo ============================================================
 echo.
 
@@ -59,7 +59,7 @@ echo.
 
 if not defined OPEN_PATH set OPEN_PATH=/
 if not defined DATA_DIR set DATA_DIR=%~dp0data
-start "" /B powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0scripts\server-watchdog.ps1" -Exe "%COMSPEC%" -Args "/c npx tsx --tsconfig tsconfig.server.json server/index.ts" -WorkDir "%~dp0" -DataDir "%DATA_DIR%"
+start "" /B powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0scripts\server-watchdog.ps1" -Exe "%COMSPEC%" -ServerArguments "/c npx tsx --tsconfig tsconfig.server.json server/index.ts" -WorkDir "%~dp0." -DataDir "%DATA_DIR%"
 
 REM ── Esperar a que el servidor arranque (max 8 segundos) ──────────────────────
 echo [INFO] Esperando servidor...

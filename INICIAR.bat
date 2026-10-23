@@ -1,11 +1,11 @@
 @echo off
-title TKD Tournament 2026 - Iniciando...
+title TKD Fight 2026 - Iniciando...
 color 0A
 cls
 
 echo.
 echo ==============================================
-echo   TKD Tournament System 2026 - BL System
+echo   TKD Fight 2026 - BL System
 echo ==============================================
 echo.
 
@@ -73,7 +73,7 @@ echo [INFO] Iniciando servidor en puerto 3001 (modo watchdog)...
 echo.
 
 if not defined DATA_DIR set DATA_DIR=%~dp0data
-start "" /B powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0scripts\server-watchdog.ps1" -Exe "%NODE_EXE%" -Args "%~dp0dist-server\index.mjs" -WorkDir "%~dp0" -DataDir "%DATA_DIR%"
+start "" /B powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%~dp0scripts\server-watchdog.ps1" -Exe "%NODE_EXE%" -ServerArguments "dist-server/index.mjs" -WorkDir "%~dp0." -DataDir "%DATA_DIR%"
 
 :: Esperar a que el servidor arranque (max 5 segundos)
 set /a WAIT=0

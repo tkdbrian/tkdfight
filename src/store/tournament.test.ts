@@ -35,6 +35,113 @@ describe("swapBracketSlots", () => {
 });
 
 describe("category snapshots", () => {
+  it("keeps legacy category names and times untouched until explicit profile application", () => {
+    const store = useTournamentStore.getState();
+    useTournamentStore.setState({ config: {
+      ...store.config,
+      id: "legacy-category",
+      categoryName: "Nombre libre anterior",
+      finalSeconds: 135,
+    } });
+    useTournamentStore.getState().setConfig({
+      eventId: "event-yusan",
+      profileId: "yusan-2026",
+      profileApplied: false,
+    });
+    expect(useTournamentStore.getState().config).toMatchObject({
+      categoryName: "Nombre libre anterior",
+      finalSeconds: 135,
+      profileApplied: false,
+    });
+    expect(useTournamentStore.getState().config.ageDivision).toBeUndefined();
+  });
+
+  it("inherits event profile only in new categories, then creates a fresh unprofiled event", () => {
+    const store = useTournamentStore.getState();
+    useTournamentStore.setState({ config: {
+      ...store.config,
+      id: "first-category",
+      eventId: "first-event",
+      profileId: "yusan-2026",
+      profileApplied: true,
+      ageDivision: "juniors",
+      gradeSystem: "DAN",
+      danFrom: 1,
+      danTo: 2,
+      categoryName: "Primera",
+    } });
+    const secondId = useTournamentStore.getState().createCategory();
+    expect(secondId).toBeTruthy();
+    expect(useTournamentStore.getState().config).toMatchObject({
+      id: secondId,
+      eventId: "first-event",
+      profileId: "yusan-2026",
+      profileApplied: true,
+      requiresGradeSelection: true,
+      categoryName: "",
+    });
+    expect(useTournamentStore.getState().config.ageDivision).toBeUndefined();
+    const newEventId = useTournamentStore.getState().startNewTournament("Nuevo");
+    expect(newEventId).not.toBe("first-event");
+    expect(useTournamentStore.getState().config).toMatchObject({
+      eventId: newEventId,
+      tournamentName: "Nuevo",
+      profileApplied: false,
+    });
+    expect(useTournamentStore.getState().config.profileId).toBeUndefined();
+    expect(useTournamentStore.getState().selectCategory("first-category")).toBe(true);
+    expect(useTournamentStore.getState().config.eventId).toBe("first-event");
+  });
+
+  it("inherits a selected event profile even when creating from an older sibling", () => {
+    const initial = useTournamentStore.getState();
+    useTournamentStore.setState({ config: {
+      ...initial.config,
+      id: "sibling-a",
+      eventId: "shared-event",
+      categoryName: "A",
+    } });
+    const siblingB = useTournamentStore.getState().createCategory();
+    expect(siblingB).toBeTruthy();
+    expect(useTournamentStore.getState().selectCategory("sibling-a")).toBe(true);
+    useTournamentStore.getState().setConfig({ profileId: "yusan-2026", profileApplied: false });
+    expect(useTournamentStore.getState().eventProfiles["shared-event"]).toBe("yusan-2026");
+    expect(useTournamentStore.getState().selectCategory(siblingB!)).toBe(true);
+    expect(useTournamentStore.getState().config).toMatchObject({
+      profileId: "yusan-2026",
+      profileApplied: false,
+    });
+    const siblingC = useTournamentStore.getState().createCategory();
+    expect(siblingC).toBeTruthy();
+    expect(useTournamentStore.getState().config).toMatchObject({
+      profileId: "yusan-2026",
+      profileApplied: true,
+    });
+  });
+
+  it("keeps generated weight and custom age as structured snapshot data across tabs", () => {
+    const initial = useTournamentStore.getState();
+    useTournamentStore.setState({ config: {
+      ...initial.config,
+      id: "weighted-category",
+      categoryName: "Pesado C · 9-10 años",
+      nameGenerated: true,
+      weightLabel: "Pesado C",
+      categoryAgeFrom: "9",
+      categoryAgeTo: "10",
+      categoryAgeOpenEnded: false,
+    } });
+    const other = useTournamentStore.getState().createCategory();
+    expect(other).toBeTruthy();
+    expect(useTournamentStore.getState().selectCategory("weighted-category")).toBe(true);
+    expect(useTournamentStore.getState().config).toMatchObject({
+      categoryName: "Pesado C · 9-10 años",
+      weightLabel: "Pesado C",
+      categoryAgeFrom: "9",
+      categoryAgeTo: "10",
+    });
+  });
+
   it("migrates a legacy config and keeps its id across two store restarts", async () => {
     localStorage.setItem("tkd-tournament", JSON.stringify({
       state: {

@@ -3,7 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AppLayout } from "@/layouts/AppLayout";
 import { SetupPage } from "@/pages/SetupPage";
 
-const FightPage = lazy(() => import("@/pages/FightPage").then((m) => ({ default: m.FightPage })));
+const FightPage = lazy(() => import("@/pages/FightPageRoute").then((m) => ({ default: m.FightPageRoute })));
 const ResultsPage = lazy(() => import("@/pages/ResultsPage").then((m) => ({ default: m.ResultsPage })));
 const BracketPage = lazy(() => import("@/pages/BracketPage").then((m) => ({ default: m.BracketPage })));
 const StandingsPage = lazy(() => import("@/pages/StandingsPage").then((m) => ({ default: m.StandingsPage })));

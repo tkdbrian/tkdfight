@@ -1,11 +1,13 @@
 ﻿import * as React from "react";
 import confetti from "canvas-confetti";
 import { useNavigate } from "react-router-dom";
-import { useTournamentStore, type FightEntry, type CompetitorEntry } from "@/store/tournament";
+import { useTournamentStore, type FightEntry, type CompetitorEntry, type TournamentGroup } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
-import { generateTiebreakFights, generateFinalFights } from "@/lib/bracket";
+import { generateFinalFights } from "@/lib/bracket";
+import { closedGroupBasis, resolveFirstPlace, groupWinnerId, isExternalGuestFight, rankedGroupIds, preparePlayoffFights, type FirstPlaceResolution } from "@/lib/round-robin-resolution";
 import { POINTS_WIN, POINTS_DRAW } from "@/rules/round-robin";
 import { Button } from "@/components/ui/button";
+import { CategoryCombatAction } from "@/components/CategoryCombatAction";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -18,6 +20,11 @@ import {
 } from "@/components/ui/table";
 import { Trophy, Download, AlertTriangle, Zap, CheckCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSocket } from "@/hooks/useSocket";
+import { toast } from "sonner";
+import { syncProposedFights } from "@/lib/sync-proposed-fights";
+import { clearFightProposal, getOrCreateFightProposal } from "@/lib/pending-fight-proposals";
+import { CategoryFormatFallback } from "@/components/CategoryFormatFallback";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -56,7 +63,7 @@ function computeGroupStandings(fights: FightEntry[]): Map<string, StandingRow[]>
 
   // Only count regular (non-tiebreak / non-golden-point) fights for main standings
   for (const f of fights) {
-    if (f.isTiebreakExtra || f.isGoldenPointFight) continue;
+    if (f.isTiebreakExtra || f.isGoldenPointFight || isExternalGuestFight(f)) continue;
     const gid = f.groupId ?? "G1";
     ensureRow(gid, f.red.id, f.red.name, f.red.team);
     ensureRow(gid, f.blue.id, f.blue.name, f.blue.team);
@@ -109,165 +116,7 @@ function computeGroupStandings(fights: FightEntry[]): Map<string, StandingRow[]>
   return result;
 }
 
-function detectTiebreaks(rows: StandingRow[]): string[] {
-  if (rows.length < 2) return [];
-  const top = rows[0];
-  return rows
-    .filter(
-      (r) =>
-        r !== top &&
-        r.points === top.points &&
-        r.flagsFor === top.flagsFor &&
-        r.foulsAgainst === top.foulsAgainst &&
-        r.warnings === top.warnings,
-    )
-    .map((r) => r.id)
-    .concat(top.id);
-}
-
-// ── Tiebreak logic ─────────────────────────────────────────────────────────
-
-interface TiebreakInfo {
-  status: "none" | "needed" | "in_progress" | "resolved";
-  tiedIds: string[];
-  fights: FightEntry[];
-  resolvedOrder?: string[];
-  goldenPoint?: boolean; // true when the next fight must be punto de oro
-}
-
-type TbStat = { points: number; flagsFor: number; foulsAgainst: number; warnings: number };
-
-function buildTbStats(tbFights: FightEntry[]): Map<string, TbStat> {
-  const stats = new Map<string, TbStat>();
-
-  for (const f of tbFights) {
-    for (const id of [f.red.id, f.blue.id]) {
-      if (!stats.has(id)) stats.set(id, { points: 0, flagsFor: 0, foulsAgainst: 0, warnings: 0 });
-    }
-    if (!f.completed) continue;
-
-    const rs = stats.get(f.red.id);
-    const bs = stats.get(f.blue.id);
-    if (!rs || !bs) continue;
-
-    const fr = f.flagsRed ?? 0;
-    const fb = f.flagsBlue ?? 0;
-    rs.flagsFor += fr;
-    rs.foulsAgainst += f.foulsRed ?? 0;
-    bs.flagsFor += fb;
-    bs.foulsAgainst += f.foulsBlue ?? 0;
-    rs.warnings += f.warningsRed ?? 0;
-    bs.warnings += f.warningsBlue ?? 0;
-
-    if (f.winner === "red") {
-      rs.points += POINTS_WIN;
-    } else if (f.winner === "blue") {
-      bs.points += POINTS_WIN;
-    } else {
-      rs.points += POINTS_DRAW;
-      bs.points += POINTS_DRAW;
-    }
-  }
-
-  return stats;
-}
-
-function computeTiebreakOrder(tbFights: FightEntry[]): string[] {
-  const stats = buildTbStats(tbFights);
-
-  return [...stats.entries()]
-    .sort(([, a], [, b]) => {
-      if (b.points !== a.points) return b.points - a.points;
-      if (b.flagsFor !== a.flagsFor) return b.flagsFor - a.flagsFor;
-      if (a.foulsAgainst !== b.foulsAgainst) return a.foulsAgainst - b.foulsAgainst;
-      return a.warnings - b.warnings;
-    })
-    .map(([id]) => id);
-}
-
-function getTiebreakInfo(
-  groupId: string,
-  rows: StandingRow[],
-  allFights: FightEntry[],
-): TiebreakInfo {
-  const tiedIds = detectTiebreaks(rows);
-  if (tiedIds.length < 2) return { status: "none", tiedIds: [], fights: [] };
-
-  const tbFights = allFights.filter(
-    (f) => (f.isTiebreakExtra || f.isGoldenPointFight) && f.groupId === groupId,
-  );
-
-  if (tbFights.length === 0) {
-    const groupFights = allFights.filter(
-      (f) => !f.isTiebreakExtra && !f.isGoldenPointFight && f.groupId === groupId,
-    );
-    const allComplete = groupFights.every((f) => f.completed);
-    return {
-      status: allComplete ? "needed" : "none",
-      tiedIds,
-      fights: [],
-    };
-  }
-
-  const allComplete = tbFights.every((f) => f.completed);
-  if (!allComplete) {
-    return { status: "in_progress", tiedIds, fights: tbFights };
-  }
-
-  // Caso crítico: desempate entre 2 competidores.
-  // Un empate NO puede resolverse por banderas: se necesita ganador real.
-  if (tiedIds.length === 2) {
-    const completedDraws = tbFights.filter((f) => f.completed && f.winner === "draw").length;
-    const decisive = [...tbFights]
-      .filter((f) => f.completed && (f.winner === "red" || f.winner === "blue"))
-      .at(-1);
-
-    if (!decisive) {
-      return {
-        status: "needed",
-        tiedIds,
-        fights: tbFights,
-        goldenPoint: completedDraws >= 1,
-      };
-    }
-
-    const winnerId = decisive.winner === "red" ? decisive.red.id : decisive.blue.id;
-    const loserId = decisive.winner === "red" ? decisive.blue.id : decisive.red.id;
-    return {
-      status: "resolved",
-      tiedIds,
-      fights: tbFights,
-      resolvedOrder: [winnerId, loserId],
-    };
-  }
-
-  const resolvedOrder = computeTiebreakOrder(tbFights);
-
-  // Check if tie is actually broken — if top 2 are still equal, need another fight
-  if (resolvedOrder.length >= 2) {
-    const stats = buildTbStats(tbFights);
-    const s1 = stats.get(resolvedOrder[0]);
-    const s2 = stats.get(resolvedOrder[1]);
-    const stillTied =
-      s1?.points === s2?.points &&
-      s1?.flagsFor === s2?.flagsFor &&
-      s1?.foulsAgainst === s2?.foulsAgainst &&
-      s1?.warnings === s2?.warnings &&
-      s1 != null && s2 != null;
-    if (stillTied) {
-      // Count completed draws to determine if next fight must be golden point
-      const completedDraws = tbFights.filter((f) => f.completed && f.winner === "draw").length;
-      return { status: "needed", tiedIds, fights: tbFights, goldenPoint: completedDraws >= 1 };
-    }
-  }
-
-  return {
-    status: "resolved",
-    tiedIds,
-    fights: tbFights,
-    resolvedOrder,
-  };
-}
+type TiebreakInfo = FirstPlaceResolution;
 
 function applyTiebreakOrder(
   rows: StandingRow[],
@@ -288,11 +137,21 @@ function applyTiebreakOrder(
   return result;
 }
 
-function exportCsv(byGroup: Map<string, StandingRow[]>, categoryName: string) {
+function exportCsv(
+  byGroup: Map<string, StandingRow[]>,
+  categoryName: string,
+  fights: FightEntry[],
+  groups: TournamentGroup[],
+) {
   const header = "Llave,Pos,Nombre,Equipo,PJ,PG,PE,PP,Pts,Banderas,PtContra,Adv";
   const rows: string[] = [];
   for (const [gid, standings] of byGroup) {
-    for (const [i, s] of standings.entries()) {
+    const expectedIds = groups.find((group) => group.id === gid)?.competitors.map((entry) => entry.id);
+    const resolution = resolveFirstPlace(gid, standings, fights, expectedIds);
+    const ordered = resolution.status === "resolved" && resolution.resolvedOrder
+      ? applyTiebreakOrder(standings, resolution.tiedIds, resolution.resolvedOrder)
+      : standings;
+    for (const [i, s] of ordered.entries()) {
       rows.push([gid, i + 1, `"${s.name}"`, `"${s.team ?? ""}"`, s.played, s.wins, s.draws, s.losses, s.points, s.flagsFor, s.foulsAgainst, s.warnings].join(","));
     }
   }
@@ -311,7 +170,7 @@ function exportCsv(byGroup: Map<string, StandingRow[]>, categoryName: string) {
 const MEDALS = ["🥇", "🥈", "🥉"] as const;
 
 function GroupCard({
-  groupId, rows, tiebreak, onResolve, label, groupFights, finalistId, isTul, eliminationMode,
+  groupId, rows, tiebreak, onResolve, label, groupFights, expectedIds, finalistId, isTul, eliminationMode,
 }: Readonly<{
   groupId: string;
   rows: StandingRow[];
@@ -319,6 +178,7 @@ function GroupCard({
   onResolve: () => void;
   label?: string;
   groupFights?: FightEntry[];
+  expectedIds?: string[];
   finalistId?: string;
   isTul?: boolean;
   /** En eliminación pura (ej. Fase Final): si el desempate quedó resuelto,
@@ -329,14 +189,17 @@ function GroupCard({
   const displayRows = tiebreak.status === "resolved" && tiebreak.resolvedOrder
     ? applyTiebreakOrder(rows, tiebreak.tiedIds, tiebreak.resolvedOrder)
     : rows;
+  const positionsFinal = closedGroupBasis(groupId, groupFights ?? [], expectedIds ?? rows.map((row) => row.id)) !== null &&
+    (tiebreak.status === "none" || tiebreak.status === "resolved");
 
   const tbCompleted = tiebreak.fights.filter((f) => f.completed).length;
 
   // Full stats for display — tiebreak/GP sequences count as 1 jugado, excluded from W/D/L/points/flags/fouls
   // En eliminationMode: el desempate es detalle interno y el ganador del desempate cuenta como
   // ganador real del combate (3 pts, 0 empate) en vez de empate.
-  const fullStats = React.useMemo(() => {
+  const fullStats = (() => {
     const map = new Map<string, StandingRow>();
+    const validExtraIds = new Set(tiebreak.fights.map((fight) => fight.id));
     for (const row of rows) {
       map.set(row.id, { ...row, played: 0, wins: 0, draws: 0, losses: 0, points: 0, flagsFor: 0, foulsAgainst: 0, warnings: 0 });
     }
@@ -352,6 +215,7 @@ function GroupCard({
       if (!red || !blue) continue;
       // Tiebreak/GP: en eliminación no se cuentan; en grupos cuenta toda la secuencia como 1 jugado.
       if (f.isTiebreakExtra || f.isGoldenPointFight) {
+        if (!validExtraIds.has(f.id)) continue;
         if (eliminationMode) continue;
         const seqKey = `${f.groupId ?? ""}|${[f.red.id, f.blue.id].sort().join("|")}`;
         if (!countedTbSeqs.has(seqKey)) {
@@ -381,7 +245,7 @@ function GroupCard({
       else { red.draws++; red.points += POINTS_DRAW; blue.draws++; blue.points += POINTS_DRAW; }
     }
     return map;
-  }, [rows, groupFights, eliminationMode, tiebreak.status, tiebreak.resolvedOrder]);
+  })();
 
   return (
     <Card>
@@ -390,6 +254,9 @@ function GroupCard({
           <Trophy className="size-4" />
           {label ?? `Llave ${groupId}`}
           <Badge variant="secondary">{rows.length} competidores</Badge>
+          {!positionsFinal && tiebreak.status === "none" && (
+            <Badge variant="outline">Clasificación provisional</Badge>
+          )}
           {tiebreak.status === "needed" && (
             <Badge
               variant="outline"
@@ -399,6 +266,12 @@ function GroupCard({
             >
               <AlertTriangle className="size-3" />
               {tiebreak.goldenPoint ? "Punto de Oro pendiente" : "Desempate pendiente"}
+            </Badge>
+          )}
+          {tiebreak.status === "review" && (
+            <Badge variant="outline" className="border-red-500 text-red-300 gap-1">
+              <AlertTriangle className="size-3" />
+              Desempate antiguo sin verificar
             </Badge>
           )}
           {tiebreak.status === "in_progress" && (
@@ -434,7 +307,7 @@ function GroupCard({
           </TableHeader>
           <TableBody>
             {displayRows.map((s, i) => {
-              const medal = MEDALS[i] ?? null;
+              const medal = positionsFinal ? MEDALS[i] ?? null : null;
               const isTied = tiebreak.status !== "resolved" && tiebreak.tiedIds.includes(s.id);
               const isFirst = i === 0;
               const isSecond = i === 1;
@@ -459,8 +332,8 @@ function GroupCard({
                     {s.name}
                     {s.team && <span className="text-xs text-muted-foreground ml-1.5">{s.team}</span>}
                     {isTied && <span className="ml-1.5 text-xs text-orange-400">⚡ Empate</span>}
-                    {isFirst && !isTied && <span className="ml-2 text-[10px] font-bold text-yellow-300 bg-yellow-700/50 border border-yellow-500/60 px-1.5 py-0.5 rounded-sm">🥇 1° PUESTO</span>}
-                    {isSecond && !isTied && <span className="ml-2 text-[10px] font-bold text-sky-200 bg-sky-800/50 border border-sky-500/50 px-1.5 py-0.5 rounded-sm">🥈 2° PUESTO</span>}
+                    {isFirst && positionsFinal && !isTied && <span className="ml-2 text-[10px] font-bold text-yellow-300 bg-yellow-700/50 border border-yellow-500/60 px-1.5 py-0.5 rounded-sm">🥇 1° PUESTO</span>}
+                    {isSecond && positionsFinal && !isTied && <span className="ml-2 text-[10px] font-bold text-sky-200 bg-sky-800/50 border border-sky-500/50 px-1.5 py-0.5 rounded-sm">🥈 2° PUESTO</span>}
                     {isFinalist && (
                       <span className="ml-2 text-[10px] font-bold text-emerald-300 bg-emerald-900/60 border border-emerald-600/50 px-1.5 py-0.5 rounded-sm">→ Fase Final</span>
                     )}
@@ -521,6 +394,18 @@ function GroupCard({
           </Button>
         )}
 
+        {tiebreak.status === "review" && (
+          <div className="space-y-2 rounded-lg border border-red-500/40 bg-red-950/20 p-3">
+            <p className="text-xs text-red-200">
+              Hay {tiebreak.legacyExtras?.length ?? 0} pelea(s) extra antiguas entre los líderes sin registro de cuándo se iniciaron.
+              No se usan para decidir el primer puesto ni se borran.
+            </p>
+            <Button variant="outline" className="w-full border-red-500/60 text-red-200" onClick={onResolve}>
+              Iniciar nuevo desempate oficial
+            </Button>
+          </div>
+        )}
+
         {tiebreak.status === "in_progress" && (
           <p className="text-xs text-center text-yellow-400">
             ⏳ Desempate en curso — {tbCompleted} de {tiebreak.fights.length} peleas completadas.
@@ -555,12 +440,11 @@ function getGroupWinner(
   groupId: string,
   rows: StandingRow[],
   allFights: FightEntry[],
+  groups: TournamentGroup[] = [],
+  expectedIds?: string[],
 ): CompetitorEntry | null {
-  const info = getTiebreakInfo(groupId, rows, allFights);
-  const winnerId =
-    info.status === "resolved" && info.resolvedOrder && info.resolvedOrder.length > 0
-      ? info.resolvedOrder[0]
-      : rows[0]?.id;
+  const winnerId = groupWinnerId(groupId, rows, allFights,
+    expectedIds ?? groups.find((group) => group.id === groupId)?.competitors.map((competitor) => competitor.id));
   if (!winnerId) return null;
   for (const f of allFights) {
     if (f.red.id === winnerId) return f.red;
@@ -572,9 +456,12 @@ function getGroupWinner(
 function isFinalReady(
   byGroupMap: Map<string, StandingRow[]>,
   allFights: FightEntry[],
+  groups: TournamentGroup[] = [],
 ): boolean {
   const groupIds = [...byGroupMap.keys()].filter((id) => id !== "FINAL");
   if (groupIds.length < 2) return false;
+  if (groups.length > 0 && (groupIds.length !== groups.length ||
+    groups.some((group) => !groupIds.includes(group.id)))) return false;
   if (allFights.some((f) => f.isFinalFight)) return false;
   const groupFights = allFights.filter(
     (f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight && groupIds.includes(f.groupId ?? ""),
@@ -582,8 +469,10 @@ function isFinalReady(
   if (!groupFights.every((f) => f.completed)) return false;
   for (const gid of groupIds) {
     const rows = byGroupMap.get(gid) ?? [];
-    const info = getTiebreakInfo(gid, rows, allFights);
-    if (info.status === "needed" || info.status === "in_progress") return false;
+    const info = resolveFirstPlace(gid, rows, allFights,
+      groups.find((group) => group.id === gid)?.competitors.map((competitor) => competitor.id));
+    if (info.status === "needed" || info.status === "review" || info.status === "in_progress") return false;
+    if (!getGroupWinner(gid, rows, allFights, groups)) return false;
   }
   return true;
 }
@@ -591,29 +480,77 @@ function isFinalReady(
 // ── Page ───────────────────────────────────────────────────────────────────
 
 export function StandingsPage() {
-  const { fights, config, addTiebreakFights, addFinalFights, reset } = useTournamentStore(
-    useShallow((s) => ({ fights: s.fights, config: s.config, addTiebreakFights: s.addTiebreakFights, addFinalFights: s.addFinalFights, reset: s.reset }))
+  const { connected, stateReady, state: serverState, request } = useSocket();
+  const { fights, groups, config, phase, addTiebreakFights, addFinalFights, reset } = useTournamentStore(
+    useShallow((s) => ({ fights: s.fights, groups: s.groups, config: s.config, phase: s.phase, addTiebreakFights: s.addTiebreakFights, addFinalFights: s.addFinalFights, reset: s.reset }))
   );
   const navigate = useNavigate();
   const [confirmReset, setConfirmReset] = React.useState(false);
+  const creatingFightsRef = React.useRef(false);
+  const activeLock = serverState.activeMatchLock;
+  function canOpenFight(): boolean {
+    if (creatingFightsRef.current || !connected || !stateReady || (activeLock && activeLock.categoryId !== config.id)
+      || (serverState.match && !serverState.resultConfirmed)) {
+      toast.warning("No se puede cargar otra pelea mientras este tatami tiene un combate activo o está desconectado.");
+      return false;
+    }
+    return true;
+  }
+
+  async function requireConfirmedResults(dependencies: FightEntry[]): Promise<void> {
+    if (dependencies.length === 0 || dependencies.some((fight) => !fight.completed || !fight.winner)) {
+      throw new Error("Faltan peleas de la llave por confirmar antes de avanzar.");
+    }
+    const responses = await Promise.all(dependencies.map((fight) => request<{
+      ok: boolean;
+      result: {
+        fightId: string;
+        categoryId: string;
+        status: string;
+        winner: FightEntry["winner"];
+        flagsRed: number;
+        flagsBlue: number;
+        foulsRed: number;
+        foulsBlue: number;
+        warningsRed: number;
+        warningsBlue: number;
+      } | null;
+    }>("match:result:get", { categoryId: config.id, matchId: fight.id })));
+    for (let index = 0; index < dependencies.length; index++) {
+      const fight = dependencies[index];
+      const response = responses[index];
+      const stats = ["flagsRed", "flagsBlue", "foulsRed", "foulsBlue", "warningsRed", "warningsBlue"] as const;
+      if (!response?.ok || response.result?.status !== "confirmed" ||
+        response.result.fightId !== fight.id || response.result.categoryId !== config.id ||
+        response.result.winner !== fight.winner || stats.some((field) =>
+          !Number.isInteger(fight[field]) || !Number.isInteger(response.result?.[field]) ||
+          fight[field] !== response.result?.[field])) {
+        throw new Error(`El resultado de ${fight.red.name} vs ${fight.blue.name} no coincide con el registro confirmado. Revisá la llave antes de avanzar.`);
+      }
+    }
+  }
 
   const byGroup = computeGroupStandings(fights);
-  const regularGroupIds = [...byGroup.keys()].filter((id) => id !== "FINAL");
+  const regularGroupIds = rankedGroupIds(fights);
   const finalRows = byGroup.get("FINAL");
-  const finalTiebreak = finalRows ? getTiebreakInfo("FINAL", finalRows, fights) : null;
-  const canStartFinal = isFinalReady(byGroup, fights);
+  const finalExpectedIds = regularGroupIds.length < 2 ? null : regularGroupIds.map((groupId) =>
+    getGroupWinner(groupId, byGroup.get(groupId) ?? [], fights, groups)?.id ?? null);
+  const completeFinalRoster = finalExpectedIds?.every((id): id is string => id !== null)
+    ? finalExpectedIds : null;
+  const finalTiebreak = finalRows && completeFinalRoster
+    ? resolveFirstPlace("FINAL", finalRows, fights, completeFinalRoster) : null;
+  const canStartFinal = isFinalReady(byGroup, fights, groups);
 
-  const finalistIds = React.useMemo(() => {
+  const finalistIds = (() => {
     if (!canStartFinal) return new Map<string, string>();
     const map = new Map<string, string>();
     for (const gid of regularGroupIds) {
       const rows = byGroup.get(gid) ?? [];
-      const winner = getGroupWinner(gid, rows, fights);
+      const winner = getGroupWinner(gid, rows, fights, groups);
       if (winner) map.set(gid, winner.id);
     }
     return map;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canStartFinal]);
+  })();
 
   const completed = fights.filter((f) => f.completed && !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight).length;
   const total = fights.filter((f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight).length;
@@ -623,28 +560,50 @@ export function StandingsPage() {
     if (regularGroupIds.length !== 1 || fights.some((f) => f.isFinalFight)) return null;
     const gid = regularGroupIds[0];
     const rows = byGroup.get(gid) ?? [];
-    const info = getTiebreakInfo(gid, rows, fights);
-    if (info.status === "needed" || info.status === "in_progress") return null;
+    const info = resolveFirstPlace(gid, rows, fights,
+      groups.find((group) => group.id === gid)?.competitors.map((competitor) => competitor.id));
+    if (info.status === "needed" || info.status === "review" || info.status === "in_progress") return null;
     const gFights = fights.filter((f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight && f.groupId === gid);
     if (gFights.length === 0 || !gFights.every((f) => f.completed)) return null;
-    return getGroupWinner(gid, rows, fights);
+    return getGroupWinner(gid, rows, fights, groups);
   })();
 
   // Campeón: fase final completada (multi-llave)
   const finalChampion: CompetitorEntry | null = (() => {
-    if (!finalRows || !finalTiebreak) return null;
+    if (!finalRows || !finalTiebreak || !completeFinalRoster) return null;
     const finalFights = fights.filter((f) => f.isFinalFight);
     if (finalFights.length === 0 || !finalFights.every((f) => f.completed)) return null;
-    if (finalTiebreak.status === "needed" || finalTiebreak.status === "in_progress") return null;
-    return getGroupWinner("FINAL", finalRows, fights);
+    return getGroupWinner("FINAL", finalRows, fights, groups, completeFinalRoster);
   })();
 
   const champion = singleGroupChampion ?? finalChampion;
+  const championVerificationKey = JSON.stringify([config.id, fights.map((fight) => [
+    fight.id, fight.completed, fight.winner, fight.flagsRed, fight.flagsBlue,
+    fight.foulsRed, fight.foulsBlue, fight.warningsRed, fight.warningsBlue,
+  ])]);
+  const [verifiedChampionKey, setVerifiedChampionKey] = React.useState<string | null>(null);
+  // A restored local snapshot can say "completed" while the server still has a pending result.
+  // The standings remain visible, but no official champion is announced until every fight matches.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: championVerificationKey tracks the fight/result snapshot exactly
+  React.useEffect(() => {
+    if (!champion || !connected || !stateReady) return;
+    let cancelled = false;
+    void requireConfirmedResults(fights.filter((fight) => !isExternalGuestFight(fight)))
+      .then(() => {
+        if (!cancelled) setVerifiedChampionKey(championVerificationKey);
+      })
+      .catch(() => {
+        if (!cancelled) setVerifiedChampionKey(null);
+      });
+    return () => { cancelled = true; };
+  }, [champion?.id, championVerificationKey, connected, stateReady]);
+  const officialChampion = champion && connected && stateReady &&
+    verifiedChampionKey === championVerificationKey ? champion : null;
 
   // Confetti when champion is determined
   // biome-ignore lint/correctness/useExhaustiveDependencies: intentional — only re-runs when champion identity changes, not on every re-render
   React.useEffect(() => {
-    if (!champion) return;
+    if (!officialChampion) return;
     const end = Date.now() + 2500;
     const frame = () => {
       confetti({ particleCount: 4, angle: 60, spread: 55, origin: { x: 0 }, colors: ["#FFD700", "#FFA500", "#FFFFFF"] });
@@ -652,53 +611,102 @@ export function StandingsPage() {
       if (Date.now() < end) requestAnimationFrame(frame);
     };
     frame();
-  }, [champion?.id]);
+  }, [officialChampion?.id]);
 
   if (config.mode === "elimination") {
-    return (
-      <div className="flex-1 p-6 flex flex-col items-center justify-center gap-3 text-muted-foreground">
-        <p>La clasificación por puntos no aplica en eliminación directa.</p>
-        <Button variant="outline" onClick={() => navigate("/bracket")}>
-          Ver bracket
-        </Button>
-      </div>
-    );
+    return <CategoryFormatFallback mode={config.mode} setup={phase === "setup"} />;
   }
 
-  function handleResolve(groupId: string, tiedIds: string[]) {
+  async function handleResolve(groupId: string) {
+    if (!canOpenFight()) return;
+    const currentFights = useTournamentStore.getState().fights;
+    const currentRows = computeGroupStandings(currentFights).get(groupId) ?? [];
+    const resolution = resolveFirstPlace(groupId, currentRows, currentFights,
+      groups.find((group) => group.id === groupId)?.competitors.map((competitor) => competitor.id));
+    if ((resolution.status !== "needed" && resolution.status !== "review") || resolution.nextIds.length < 2) return;
+    if (resolution.fights.length > 0 && resolution.fights.some((f) => !f.completed)) return;
     const competitorMap = new Map<string, CompetitorEntry>();
-    for (const f of fights) {
+    for (const f of currentFights) {
       competitorMap.set(f.red.id, f.red);
       competitorMap.set(f.blue.id, f.blue);
     }
-    const tiedCompetitors = tiedIds
+    const tiedCompetitors = resolution.nextIds
       .map((id) => competitorMap.get(id))
       .filter((c): c is CompetitorEntry => c != null);
     if (tiedCompetitors.length < 2) return;
-    // Si ya hubo al menos 1 desempate en empate → siguiente pelea es Punto de Oro
-    const completedDraws = fights.filter(
-      (f) => (f.isTiebreakExtra || f.isGoldenPointFight) && f.groupId === groupId && f.completed && f.winner === "draw",
-    ).length;
-    const isGoldenPoint = completedDraws >= 1;
-
-    let tbFights = generateTiebreakFights(tiedCompetitors, groupId);
-    if (isGoldenPoint) {
-      tbFights = tbFights.map((f) => ({ ...f, isTiebreakExtra: true, isGoldenPointFight: true as const }));
+    const overtimeSeconds = config.ruleSet && "rounds" in config.ruleSet
+      ? config.ruleSet.rounds.overtime_seconds
+      : undefined;
+    const seconds = config.tiebreakerSeconds ?? overtimeSeconds ?? 30;
+    const proposalStage = JSON.stringify({
+      kind: "first-place", groupId, basis: resolution.playoffBasis,
+      nextIds: resolution.nextIds,
+      prior: resolution.fights.map((fight) => [fight.id, fight.completed, fight.winner]),
+    });
+    creatingFightsRef.current = true;
+    try {
+      const dependencies = currentFights.filter((fight) =>
+        (fight.groupId ?? "G1") === groupId && !isExternalGuestFight(fight));
+      await requireConfirmedResults(dependencies);
+      const tbFights = getOrCreateFightProposal(config.id, proposalStage,
+        () => preparePlayoffFights(tiedCompetitors, groupId, resolution, seconds));
+      if (tbFights.length === 0) return;
+      await syncProposedFights(config, [...currentFights, ...tbFights], dependencies.map((fight) => fight.id));
+      const latest = useTournamentStore.getState();
+      if (latest.config.id !== config.id || latest.fights !== currentFights) {
+        toast.warning("La categoría cambió durante la sincronización; no se avanzó localmente.");
+        return;
+      }
+      addTiebreakFights(tbFights);
+      clearFightProposal(config.id, proposalStage, tbFights);
+      navigate("/fight");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo guardar el desempate.");
+    } finally {
+      creatingFightsRef.current = false;
     }
-    addTiebreakFights(tbFights);
-    navigate("/fight");
   }
 
-  function handleStartFinal() {
+  async function handleStartFinal() {
+    if (!canOpenFight()) return;
+    const currentFights = useTournamentStore.getState().fights;
+    const currentByGroup = computeGroupStandings(currentFights);
+    if (!isFinalReady(currentByGroup, currentFights, groups)) return;
     const winners: CompetitorEntry[] = [];
     for (const gid of regularGroupIds) {
-      const rows = byGroup.get(gid) ?? [];
-      const winner = getGroupWinner(gid, rows, fights);
+      const rows = currentByGroup.get(gid) ?? [];
+      const winner = getGroupWinner(gid, rows, currentFights, groups);
       if (winner) winners.push(winner);
     }
-    if (winners.length < 2) return;
-    addFinalFights(generateFinalFights(winners));
-    navigate("/fight");
+    if (winners.length < 2 || winners.length !== regularGroupIds.length) return;
+    const proposalStage = JSON.stringify({
+      kind: "inter-group-final",
+      winners: regularGroupIds.map((gid, index) => [gid, winners[index]?.id,
+        closedGroupBasis(gid, currentFights,
+          groups.find((group) => group.id === gid)?.competitors.map((competitor) => competitor.id))]),
+    });
+    creatingFightsRef.current = true;
+    try {
+      const dependencies = currentFights.filter((fight) =>
+        regularGroupIds.includes(fight.groupId ?? "G1") && !isExternalGuestFight(fight));
+      await requireConfirmedResults(dependencies);
+      const finalFights = getOrCreateFightProposal(config.id, proposalStage,
+        () => generateFinalFights(winners));
+      if (finalFights.length === 0) return;
+      await syncProposedFights(config, [...currentFights, ...finalFights], dependencies.map((fight) => fight.id));
+      const latest = useTournamentStore.getState();
+      if (latest.config.id !== config.id || latest.fights !== currentFights) {
+        toast.warning("La categoría cambió durante la sincronización; no se avanzó localmente.");
+        return;
+      }
+      addFinalFights(finalFights);
+      clearFightProposal(config.id, proposalStage, finalFights);
+      navigate("/fight");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo guardar la final.");
+    } finally {
+      creatingFightsRef.current = false;
+    }
   }
 
   if (byGroup.size === 0) {
@@ -719,11 +727,13 @@ export function StandingsPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          <CategoryCombatAction connected={connected} stateReady={stateReady} serverState={serverState} resultsVerified={Boolean(officialChampion)} />
           <Badge variant="secondary">{completed}/{total} combates</Badge>
           <Button
             variant="outline"
             size="sm"
-            onClick={() => exportCsv(byGroup, config.categoryName)}
+            disabled={Boolean(champion && !officialChampion)}
+            onClick={() => exportCsv(byGroup, config.categoryName, fights, groups)}
           >
             <Download className="size-3.5" />
             Exportar CSV
@@ -731,14 +741,14 @@ export function StandingsPage() {
         </div>
       </div>
 
-      {champion && (
+      {officialChampion && (
         <div className="rounded-2xl bg-yellow-950/40 border-2 border-yellow-600/50 p-6 flex items-center gap-4 shadow-lg flex-wrap">
           <Trophy className="size-12 text-yellow-400 shrink-0 animate-pulse" />
           <div className="flex-1">
             <p className="text-sm text-yellow-600 uppercase tracking-widest font-semibold">Campeón</p>
-            <p className="text-4xl font-black text-yellow-300 leading-tight">{champion.name}</p>
-            {champion.team && (
-              <p className="text-base text-yellow-500/70 mt-0.5">{champion.team}</p>
+            <p className="text-4xl font-black text-yellow-300 leading-tight">{officialChampion.name}</p>
+            {officialChampion.team && (
+              <p className="text-base text-yellow-500/70 mt-0.5">{officialChampion.team}</p>
             )}
           </div>
           <div className="shrink-0">
@@ -749,7 +759,14 @@ export function StandingsPage() {
                   <Button
                     size="sm"
                     variant="destructive"
-                    onClick={() => { reset(); navigate("/"); }}
+                    onClick={() => {
+                      if (!connected || !stateReady || activeLock?.categoryId === config.id) {
+                        toast.warning("No se puede borrar esta categoría sin confirmar que el combate terminó.");
+                        return;
+                      }
+                      reset();
+                      navigate("/");
+                    }}
                   >
                     Sí, nueva categoría
                   </Button>
@@ -774,7 +791,8 @@ export function StandingsPage() {
 
       {regularGroupIds.map((gid) => {
         const rows = byGroup.get(gid) ?? [];
-        const tiebreak = getTiebreakInfo(gid, rows, fights);
+        const tiebreak = resolveFirstPlace(gid, rows, fights,
+          groups.find((group) => group.id === gid)?.competitors.map((competitor) => competitor.id));
         const gFights = fights.filter((f) => (f.groupId ?? "") === gid);
         return (
           <GroupCard
@@ -783,9 +801,10 @@ export function StandingsPage() {
             rows={rows}
             tiebreak={tiebreak}
             groupFights={gFights}
+            expectedIds={groups.find((group) => group.id === gid)?.competitors.map((competitor) => competitor.id)}
             finalistId={finalistIds.get(gid)}
             isTul={config.matchType === 'tul'}
-            onResolve={() => handleResolve(gid, tiebreak.tiedIds)}
+            onResolve={() => handleResolve(gid)}
           />
         );
       })}
@@ -814,7 +833,8 @@ export function StandingsPage() {
           rows={finalRows}
           tiebreak={finalTiebreak}
           groupFights={fights.filter((f) => f.isFinalFight)}
-          onResolve={() => handleResolve("FINAL", finalTiebreak.tiedIds)}
+          expectedIds={completeFinalRoster ?? undefined}
+          onResolve={() => handleResolve("FINAL")}
           label="🏆 Fase Final"
           isTul={config.matchType === 'tul'}
           eliminationMode

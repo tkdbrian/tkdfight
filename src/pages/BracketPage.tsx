@@ -2,13 +2,21 @@ import * as React from "react";
 import { useNavigate } from "react-router-dom";
 import { useTournamentStore } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
-import { generateEliminationBracket, generateDoubleBracket, getActiveBracketFights } from "@/lib/bracket";
+import { generateEliminationBracket, generateDoubleBracket, getActiveBracketFights, isSingleBracketFinal } from "@/lib/bracket";
 import { BracketView } from "@/components/BracketView";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Trophy, Play, RefreshCw, Swords } from "lucide-react";
+import { Trophy, Play, Swords } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSocket } from "@/hooks/useSocket";
+import { toast } from "sonner";
+import { CategoryFormatFallback } from "@/components/CategoryFormatFallback";
+import { CategoryRestartButton } from "@/components/CategoryRestartButton";
+import { CategoryCombatAction } from "@/components/CategoryCombatAction";
+import { useCategoryInteractionBlocked } from "@/hooks/useCategoryInteractionBlocked";
+import { isCategoryInitialized, resolveEliminationOutcome } from "@/lib/category-lifecycle";
+import type { FightEntry } from "@/store/tournament";
 
 const DOUBLE_BRACKET_THRESHOLD = 16;
 
@@ -55,6 +63,25 @@ export function BracketPage() {
 
   const [selectedMatchId, setSelectedMatchId] = React.useState<string | null>(null);
   const navigate = useNavigate();
+  const { connected, stateReady, state: serverState, request } = useSocket();
+  const requestRef = React.useRef(request);
+  requestRef.current = request;
+  const interactionBlocked = useCategoryInteractionBlocked();
+  const snapshot = { phase, config, competitors, fights, bracketMatches, bracketSeeds,
+    groups: useTournamentStore((state) => state.groups),
+    currentFightIndex: useTournamentStore((state) => state.currentFightIndex),
+    setupStarted: useTournamentStore((state) => state.setupStarted) };
+  const initialized = isCategoryInitialized(snapshot);
+  function canOpenFight(): boolean {
+    if (interactionBlocked) return false;
+    const lock = serverState.activeMatchLock;
+    if (!connected || !stateReady || (lock && lock.categoryId !== config.id)
+      || (serverState.match && !serverState.resultConfirmed && serverState.categoryId !== config.id)) {
+      toast.warning("Hay un combate de otra categoría o falta confirmar el estado del servidor. Esta llave sigue disponible para consulta.");
+      return false;
+    }
+    return true;
+  }
 
   const isElimination = config.mode === "elimination";
   const isDouble = competitors.length > DOUBLE_BRACKET_THRESHOLD;
@@ -65,6 +92,7 @@ export function BracketPage() {
   const isDoubleMode = matchesB.length > 0;
 
   function handleGenerateBracket() {
+    if (initialized || interactionBlocked) return;
     if (isDouble) {
       const { matches, seeds } = generateDoubleBracket(competitors);
       setBracket(matches, seeds);
@@ -77,6 +105,7 @@ export function BracketPage() {
   }
 
   function handleStartBracket() {
+    if (!canOpenFight()) return;
     // In double mode, start both grillas together
     const activeFights = getActiveBracketFights(bracketMatches, fights);
     if (activeFights.length === 0) return;
@@ -95,6 +124,7 @@ export function BracketPage() {
 
   // Start (or navigate to) a specific bracket match fight
   function handleStartMatchFight(matchId: string) {
+    if (!canOpenFight()) return;
     const match = bracketMatches.find((m) => m.id === matchId);
     if (!match || !match.red.competitor || !match.blue.competitor || match.completed) return;
 
@@ -116,6 +146,7 @@ export function BracketPage() {
       bracketRound: match.round,
       bracketPosition: match.position,
       bracketMatchId: match.id,
+      isFinalFight: isSingleBracketFinal(bracketMatches, match),
     });
     setPhase("fighting");
     navigate("/fight");
@@ -132,6 +163,7 @@ export function BracketPage() {
   const winnerB = winnerBId ? competitors.find((c) => c.id === winnerBId) : undefined;
 
   function handleStartFinalAB() {
+    if (!canOpenFight()) return;
     if (!winnerA || !winnerB) return;
     const finalFight = {
       id: crypto.randomUUID(),
@@ -154,39 +186,40 @@ export function BracketPage() {
   const completedMatches = bracketMatches.filter((m) => m.completed).length;
   const totalMatches = bracketMatches.length;
 
-  // Champion resolution
-  let championName: string | undefined;
-  let runnerUpName: string | undefined;
-  if (isDoubleMode) {
-    if (abFinalFight?.completed && abFinalFight.winner) {
-      const winnerId = abFinalFight.winner === "red" ? abFinalFight.red.id : abFinalFight.blue.id;
-      const loserId = abFinalFight.winner === "red" ? abFinalFight.blue.id : abFinalFight.red.id;
-      championName = competitors.find((c) => c.id === winnerId)?.name;
-      runnerUpName = competitors.find((c) => c.id === loserId)?.name;
-    }
-  } else {
-    const isBracketComplete = totalMatches > 0 && completedMatches === totalMatches;
-    if (isBracketComplete) {
-      const finalMatch = bracketMatches.at(-1);
-      const winnerId = finalMatch?.winnerId;
-      championName = winnerId ? competitors.find((c) => c.id === winnerId)?.name : undefined;
-      if (finalMatch && winnerId) {
-        const loserComp = finalMatch.red.competitor?.id === winnerId
-          ? finalMatch.blue.competitor
-          : finalMatch.red.competitor;
-        runnerUpName = loserComp?.name;
-      }
-    }
-  }
+  const outcome = resolveEliminationOutcome(snapshot);
+  const outcomeKey = JSON.stringify([config.id, outcome.status, outcome.requiredResultIds,
+    fights.map((fight) => [fight.id, fight.completed, fight.winner])]);
+  const [verifiedKey, setVerifiedKey] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (outcome.status !== "resolved" || !connected || !stateReady ||
+      typeof requestRef.current !== "function") return;
+    let cancelled = false;
+    const dependencies = fights.filter((fight) =>
+      outcome.requiredResultIds.includes(fight.id));
+    void Promise.all(dependencies.map((fight) => requestRef.current<{
+      ok: boolean; result: { fightId: string; categoryId: string;
+        status: string; winner: FightEntry["winner"] } | null;
+    }>("match:result:get", { categoryId: config.id, matchId: fight.id }).then((response) =>
+      Boolean(response?.ok && response.result?.status === "confirmed" &&
+        response.result.fightId === fight.id &&
+        response.result.categoryId === config.id && fight.completed &&
+        response.result.winner === fight.winner)))).then((checks) => {
+      if (!cancelled) setVerifiedKey(checks.length > 0 && checks.every(Boolean)
+        ? outcomeKey : null);
+    }).catch(() => { if (!cancelled) setVerifiedKey(null); });
+    return () => { cancelled = true; };
+  }, [config.id, connected, stateReady, outcomeKey, fights]);
+  const championName = outcome.status === "resolved" && connected && stateReady &&
+    verifiedKey === outcomeKey
+    ? competitors.find((competitor) => competitor.id === outcome.championId)?.name : undefined;
+  const runnerUpName = outcome.status === "resolved" && connected && stateReady &&
+    verifiedKey === outcomeKey
+    ? competitors.find((competitor) => competitor.id === outcome.runnerUpId)?.name : undefined;
 
   const selectedMatch = bracketMatches.find((m) => m.id === selectedMatchId);
 
   if (!isElimination) {
-    return (
-      <div className="flex-1 p-4 flex items-center justify-center text-muted-foreground">
-        <p>El bracket de eliminación solo está disponible en modo "Eliminación".</p>
-      </div>
-    );
+    return <CategoryFormatFallback mode={config.mode} setup={phase === "setup"} />;
   }
 
   return (
@@ -198,22 +231,28 @@ export function BracketPage() {
           {config.categoryName && (
             <p className="text-sm text-muted-foreground">{config.categoryName}</p>
           )}
+          {outcome.status === "review" && (
+            <p role="status" className="text-xs text-amber-400">
+              Pendiente de revisión: la llave o sus desempates tienen antecedentes ambiguos.
+            </p>
+          )}
           {config.tableChief && (
             <p className="text-xs text-muted-foreground">Jefe de mesa: <span className="font-medium text-foreground">{config.tableChief}</span></p>
           )}
         </div>
         <div className="flex gap-2 flex-wrap">
-          {bracketMatches.length === 0 ? (
+          {initialized && <CategoryCombatAction connected={connected} stateReady={stateReady} serverState={serverState} />}
+          {!initialized ? (
             <Button onClick={handleGenerateBracket} disabled={competitors.length < 2}>
               {isDouble ? "Generar Grilla A + B" : "Generar bracket"}
             </Button>
           ) : (
             <>
-              <Button variant="outline" size="sm" onClick={handleGenerateBracket}>
-                <RefreshCw className="size-3.5" />
-                Regenerar
-              </Button>
+              <CategoryRestartButton snapshot={snapshot} connected={connected} stateReady={stateReady} serverState={serverState} />
 
+              {bracketMatches.length === 0 && <p role="status" className="text-xs text-muted-foreground">
+                Falta la llave guardada. Los combates se conservan; consultá el historial o reiniciá mediante archivo.
+              </p>}
               {(fights.length === 0 || phase !== "fighting") && completedMatches < totalMatches && (
                 <Button size="sm" onClick={handleStartBracket}>
                   <Play className="size-3.5" />

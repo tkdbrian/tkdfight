@@ -1,11 +1,16 @@
 import type { Express } from 'express'
 import db from '../db/index.js'
 import { state } from '../state.js'
+import { getCategoryArchive, isProtectedHistoryTournament } from '../db/index.js'
+import { getDeletedCategoryReplacement, assertTournamentNotDeleted } from '../db/index.js'
+import { sendCategoryDeletionError } from './category-deletion.js'
 
 export function registerHistoryRoute(app: Express) {
   app.get('/api/history', (_req, res) => {
     const tournaments = db
-      .prepare('SELECT * FROM tournaments ORDER BY id DESC')
+      .prepare(`SELECT * FROM tournaments t WHERE NOT EXISTS (
+        SELECT 1 FROM category_execution_deletions d WHERE d.tournament_id = t.id
+      ) ORDER BY id DESC`)
       .all() as Array<{ id: number; name: string; category: string; created_at: string }>
 
     const result = tournaments.map((t) => {
@@ -40,7 +45,12 @@ export function registerHistoryRoute(app: Express) {
           blue_team: string | null
         }>
 
+      const archive = getCategoryArchive(t.id)
+      const deleted = archive ? getDeletedCategoryReplacement(archive.archive.categoryId) : null
       return {
+        ...archive,
+        ...(deleted ? { replacementDeleted: { categoryId: deleted.categoryId,
+          requestId: deleted.requestId, deletedAt: deleted.deletedAt } } : {}),
         id: t.id,
         name: t.name,
         category: t.category,
@@ -70,7 +80,9 @@ export function registerHistoryRoute(app: Express) {
   app.get('/api/stats', (_req, res) => {
     const overview = db.prepare(`
       SELECT
-        (SELECT COUNT(*) FROM tournaments) as totalTournaments,
+        (SELECT COUNT(*) FROM tournaments t WHERE NOT EXISTS (
+          SELECT 1 FROM category_execution_deletions d WHERE d.tournament_id = t.id
+        )) as totalTournaments,
         (SELECT COUNT(*) FROM competitors) as totalCompetitors,
         (SELECT COUNT(*) FROM fights) as totalFights,
         (SELECT COUNT(*) FROM fights WHERE completed = 1) as completedFights,
@@ -140,6 +152,17 @@ export function registerHistoryRoute(app: Express) {
     }
     const exists = db.prepare('SELECT id FROM tournaments WHERE id = ?').get(id)
     if (!exists) return res.status(404).json({ error: 'no encontrado' })
+    try { assertTournamentNotDeleted(id) } catch (error) {
+      if (sendCategoryDeletionError(error, res)) return
+      throw error
+    }
+    if (isProtectedHistoryTournament(id)) {
+      const row = db.prepare(`SELECT category_id, replacement_category_id FROM category_execution_archives
+        WHERE source_tournament_id = ? OR replacement_tournament_id = ?`).get(id, id) as { category_id: string; replacement_category_id: string }
+      return res.status(409).json({ ok: false, error: 'category_archived',
+        message: 'La ejecución y su reemplazo están protegidos en el historial.',
+        categoryId: row.category_id, replacementCategoryId: row.replacement_category_id })
+    }
     if (id === state.activeTournamentId) {
       return res.status(409).json({ error: 'No se puede borrar la categoría activa. Empezá una nueva primero.' })
     }
@@ -150,7 +173,10 @@ export function registerHistoryRoute(app: Express) {
   // Borrar TODO el historial salvo la categoría activa (botón "limpiar pruebas")
   app.delete('/api/history', (_req, res) => {
     const result = db
-      .prepare('DELETE FROM tournaments WHERE id != ?')
+      .prepare(`DELETE FROM tournaments WHERE id != ? AND NOT EXISTS (
+        SELECT 1 FROM category_execution_archives a
+        WHERE a.source_tournament_id = tournaments.id OR a.replacement_tournament_id = tournaments.id
+      ) AND NOT EXISTS (SELECT 1 FROM category_execution_deletions d WHERE d.tournament_id = tournaments.id)`)
       .run(state.activeTournamentId)
     res.json({ ok: true, deleted: result.changes })
   })

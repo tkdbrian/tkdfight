@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 /**
- * Playwright E2E config for TKD Tournament System.
+ * Playwright E2E config for TKD Fight.
  *
  * Tests run against already-running servers:
  *   T1: http://localhost:3001  (Mesa Central + FightPage)

@@ -1,6 +1,6 @@
 ﻿# =============================================================================
 # TKD-Manager.ps1
-# Gestor principal de TKD Tournament System:
+# Gestor principal de TKD Fight:
 #   - System tray icon (verde=OK / amarillo=iniciando / rojo=caído)
 #   - Server watchdog: reinicia node.exe si cae
 #   - Browser watchdog: reabre Chrome/Edge kiosk si se cierra
@@ -128,36 +128,77 @@ $null = $srPS.AddScript({
         $shared.Status = "starting"; $shared.NeedIconUpdate = $true
         Log "Iniciando servidor en puerto $($shared.Port)..."
 
+        # Normalizar DataDir (quitar espacios al final que rompen rutas en Windows)
+        $cleanDataDir = ($shared.DataDir).TrimEnd(' ','\','/')
+        if (-not (Test-Path $cleanDataDir)) {
+            try { New-Item -ItemType Directory -Path $cleanDataDir -Force | Out-Null } catch {}
+        }
+
         $pi = New-Object System.Diagnostics.ProcessStartInfo
-        $pi.FileName         = $shared.NodeExe
-        $pi.Arguments        = '"' + $shared.ServerFile + '"'
-        $pi.WorkingDirectory = $shared.RootDir
-        $pi.UseShellExecute  = $false
-        $pi.CreateNoWindow   = $true
-        $pi.EnvironmentVariables["DATA_DIR"]        = $shared.DataDir
+        $pi.FileName               = $shared.NodeExe
+        $pi.Arguments              = '"' + $shared.ServerFile + '"'
+        $pi.WorkingDirectory       = $shared.RootDir
+        $pi.UseShellExecute        = $false
+        $pi.CreateNoWindow         = $true
+        $pi.RedirectStandardOutput = $true
+        $pi.RedirectStandardError  = $true
+        $pi.EnvironmentVariables["DATA_DIR"]        = $cleanDataDir
         $pi.EnvironmentVariables["PORT"]            = $shared.Port
         $pi.EnvironmentVariables["NODE_ENV"]        = "production"
-        $pi.EnvironmentVariables["ALLOWED_ORIGINS"] = "*"  # permite conexiones WS desde localhost
+        $pi.EnvironmentVariables["ALLOWED_ORIGINS"] = "*"
+
+        # Logs separados de stdout/stderr del servidor — clave para diagnosticar fallos en maquinas ajenas
+        $logDir       = Split-Path $shared.LogFile -Parent
+        $stdoutPath   = Join-Path $logDir ("server-stdout-{0}.log" -f (Get-Date -Format 'yyyy-MM-dd'))
+        $stderrPath   = Join-Path $logDir ("server-stderr-{0}.log" -f (Get-Date -Format 'yyyy-MM-dd'))
 
         $p = New-Object System.Diagnostics.Process
         $p.StartInfo = $pi
-        try { $p.Start() | Out-Null } catch {
+        $p.EnableRaisingEvents = $true
+
+        # Capturar stdout/stderr asincronicamente y volcarlos a archivo
+        $outAction = {
+            if ($EventArgs.Data) {
+                Add-Content -Path $Event.MessageData -Value $EventArgs.Data -ErrorAction SilentlyContinue
+            }
+        }
+        $outSub = Register-ObjectEvent -InputObject $p -EventName OutputDataReceived -Action $outAction -MessageData $stdoutPath
+        $errSub = Register-ObjectEvent -InputObject $p -EventName ErrorDataReceived  -Action $outAction -MessageData $stderrPath
+
+        try {
+            $p.Start() | Out-Null
+            $p.BeginOutputReadLine()
+            $p.BeginErrorReadLine()
+        } catch {
             Log "Error al iniciar node.exe: $_"
+            Unregister-Event -SourceIdentifier $outSub.Name -ErrorAction SilentlyContinue
+            Unregister-Event -SourceIdentifier $errSub.Name -ErrorAction SilentlyContinue
             Start-Sleep -Seconds 5
             continue
         }
 
         $shared.ServerPid = $p.Id
         $shared.Status    = "running"; $shared.NeedIconUpdate = $true
-        Log "Servidor corriendo PID=$($p.Id)"
+        Log "Servidor corriendo PID=$($p.Id) DataDir=$cleanDataDir"
 
         while (-not $p.HasExited) {
             if (Test-Path $shared.StopFile) { try { $p.Kill() } catch {}; break }
             Start-Sleep -Milliseconds 500
         }
+
+        # Drenar buffers y desuscribirse
+        try { $p.WaitForExit(1000) | Out-Null } catch {}
+        Unregister-Event -SourceIdentifier $outSub.Name -ErrorAction SilentlyContinue
+        Unregister-Event -SourceIdentifier $errSub.Name -ErrorAction SilentlyContinue
+
         if (Test-Path $shared.StopFile) { break }
 
-        Log "Servidor caído (exit=$($p.ExitCode)). Reiniciando en 2s..."
+        # Mostrar las ultimas 3 lineas de stderr en el log principal para diagnostico inmediato
+        $lastErr = ""
+        if (Test-Path $stderrPath) {
+            try { $lastErr = (Get-Content $stderrPath -Tail 3 -ErrorAction SilentlyContinue) -join " | " } catch {}
+        }
+        Log "Servidor caido (exit=$($p.ExitCode)). stderr: $lastErr"
         $shared.Status = "restarting"; $shared.NeedIconUpdate = $true
         Start-Sleep -Seconds 2
     }
@@ -225,7 +266,7 @@ $tray.ContextMenuStrip = $ctxMenu
 
 # Balloon de arranque
 $localIp = Get-LocalIp
-$tray.BalloonTipTitle = "TKD Tournament - $roleLabel"
+$tray.BalloonTipTitle = "TKD Fight - $roleLabel"
 $tray.BalloonTipText  = "Sistema listo`nRed: http://${localIp}:${Port}"
 $tray.ShowBalloonTip(6000)
 
@@ -266,7 +307,7 @@ $miIp.Add_Click({
 
 $miCerrar.Add_Click({
     $r = [System.Windows.Forms.MessageBox]::Show(
-        "Cerrar TKD Tournament?`nSe detendran el servidor y el navegador.",
+        "Cerrar TKD Fight?`nSe detendran el servidor y el navegador.",
         "Cerrar TKD - $roleLabel",
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Question

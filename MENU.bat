@@ -1,11 +1,11 @@
 @echo off
-title TKD Tournament 2026
+title TKD Fight 2026
 color 0A
 cls
 
 echo.
 echo  =============================================
-echo    TKD TOURNAMENT SYSTEM 2026 - BL System
+echo    TKD FIGHT 2026 - BL System
 echo  =============================================
 echo.
 echo    Cual es el rol de esta computadora?
@@ -20,20 +20,20 @@ echo.
 choice /c 1234 /n /m "   Presiona el numero (1-4): "
 
 if errorlevel 4 (
-    title TKD Tournament 2026 - Mesa Central
+    title TKD Fight 2026 - Mesa Central
     set OPEN_PATH=/central
     goto :iniciar
 )
 if errorlevel 3 (
-    title TKD Tournament 2026 - Cuadrilatero 3
+    title TKD Fight 2026 - Cuadrilatero 3
     goto :iniciar
 )
 if errorlevel 2 (
-    title TKD Tournament 2026 - Cuadrilatero 2
+    title TKD Fight 2026 - Cuadrilatero 2
     goto :iniciar
 )
 if errorlevel 1 (
-    title TKD Tournament 2026 - Cuadrilatero 1
+    title TKD Fight 2026 - Cuadrilatero 1
     goto :iniciar
 )
 
