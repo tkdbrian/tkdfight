@@ -20,6 +20,8 @@ data-t1/
 data-t2/
 data-t3/
 data-central/
+/data/
+/data-*/
 
 # Local installations, generated packages and operator data (never publish).
 /release/
@@ -29,6 +31,7 @@ data-central/
 /preview-*/
 /dist-produccion-respaldo-*/
 /logs/
+/docs/TRASPASO_CODEX.md
 *.zip
 *.db
 *.db-shm
