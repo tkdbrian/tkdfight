@@ -96,6 +96,26 @@ La suite E2E general y las pruebas físicas no se consideran aprobadas por estos
 tres comandos. La instalación de navegadores de Playwright es una preparación
 de desarrollo, no un requisito del portable.
 
+## Build web de producción
+
+En una copia de despliegue separada, usar `npm ci && npm run build:web` y luego
+`npm run start:prod`. Para Render, seleccionar explícitamente la rama/commit
+aprobados; publicar una rama no autoriza por sí mismo un despliegue ni una
+migración de datos.
+
+`build:web` compila y sella `dist/`, `dist-server/` y el `build-id.json` generado
+en la raíz. Usa `RENDER_GIT_COMMIT` (o Git HEAD local) más la hora UTC para dar
+la misma identidad al HTML y al servidor; también actualiza la revisión del
+HTML en el service worker. No usar solamente `build:prod` para servir la web:
+ese build sin sellar carece de la identidad exigida por el arranque seguro.
+El archivo generado no se versiona ni se copia desde otro despliegue.
+
+Esto no cambia el empaquetador portable ni relaja las verificaciones de arranque
+y respaldo. La demo web no es una instalación independiente por visitante: el
+servidor comparte su base y un navegador sin la categoría local correspondiente
+puede quedar bloqueado si ya existen datos SQL. No borrar esos datos para eludir
+la protección. No se promete uso offline o multiusuario aislado para la demo.
+
 ## Fuentes y archivos generados
 
 - `src/`, `server/`, `public/`: aplicación, API y recursos.

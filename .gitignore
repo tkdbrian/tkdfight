@@ -1,6 +1,7 @@
 node_modules
 dist/
 dist-server/
+/build-id.json
 dist-produccion/
 data/*.db
 data/*.db-shm
