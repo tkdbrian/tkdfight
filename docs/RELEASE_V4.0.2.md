@@ -16,6 +16,19 @@ paquete con `ABRIR TKD.exe` en la raíz, `LEEME_DOMINGO.txt`,
 cuatro roles inicialmente vacíos. Las notas y pruebas E2E de publicación no
 forman parte del cálculo de fingerprint; no cambian el bundle entregado.
 
+### Seguimiento de fuentes después del tag
+
+El tag anotado `v4.0.2` permanece en el commit
+`fdc9171bbd659109396f649c3849b7ffa964e26b`, correspondiente a esta entrega.
+La rama `release/v4.0.2` incluye después una corrección exclusiva de construcción:
+los scripts ejecutan el CLI local de esbuild en lugar de pasarlo a Node como
+JavaScript. En Linux ese archivo es un ejecutable nativo ELF; el comando anterior
+fallaba aunque los tests y el build del cliente pasaran. El cambio es compatible
+con Windows y Linux y no modifica el código de la aplicación.
+
+Este seguimiento modifica los inputs/fingerprint de fuentes, **no** el ZIP ya
+entregado, su checksum ni su tag. No se ha regenerado ni renombrado esa entrega.
+
 ## Cambios principales
 
 V4 incorpora impresión con vista previa, configuración previa al combate,

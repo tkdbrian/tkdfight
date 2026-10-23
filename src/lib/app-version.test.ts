@@ -7,6 +7,13 @@ import packageLock from "../../package-lock.json";
 import viteConfig from "../../vite.config";
 
 describe("product version", () => {
+  it("runs the locked esbuild CLI directly on Windows and Linux instead of parsing its binary with Node", () => {
+    for (const script of ["build:server", "build:server:prod"] as const) {
+      expect(packageJson.scripts[script]).toBe(
+        "esbuild server/index.ts --bundle --platform=node --packages=external --format=esm --outfile=dist-server/index.mjs"
+      );
+    }
+  });
   it("shows the 4.0.2 release version and keeps source metadata aligned", () => {
     const define = (viteConfig as { define?: Record<string, string> }).define;
 

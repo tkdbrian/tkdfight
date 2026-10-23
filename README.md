@@ -73,7 +73,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts/release-sunday/Test-
 # Build de verificación aislado: no reemplaza dist/ ni una instalación activa.
 $stage = Join-Path $env:TEMP ('tkd-build-' + [guid]::NewGuid())
 node node_modules/vite/bin/vite.js build --outDir "$stage/dist"
-node node_modules/esbuild/bin/esbuild server/index.ts --bundle --platform=node --packages=external --format=esm "--outfile=$stage/dist-server/index.mjs"
+npm exec -- esbuild server/index.ts --bundle --platform=node --packages=external --format=esm "--outfile=$stage/dist-server/index.mjs"
 ```
 
 Playwright requiere los navegadores y el entorno indicado por cada configuración;
