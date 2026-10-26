@@ -4,6 +4,7 @@ import type { ServerState } from "@/lib/socket-types";
 import { z } from "zod";
 import { categoryDeletionReceiptSchema, categoryDeletionTombstoneSchema } from "@/lib/category-deletion-contract";
 import { useTournamentStore } from "@/store/tournament";
+import { isLocalSwapPending } from "@/lib/match-swap-pending";
 
 const DEFAULT_STATE: ServerState = {
   rules: null,
@@ -36,6 +37,12 @@ export function useSocket() {
     sock.on("state:update", (data: ServerState) => {
       const deletions = z.array(categoryDeletionTombstoneSchema).safeParse(data.categoryDeletions);
       if (deletions.success) useTournamentStore.getState().applyCategoryDeletions(deletions.data);
+      if (data.categoryId && data.match &&
+        !isLocalSwapPending(data.categoryId, data.match.id)) {
+        useTournamentStore.getState().reconcileFightColors(
+          data.categoryId, data.match.id, data.match.red.id, data.match.blue.id,
+        );
+      }
       setState((prev) => ({ ...prev, ...data }));
       setStateReady(true);
     });

@@ -82,6 +82,24 @@ describe("Sunday isolated package gates", () => {
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
+  it("uses an explicit versioned release prefix without changing the legacy default", () => {
+    const root = mkdtempSync(join(tmpdir(), "tkd-release-name-"));
+    try {
+      const legacy = assertFreshOutput(root, "abc123");
+      expect(legacy.name).toBe("Sunday-20261025-abc123");
+      const named = assertFreshOutput(root, "abc123", "TKD_Fight_4.1.0");
+      expect(named.name).toBe("TKD_Fight_4.1.0-abc123");
+      expect(named.folder).toBe(join(root, named.name));
+      expect(named.zip).toBe(`${named.folder}.zip`);
+      expect(named.sidecar).toBe(`${named.zip}.sha256`);
+      for (const unsafe of ["../outside", "..", ".hidden", "a/b", "a\\b", "a:b", "a..b", "a ", ""]) {
+        expect(() => assertFreshOutput(root, "abc123", unsafe)).toThrow(/prefix/i);
+      }
+      writeFileSync(named.sidecar, "reserved");
+      expect(() => assertFreshOutput(root, "abc123", "TKD_Fight_4.1.0")).toThrow(/exists/i);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
   it("walks required package dependency closure and fails missing dependency", () => {
     const { root } = fixture();
     try {
@@ -114,10 +132,11 @@ describe("Sunday isolated package gates", () => {
       const result = spawnSync(process.execPath, [
         join(process.cwd(), "scripts/release-sunday/pack-sunday.mjs"),
         "--stage", stage, "--build-id", "abc123", "--output", join(root, "out"),
-        "--runtime", process.cwd(), "--vc-redist", vc, "--plan", "true",
+        "--runtime", process.cwd(), "--vc-redist", vc, "--release-prefix", "TKD_Fight_4.1.0", "--plan", "true",
       ], { encoding: "utf8" });
       expect(result.status, result.stderr).toBe(0);
       expect(JSON.parse(result.stdout).runtimePackages).toBeGreaterThan(0);
+      expect(JSON.parse(result.stdout).output).toBe(join(root, "out", "TKD_Fight_4.1.0-abc123"));
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 

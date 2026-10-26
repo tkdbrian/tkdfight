@@ -73,6 +73,7 @@ describe("durable execution tombstones", () => {
 
   it("leaves an empty local draft in the same event when no visible execution remains", () => {
     const previous = recordedCategory();
+    previous.config.rrOrderMode = "group-blocks";
     useTournamentStore.setState(previous);
     const fetcher = vi.fn();
     vi.stubGlobal("fetch", fetcher);
@@ -82,6 +83,7 @@ describe("durable execution tombstones", () => {
     expect(next.config.eventId).toBe(previous.config.eventId);
     expect(next.config.tournamentName).toBe(previous.config.tournamentName);
     expect(next.config.categoryName).toBe("");
+    expect(next.config.rrOrderMode).toBe("rest-optimized");
     expect(next.fights).toEqual([]);
     expect(next.competitors).toEqual([]);
     expect(next.getCategoryEntries().find((entry) => entry.id === next.config.id)?.isDraft).toBe(

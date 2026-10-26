@@ -1,6 +1,7 @@
 import db from "./index.js";
 import "./elimination-continuations.js";
 import "./match-postpone.js";
+import "./match-swap.js";
 
 export const BACKUP_TABLE_COLUMNS = {
   tournaments: ["id", "name", "category", "created_at"],
@@ -299,8 +300,9 @@ export function restoreSqlBackup(
   db.transaction(() => {
     assertPristineTarget();
     // Runtime retry receipts are intentionally not restored: load-generation CAS
-    // makes old requests fail closed, rather than releasing a different load.
+    // makes old postpone/swap requests fail closed against a different load.
     db.prepare("DELETE FROM match_postpone_receipts").run();
+    db.prepare("DELETE FROM match_swap_receipts").run();
     db.prepare("DELETE FROM ring_selection").run();
     db.prepare("DELETE FROM tournaments").run();
     for (const [table, columns] of Object.entries(BACKUP_TABLE_COLUMNS)) {

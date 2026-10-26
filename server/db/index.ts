@@ -662,6 +662,41 @@ export function getConfirmedMatchResult(categoryId: string, fightId: string): St
   return row ? mapMatchResult(row, true) : null
 }
 
+export interface LastConfirmedCategoryFight {
+  fightId: string
+  categoryId: string
+  redId: string
+  blueId: string
+  confirmedAt: string
+}
+
+export interface LastConfirmedCategoryFightLookup {
+  last: LastConfirmedCategoryFight | null
+  ambiguous: boolean
+}
+
+/** Read durable confirmed evidence, not current queue state or completed structural byes. */
+export function getLastConfirmedCategoryFight(categoryId: string): LastConfirmedCategoryFightLookup {
+  const rows = db.prepare(`
+    SELECT r.fight_id AS fightId, r.category_id AS categoryId,
+      f.red_id AS redId, f.blue_id AS blueId, r.confirmed_at AS confirmedAt
+    FROM match_results r
+    JOIN fights f ON f.id = r.fight_id AND f.tournament_id = r.tournament_id
+    JOIN category_tournaments c ON c.category_id = r.category_id
+      AND c.tournament_id = r.tournament_id
+    WHERE r.category_id = ? AND r.status = 'confirmed' AND r.confirmed_at IS NOT NULL
+      AND f.completed = 1 AND f.red_id IS NOT NULL AND f.blue_id IS NOT NULL
+      AND f.red_id <> f.blue_id
+    ORDER BY r.confirmed_at DESC, r.fight_id ASC
+    LIMIT 2
+  `).all(categoryId) as LastConfirmedCategoryFight[]
+  if (rows.length === 0) return { last: null, ambiguous: false }
+  if (rows.length > 1 && rows[0].confirmedAt === rows[1].confirmedAt) {
+    return { last: null, ambiguous: true }
+  }
+  return { last: rows[0], ambiguous: false }
+}
+
 export function getMatchResult(categoryId: string, fightId: string): StoredMatchResult | null {
   const row = db.prepare('SELECT * FROM match_results WHERE category_id = ? AND fight_id = ?')
     .get(categoryId, fightId) as MatchResultRow | undefined
@@ -741,6 +776,16 @@ export function getFightCompetitorNames(fightId: string, tournamentId: number): 
     JOIN competitors r ON r.id = f.red_id
     JOIN competitors b ON b.id = f.blue_id
     WHERE f.id = ? AND f.tournament_id = ?`).get(fightId, tournamentId) as { redName: string; blueName: string } | undefined
+  return row ?? null
+}
+
+/** Category-scoped canonical color identities, including unloaded confirmed fights. */
+export function getFightCompetitorIds(categoryId: string, fightId: string): { redId: string; blueId: string } | null {
+  const row = db.prepare(`SELECT f.red_id AS redId, f.blue_id AS blueId FROM fights f
+    JOIN category_tournaments c ON c.tournament_id = f.tournament_id
+    WHERE c.category_id = ? AND f.id = ?`).get(categoryId, fightId) as {
+      redId: string; blueId: string
+    } | undefined
   return row ?? null
 }
 

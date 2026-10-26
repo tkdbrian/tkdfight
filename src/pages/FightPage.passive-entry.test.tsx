@@ -232,7 +232,11 @@ describe("passive continuation into Combat", () => {
   it("keeps explicit Cargar and Iniciar as the normal two actions, never starting a clock during loading", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => new Response(JSON.stringify({ activeMatchLock: null })))
+      vi.fn(async (input: RequestInfo | URL) => new Response(JSON.stringify(
+        String(input).includes("last-confirmed")
+          ? { ok: true, last: null, ambiguous: false }
+          : { activeMatchLock: null }
+      )))
     );
     socket.on.mockImplementation((event: string, listener: (value: ServerState) => void) => {
       if (event === "state:update" && state.match?.id === pending.id) listener(state);

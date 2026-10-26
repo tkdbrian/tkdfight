@@ -17,7 +17,7 @@ const args = new Map();
 for (let i = 2; i < process.argv.length; i += 2) {
   const key = process.argv[i]?.replace(/^--/, "");
   const value = process.argv[i + 1];
-  if (!key || !value || ![...required, "plan"].includes(key) || args.has(key)) {
+  if (!key || !value || ![...required, "plan", "release-prefix"].includes(key) || args.has(key)) {
     throw new Error(`Bad argument: ${process.argv[i] ?? "(missing)"}`);
   }
   args.set(key, value);
@@ -30,7 +30,7 @@ const output = resolve(args.get("output"));
 const vcRedist = resolve(args.get("vc-redist"));
 const buildId = args.get("build-id");
 const stageInfo = validateStage(stage, buildId);
-const destinations = assertFreshOutput(output, buildId);
+const destinations = assertFreshOutput(output, buildId, args.get("release-prefix"));
 const approvedRelease = resolve(repoRoot, "release");
 const tempRoot = realpathSync(tmpdir());
 if (output !== approvedRelease && !output.startsWith(`${tempRoot}${sep}`)) {

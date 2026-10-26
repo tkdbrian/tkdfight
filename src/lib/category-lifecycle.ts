@@ -67,7 +67,9 @@ export function createRestartReplacement(
         : generateEliminationBracket(competitors);
     return { ...base, bracketMatches: generated.matches, bracketSeeds: generated.seeds };
   }
-  return { ...base, ...generateGroupsTournament(competitors) };
+  return { ...base, ...generateGroupsTournament(
+    competitors, "SERPENTINE", config.rrOrderMode ?? "group-blocks",
+  ) };
 }
 
 export function isCategoryInitialized(snapshot: TournamentCategorySnapshot): boolean {

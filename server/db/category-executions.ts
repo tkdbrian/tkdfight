@@ -326,7 +326,7 @@ export function validateCategoryReplacement(input: RestartCategoryRequest): void
       conflict("El fixture regular contiene etapas ajenas.");
     let fixture: ReturnType<typeof generateGroupsTournament>;
     try {
-      fixture = generateGroupsTournament(next.competitors);
+      fixture = generateGroupsTournament(next.competitors, "SERPENTINE", next.config.rrOrderMode ?? "group-blocks");
     } catch {
       conflict("No se pudo validar el fixture nuevo.");
     }

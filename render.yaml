@@ -2,7 +2,7 @@ services:
   - type: web
     name: tkdfight
     runtime: node
-    buildCommand: npm install && npm run build:prod
+    buildCommand: npm ci && npm run build:web
     startCommand: npm run start:prod
     plan: free
     healthCheckPath: /health

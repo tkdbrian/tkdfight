@@ -85,6 +85,17 @@ const snapshot = {
   setupStarted: true,
 };
 
+it("accepts either explicit RR order policy but rejects unknown values", () => {
+  for (const rrOrderMode of ["rest-optimized", "group-blocks"] as const) {
+    const withPolicy = { ...snapshot, config: { ...snapshot.config, rrOrderMode } };
+    expect(categoryRestartSnapshotSchema.parse(withPolicy)).toEqual(withPolicy);
+  }
+  expect(categoryRestartSnapshotSchema.parse(snapshot)).toEqual(snapshot);
+  expect(categoryRestartSnapshotSchema.safeParse({
+    ...snapshot, config: { ...snapshot.config, rrOrderMode: "random" },
+  }).success).toBe(false);
+});
+
 function expectRulesRoundTrip(ruleSet: unknown): void {
   const previous = { ...snapshot, config: { ...snapshot.config, ruleSet } };
   const replacement = { ...previous, config: { ...previous.config, id: "replacement" } };

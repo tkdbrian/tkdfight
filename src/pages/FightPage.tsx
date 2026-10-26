@@ -14,6 +14,7 @@ import { Badge } from "@/components/ui/badge";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
@@ -47,7 +48,9 @@ import {
 import { cn } from "@/lib/utils";
 import itfRules from "@/rules/rules/rules_sparring_itf_baseline.json";
 import type { RuleSetSparring } from "@/engine/types";
-import type { PenaltyCounts, ServerState } from "@/lib/socket-types";
+import type { MatchInfo, PenaltyCounts, ServerState } from "@/lib/socket-types";
+import type { MatchSwapReply, MatchSwapRequest } from "@/lib/match-swap-contract";
+import { markLocalSwapPending } from "@/lib/match-swap-pending";
 import type { FightEntry, TournamentMode } from "@/store/tournament";
 import {
   applyFightTiming,
@@ -61,6 +64,13 @@ import { getCanonicalEliminationContinuation, syncProposedFights } from "@/lib/s
 import { clearFightProposal, getOrCreateFightProposal } from "@/lib/pending-fight-proposals";
 import { eliminationContinuationSchema } from "@/lib/elimination-continuation-contract";
 import { describeFightLock, type BlockedFightInfo } from "@/lib/pending-fight-lock";
+import {
+  findRoundRobinRestAdvisory,
+  parseLastConfirmedRestReply,
+  restReadKey,
+  type LastConfirmedRestRead,
+  type RoundRobinRestAdvisory,
+} from "@/lib/rr-rest-advisory";
 
 const DEFAULT_RULES = itfRules as RuleSetSparring;
 
@@ -86,12 +96,18 @@ export function withMatchContext(
   data: unknown,
   categoryId: string,
   matchId: string,
+  preFight?: MatchInfo["preFight"],
 ): unknown {
   if (!MATCH_CONTEXT_EVENTS.has(event)) return data;
   const payload = data && typeof data === "object" && !Array.isArray(data)
     ? data as Record<string, unknown>
     : {};
-  return { ...payload, categoryId, matchId };
+  return { ...payload, categoryId, matchId,
+    ...(preFight && (preFight.swapCount ?? 0) > 0 ? {
+      expectedLoadId: preFight.loadId,
+      expectedAssignmentRevision: preFight.revision,
+    } : {}),
+  };
 }
 
 export function hasReopenedFlagUpdate(
@@ -136,6 +152,30 @@ interface MatchResultRecord {
   revision?: number;
 }
 
+interface MatchResultReply {
+  ok: boolean;
+  error?: string;
+  result: MatchResultRecord | null;
+  redId?: string;
+  blueId?: string;
+}
+
+function fightColorsMatch(fight: FightEntry | undefined, match: MatchInfo | null): boolean {
+  return !!fight && !!match && fight.red.id === match.red.id && fight.blue.id === match.blue.id;
+}
+
+function untouchedPreStart(state: ServerState): boolean {
+  const matchState = state.matchState;
+  return state.match?.matchMode === "sparring" && !!state.match.preFight?.loadId &&
+    !state.match.preFight.started && state.match.preFight.timingKind !== "continuation" &&
+    !state.match.goldenPoint && matchState?.phase === "idle" && !state.matchPaused &&
+    !state.resultConfirmed && matchState.firstPoint === null && matchState.result === null &&
+    matchState.rounds.every((round) => round.events.length === 0) &&
+    (state.roundFlags?.length ?? 0) === 0 && Object.keys(state.judgeVotes ?? {}).length === 0 &&
+    state.penaltyCounts.warnings.red === 0 && state.penaltyCounts.warnings.blue === 0 &&
+    state.penaltyCounts.fouls.red === 0 && state.penaltyCounts.fouls.blue === 0;
+}
+
 interface GoldenActionReply {
   ok: boolean;
   code?: string;
@@ -147,6 +187,21 @@ interface MatchLoadReply extends Partial<BlockedFightInfo> {
   ok: boolean;
   error?: string;
   warning?: string;
+}
+
+interface RestPrompt {
+  categoryId: string;
+  fightId: string;
+  read: LastConfirmedRestRead;
+  advisory: RoundRobinRestAdvisory;
+}
+
+function competitorNameInFights(fights: readonly FightEntry[], id: string): string {
+  for (const fight of fights) {
+    if (fight.red.id === id) return fight.red.name;
+    if (fight.blue.id === id) return fight.blue.name;
+  }
+  return id;
 }
 
 type SanctionSide = "red" | "blue";
@@ -1355,14 +1410,14 @@ function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
 
   type StripItem =
     | { type: "fight"; fight: FightEntry; index: number }
-    | { type: "label"; groupId: string; first: boolean };
+    | { type: "label"; groupId: string; first: boolean; index: number };
 
   const items: StripItem[] = [];
   let lastGroupId: string | null = null;
   for (let i = 0; i < fights.length; i++) {
     const fight = fights[i];
     if (hasMultipleGroups && fight.groupId && fight.groupId !== lastGroupId) {
-      items.push({ type: "label", groupId: fight.groupId, first: lastGroupId === null });
+      items.push({ type: "label", groupId: fight.groupId, first: lastGroupId === null, index: i });
       lastGroupId = fight.groupId;
     }
     items.push({ type: "fight", fight, index: i });
@@ -1374,7 +1429,7 @@ function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
         if (item.type === "label") {
           return (
             <span
-              key={`label-${item.groupId}`}
+              key={`label-${item.groupId}-${item.index}`}
               className={cn(
                 "shrink-0 flex items-center gap-1 self-center",
                 !item.first && "ml-1",
@@ -1593,27 +1648,23 @@ function FightPicker({
             const regular = localFights.filter((f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight);
             const finals = localFights.filter((f) => f.isFinalFight);
             const tiebreaks = localFights.filter((f) => f.isTiebreakExtra || f.isGoldenPointFight);
-            const groups = Array.from(new Set(regular.map((f) => f.groupId ?? "—")));
-            const isGrouped = groups.some((g) => g !== "—");
-
-            const regularSection = isGrouped
-              ? groups.map((gid) => {
-                  const gFights = fights.map((f, i) => ({ f, i })).filter(({ f }) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight && !f.importedFrom && (f.groupId ?? "—") === gid);
-                  return (
-                    <div key={gid}>
-                      <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-1 pt-1 pb-0.5">
-                        Llave {gid}
-                      </p>
-                      {gFights.map(({ f, i }) => (
-                        <FightListRow key={f.id} fight={f} index={i} active={i === currentIndex} onSelect={onSelectIndex} />
-                      ))}
-                    </div>
-                  );
-                })
-              : regular.map((f) => {
-                  const i = fights.indexOf(f);
-                  return <FightListRow key={f.id} fight={f} index={i} active={i === currentIndex} onSelect={onSelectIndex} />;
-                });
+            const isGrouped = regular.some((fight) => fight.groupId);
+            let previousGroupId: string | undefined;
+            const regularSection = regular.map((fight) => {
+              const index = fights.indexOf(fight);
+              const showLabel = isGrouped && fight.groupId !== previousGroupId;
+              previousGroupId = fight.groupId;
+              return (
+                <React.Fragment key={fight.id}>
+                  {showLabel && (
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-1 pt-1 pb-0.5">
+                      Llave {fight.groupId ?? "—"}
+                    </p>
+                  )}
+                  <FightListRow fight={fight} index={index} active={index === currentIndex} onSelect={onSelectIndex} />
+                </React.Fragment>
+              );
+            });
 
             const finalSection = finals.length > 0
               ? (
@@ -2048,7 +2099,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   const latestConnectionRef = React.useRef({ connected, stateReady, state: socketState });
   latestConnectionRef.current = { connected, stateReady, state: socketState };
   const navigate = useNavigate();
-  const { fights, groups, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, setPhase, config, bracketMatches, addImportedFights, addTiebreakFights, postponeFight, resetFight, addGuestFight } =
+  const { fights, groups, currentFightIndex, setCurrentFightIndex, completeFight, completeBracketMatch, reconcileFightColors, setPhase, config, bracketMatches, addImportedFights, addTiebreakFights, postponeFight, resetFight, addGuestFight } =
     useTournamentStore(
       useShallow((s) => ({
         fights: s.fights,
@@ -2057,6 +2108,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
         setCurrentFightIndex: s.setCurrentFightIndex,
         completeFight: s.completeFight,
         completeBracketMatch: s.completeBracketMatch,
+        reconcileFightColors: s.reconcileFightColors,
         setPhase: s.setPhase,
         config: s.config,
         bracketMatches: s.bracketMatches,
@@ -2117,6 +2169,8 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     if (tableChiefRoundRobin && bottomTab !== "porjuez") setBottomTab("porjuez");
   }, [tableChiefRoundRobin, bottomTab]);
   const [showFightList, setShowFightList] = React.useState(false);
+  const [restPrompt, setRestPrompt] = React.useState<RestPrompt | null>(null);
+  const restOverrideRef = React.useRef<{ categoryId: string; fightId: string; readKey: string } | null>(null);
   const [loadRefusal, setLoadRefusal] = React.useState<{
     categoryId: string; matchId: string; serverState: ServerState; info: BlockedFightInfo;
   } | null>(null);
@@ -2155,6 +2209,14 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   const [postponeError, setPostponeError] = React.useState<string | null>(null);
   const postponeBusyRef = React.useRef(false);
   const postponeRequestRef = React.useRef<{requestId:string;categoryId:string;matchId:string;expectedRevision:number;expectedLoadId:string} | null>(null);
+  const [swapPending, setSwapPending] = React.useState(false);
+  const [swapError, setSwapError] = React.useState<string | null>(null);
+  const swapBusyRef = React.useRef(false);
+  const swapRequestRef = React.useRef<MatchSwapRequest | null>(null);
+  React.useEffect(() => () => {
+    const pending = swapRequestRef.current;
+    if (pending) markLocalSwapPending(pending.categoryId, pending.matchId, false);
+  }, []);
   const [timingRecovery, setTimingRecovery] = React.useState<string | null>(null);
   const prevIsFinishedRef = React.useRef<boolean | null>(null);
   const prevPhaseRef = React.useRef<string>("idle");
@@ -2163,6 +2225,8 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     const selected = fights[index];
     if (!selected) return;
     userSelectedFightRef.current = selected.id;
+    restOverrideRef.current = null;
+    setRestPrompt(null);
     setLoaded(false);
     setWinnerOverlayOpen(false);
     setFlagCorrectionView(null);
@@ -2199,7 +2263,10 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   const reviewingOtherFight = otherFightLocked;
   const categoryInteractionBlocked = useCategoryInteractionBlocked();
   const canLoadFight = connected && stateReady && !otherFightLocked && !entryInvalid && !categoryInteractionBlocked;
-  const canOperateFight = canLoadFight && selectedMatchesServer && socketState.matchState !== null
+  const colorsAligned = !selectedMatchesServer || fightColorsMatch(selectedFight, socketState.match);
+  const swapUnresolved = swapRequestRef.current !== null;
+  const canOperateFight = canLoadFight && selectedMatchesServer && colorsAligned && !swapUnresolved &&
+    socketState.matchState !== null
     && !socketState.resultConfirmed;
   const canRedoFight = canLoadFight;
 
@@ -2215,6 +2282,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       || (lock && (lock.categoryId !== local.config.id || lock.fightId !== selected.id))
       || (requireLoaded && (latest.state.categoryId !== local.config.id
         || latest.state.match?.id !== selected.id || !latest.state.matchState
+        || !fightColorsMatch(selected, latest.state.match) || !!swapRequestRef.current
+        || (!!latest.state.match.preFight && (latest.state.match.preFight.swapCount ?? 0) > 0 &&
+          !latest.state.match.preFight.loadId)
         || latest.state.resultConfirmed))) return false;
     passiveEntryRef.current = false;
     return true;
@@ -2256,6 +2326,71 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       setPostponeError(error instanceof Error ? error.message : "No hubo confirmación. Revisá la conexión y reintentá Postergar.");
     } finally { postponeBusyRef.current = false; setPostponePending(false); }
   }
+  async function handleSwapCompetitors(): Promise<void> {
+    if (swapBusyRef.current || !currentFight || !connected || !stateReady || !loaded ||
+      !selectedMatchesServer || !untouchedPreStart(state) || config.matchType !== "sparring" ||
+      currentFight.isTiebreakExtra || currentFight.isGoldenPointFight ||
+      timingKind === "continuation" || categoryRestartInteractionBlocked()) return;
+    const previous = swapRequestRef.current;
+    const retry = previous?.categoryId === config.id && previous.matchId === currentFight.id;
+    if (previous && !retry) return;
+    const match = state.match;
+    const preFight = match?.preFight;
+    if (!match || !preFight?.loadId || (!retry && !canOperateFight)) return;
+    const requestPayload: MatchSwapRequest = retry ? previous : {
+      requestId: crypto.randomUUID(), categoryId: config.id, matchId: currentFight.id,
+      expectedRevision: preFight.revision,
+      expectedLoadId: preFight.loadId,
+      expectedRedId: match.red.id, expectedBlueId: match.blue.id,
+    };
+    swapRequestRef.current = requestPayload;
+    markLocalSwapPending(requestPayload.categoryId, requestPayload.matchId, true);
+    swapBusyRef.current = true;
+    setSwapPending(true);
+    setSwapError(null);
+    try {
+      const reply = await request<MatchSwapReply>("match:swapCompetitors", requestPayload);
+      // A newer canonical state may have superseded this in-flight ACK.
+      if (swapRequestRef.current !== requestPayload) return;
+      if (!reply) throw new Error("No llegó la confirmación. Reintentá con el mismo pedido; no inicies el combate.");
+      if (!reply.ok) {
+        swapRequestRef.current = null;
+        markLocalSwapPending(requestPayload.categoryId, requestPayload.matchId, false);
+        throw new Error(reply.error ?? "El servidor rechazó el intercambio de competidores.");
+      }
+      const canonical = reply.match;
+      if (canonical && (canonical.id !== requestPayload.matchId ||
+        canonical.red.id !== requestPayload.expectedBlueId ||
+        canonical.blue.id !== requestPayload.expectedRedId ||
+        canonical.preFight?.loadId !== requestPayload.expectedLoadId ||
+        canonical.preFight.revision <= requestPayload.expectedRevision)) {
+        throw new Error("La respuesta no coincide con el intercambio esperado. Revisá el tatami.");
+      }
+      const synced = await waitForSocketState((next) =>
+        next.categoryId === requestPayload.categoryId && next.match?.id === requestPayload.matchId &&
+        next.match.red.id === requestPayload.expectedBlueId &&
+        next.match.blue.id === requestPayload.expectedRedId &&
+        next.match.preFight?.loadId === requestPayload.expectedLoadId &&
+        next.match.preFight.revision > requestPayload.expectedRevision);
+      if (swapRequestRef.current !== requestPayload) return;
+      if (!synced) throw new Error("El servidor aceptó el intercambio, pero falta sincronizar esta pantalla. Reintentá antes de iniciar.");
+      const local = useTournamentStore.getState();
+      if (local.config.id !== requestPayload.categoryId ||
+        local.fights[local.currentFightIndex]?.id !== requestPayload.matchId ||
+        !reconcileFightColors(requestPayload.categoryId, requestPayload.matchId,
+          requestPayload.expectedBlueId, requestPayload.expectedRedId)) {
+        throw new Error("La selección cambió. Revisá el combate antes de iniciar.");
+      }
+      swapRequestRef.current = null;
+      markLocalSwapPending(requestPayload.categoryId, requestPayload.matchId, false);
+      toast.success("Competidores intercambiados. Rojo sigue a la izquierda y azul a la derecha.");
+    } catch (error) {
+      setSwapError(error instanceof Error ? error.message : "No se pudo verificar el intercambio.");
+    } finally {
+      swapBusyRef.current = false;
+      setSwapPending(false);
+    }
+  }
   const currentGroupIds = currentFight
     ? groups.find((group) => group.id === (currentFight.groupId ?? "G1"))?.competitors.map((competitor) => competitor.id)
     : undefined;
@@ -2269,15 +2404,19 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   const effectiveTimingRounds = preloadRounds ?? (!selectedMatchesServer && config.mode !== "elimination" && timingKind === "regular" ? 1 : baseTimingRules.rounds.count);
   const effectiveTimingSeconds = preloadDurationInput ?? String(baseTimingRules.rounds.duration_seconds);
   const timingDirty = selectedMatchesServer && (effectiveTimingSeconds !== String(state.rules?.rounds.duration_seconds) || effectiveTimingRounds !== state.rules?.rounds.count);
-  const timingStartBlocked = config.matchType === "sparring" && timingKind !== "continuation" &&
-    (timingSaving || timingDirty || timingRecovery === draftKey);
+  const timingStartBlocked = (config.matchType === "sparring" && timingKind !== "continuation" &&
+    (timingSaving || timingDirty || timingRecovery === draftKey)) ||
+    !colorsAligned || !!swapUnresolved || swapPending;
   function emit(event: string, data?: unknown): void {
     if (!beginExplicitOperation() || tulFinishRef.current) return;
     if (event === "tul:finish") { void handleFinishTul(); return; }
-    if (event === "match:start" && (timingSavingRef.current || timingStartBlocked)) return;
+    if (event === "match:start" && (timingSavingRef.current || timingStartBlocked ||
+      !fightColorsMatch(useTournamentStore.getState().fights[useTournamentStore.getState().currentFightIndex],
+        latestConnectionRef.current.state.match))) return;
     emitSocket(event, currentFight
       ? withMatchContext(event, event === "match:start" && state.match?.preFight
-        ? { ...(data && typeof data === "object" ? data : {}), expectedTimingRevision: state.match.preFight.revision } : data, config.id, currentFight.id)
+        ? { ...(data && typeof data === "object" ? data : {}), expectedTimingRevision: state.match.preFight.revision } : data,
+        config.id, currentFight.id, state.match?.preFight)
       : data);
   }
   const { matchState, matchPaused, judges } = state;
@@ -2382,6 +2521,8 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     timingSavingRef.current = true; setTimingSaving(true);
     type Reply = {ok: boolean; error?: string; rules?: RuleSetSparring; preFight?: {revision:number;started:boolean}};
     const payload = {categoryId:config.id,matchId:currentFight.id,expectedRevision:revision,
+      ...((state.match?.preFight?.swapCount ?? 0) > 0
+        ? { expectedLoadId: state.match?.preFight?.loadId } : {}),
       durationSeconds:rules.rounds.duration_seconds,rounds:rules.rounds.count};
     try {
       let response = await request<Reply>("match:configure", payload, 7000).catch(() => null);
@@ -2554,7 +2695,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
 
   const loadingMatchRef = React.useRef<string | null>(null);
   function waitForSocketState(predicate: (next: ServerState) => boolean, timeoutMs = 5000): Promise<boolean> {
-    if (predicate(socketState)) return Promise.resolve(true);
+    if (predicate(latestConnectionRef.current.state)) return Promise.resolve(true);
     if (!socket) return Promise.resolve(false);
     return new Promise((resolve) => {
       const timeout = window.setTimeout(() => {
@@ -2612,7 +2753,8 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
           ? "El servidor aceptó la acción, pero la pantalla no recibió el estado actualizado. Revisá antes de repetir."
           : "El servidor no confirmó la acción. El voto no avanzó en esta pantalla.");
       }, 6500);
-      void request<GoldenActionReply>(event, withMatchContext(event, payload, config.id, currentFight.id))
+      void request<GoldenActionReply>(event, withMatchContext(event, payload, config.id,
+        currentFight.id, state.match?.preFight))
         .then((reply) => {
           if (!reply?.ok) {
             fail(reply?.error ?? "El servidor rechazó la acción de Punto de Oro.");
@@ -2723,14 +2865,14 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       const timeoutId = window.setTimeout(() => fail(reply
         ? "La sanción se aceptó, pero no llegó el estado actualizado. Revisá antes de reintentar."
         : "El servidor no confirmó la sanción. Revisá antes de reintentar."), 7500);
-      void request<SanctionActionReply>("mesa:setSanctionCount", {
+      void request<SanctionActionReply>("mesa:setSanctionCount", withMatchContext("mesa:setSanctionCount", {
         categoryId,
         matchId,
         competitor: side,
         kind,
         expectedCount,
         count,
-      }, 7000).then((response) => {
+      }, categoryId, matchId, state.match?.preFight), 7000).then((response) => {
         if (!response?.ok) {
           fail(response?.error ?? (response?.code === "stale_count"
             ? "Otra mesa cambió la sanción. Revisá los valores actuales antes de reintentar."
@@ -2801,6 +2943,54 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       });
   }
 
+  async function checkRestBeforeLoad(fightId: string): Promise<boolean> {
+    if (config.mode === "elimination" || config.matchType !== "sparring" || selectedFight?.completed) {
+      return true;
+    }
+    const live = latestConnectionRef.current.state;
+    if (live.categoryId === config.id && live.match?.id === fightId && !live.resultConfirmed) {
+      if (live.matchState?.phase !== "idle") {
+        toast.warning("El combate ya está activo o pendiente de confirmación; no se volvió a cargar.");
+        return false;
+      }
+      // Changing pre-fight settings on this already loaded bout is not a new scheduling choice.
+      if (live.match.preFight?.loadId) return true;
+    }
+    let read: LastConfirmedRestRead;
+    try {
+      const response = await fetch(`/api/ring/categories/${encodeURIComponent(config.id)}/last-confirmed`,
+        { cache: "no-store" });
+      read = response.ok ? parseLastConfirmedRestReply(await response.json()) : { kind: "unavailable" };
+    } catch {
+      read = { kind: "unavailable" };
+    }
+    const latest = useTournamentStore.getState();
+    if (latest.config.id !== config.id || latest.fights[latest.currentFightIndex]?.id !== fightId ||
+      !beginExplicitOperation(false)) return false;
+    if (read.kind === "known" && read.last?.categoryId !== undefined &&
+      read.last.categoryId !== config.id) read = { kind: "unavailable" };
+    const advisory = read.kind === "known" && read.last
+      ? findRoundRobinRestAdvisory(latest.fights, fightId, read.last, (fight) => {
+          const expectedIds = latest.groups.find((group) => group.id === (fight.groupId ?? "G1"))
+            ?.competitors.map((competitor) => competitor.id);
+          return isAuthorizedPlayoffFight(fight, latest.fights, expectedIds);
+        })
+      : { kind: "none" } as const;
+    if (read.kind === "known" && advisory.kind === "none") {
+      setRestPrompt(null);
+      return true;
+    }
+    const readKey = restReadKey(read);
+    const override = restOverrideRef.current;
+    if (override?.categoryId === config.id && override.fightId === fightId &&
+      override.readKey === readKey) {
+      setRestPrompt(null);
+      return true;
+    }
+    setRestPrompt({ categoryId: config.id, fightId, read, advisory });
+    return false;
+  }
+
   async function handleLoad(): Promise<boolean> {
     if (!currentFight) return false;
     if (!beginExplicitOperation(false)) return false;
@@ -2832,6 +3022,10 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     const requestKey = `${config.id}:${currentFight.id}`;
     if (loadingMatchRef.current === requestKey) return false;
     loadingMatchRef.current = requestKey;
+    if (!await checkRestBeforeLoad(currentFight.id)) {
+      loadingMatchRef.current = null;
+      return false;
+    }
     useTournamentStore.getState().setCategoryOperationReason("Confirmando la carga del combate con el servidor…");
     try {
       const statusResponse = await fetch("/api/ring/status");
@@ -2879,6 +3073,16 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       useTournamentStore.getState().setCategoryOperationReason(null);
       return false;
     }
+    if (!await checkRestBeforeLoad(currentFight.id)) {
+      loadingMatchRef.current = null;
+      useTournamentStore.getState().setCategoryOperationReason(null);
+      return false;
+    }
+    if (!beginExplicitOperation(false)) {
+      loadingMatchRef.current = null;
+      useTournamentStore.getState().setCategoryOperationReason(null);
+      return false;
+    }
     const baseRules = (config.ruleSet as RuleSetSparring) ?? DEFAULT_RULES;
     // judgingMode must match the UI mode: mobile judges score points, mesa judges vote flags
     let rules: RuleSetSparring = {
@@ -2893,6 +3097,8 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     if (currentFight.isGoldenPointFight) {
       rules = { ...rules, rounds: { ...rules.rounds, golden_point: true, overtime_seconds: 0 } };
     }
+    // Consent applies to this single load attempt only. A failed or later load is checked again.
+    restOverrideRef.current = null;
     const response = await request<MatchLoadReply>("match:load", {
       categoryId: config.id,
       tournamentName: config.tournamentName,
@@ -2989,6 +3195,44 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   }, [connected, config.id, currentFight?.id, currentFight?.completed, state.categoryId,
     state.match?.id, state.matchState, state.resultConfirmed, loaded]);
 
+  // Another table-chief tab may have swapped this loaded bout. Persist its canonical
+  // operative colors before enabling any color-sensitive action on this tab.
+  React.useEffect(() => {
+    if (!connected || !stateReady || !selectedMatchesServer || !selectedFight ||
+      !state.match || fightColorsMatch(selectedFight, state.match) ||
+      swapRequestRef.current?.matchId === selectedFight.id) return;
+    reconcileFightColors(config.id, selectedFight.id, state.match.red.id, state.match.blue.id);
+  }, [connected, stateReady, selectedMatchesServer, selectedFight, state.match, config.id,
+    reconcileFightColors]);
+
+  // A lost ACK cannot be retried once another chief has started or superseded
+  // the bout. The fresh server assignment is then authoritative: reconcile it
+  // before releasing the local uncertainty gate, never re-send the old swap.
+  React.useEffect(() => {
+    const pending = swapRequestRef.current;
+    if (!pending || !connected || !stateReady || !selectedMatchesServer ||
+      selectedFight?.id !== pending.matchId || state.categoryId !== pending.categoryId ||
+      state.match?.id !== pending.matchId) return;
+    const preFight = state.match.preFight;
+    const advanced = !!preFight?.started ||
+      (state.matchState != null && state.matchState.phase !== "idle") ||
+      !!state.resultConfirmed ||
+      (!!preFight?.loadId && preFight.loadId !== pending.expectedLoadId) ||
+      (preFight != null && preFight.revision > pending.expectedRevision + 1);
+    if (!advanced) return;
+    if (!reconcileFightColors(pending.categoryId, pending.matchId,
+      state.match.red.id, state.match.blue.id)) {
+      setSwapError("El combate avanzó, pero no se pudo verificar quién ocupa cada color. Recargá y revisá el tatami.");
+      return;
+    }
+    swapRequestRef.current = null;
+    markLocalSwapPending(pending.categoryId, pending.matchId, false);
+    setSwapPending(false);
+    setSwapError(null);
+    toast.info("El combate avanzó en otro dispositivo. Colores sincronizados con el tatami.");
+  }, [connected, stateReady, selectedMatchesServer, selectedFight?.id, state.categoryId,
+    state.match, state.matchState, state.resultConfirmed, reconcileFightColors]);
+
   // Reconcile a durable server result after reload/reconnect before allowing local progression.
   // biome-ignore lint/correctness/useExhaustiveDependencies: reconnect and selected fight identify the recovery request
   React.useEffect(() => {
@@ -3007,7 +3251,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     }
     void (async () => {
       const identity = { categoryId: config.id, matchId: currentFight.id };
-      const response = await request<{ ok: boolean; result: MatchResultRecord | null }>("match:result:get", identity);
+      const response = await request<MatchResultReply>("match:result:get", identity);
       if (cancelled || !response?.ok || !response.result) return;
       // A late acknowledgement must not advance a result that was completed or
       // deliberately selected for review while the recovery request was in flight.
@@ -3019,7 +3263,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
         if (!recovered) return;
         result = recovered;
       }
-      if (canApplyRecovery() && result.status === "confirmed" && applyConfirmedResult(result)) {
+      if (canApplyRecovery() && result.status === "confirmed" &&
+        (result !== response.result || reconcileResultColors(response, currentFight.id)) &&
+        applyConfirmedResult(result)) {
         advanceAfterConfirmedResult(result.fightId);
       }
     })();
@@ -3108,29 +3354,58 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     }
   }
 
+  function reconcileResultColors(reply: MatchResultReply, matchId: string): boolean {
+    const local = useTournamentStore.getState();
+    const fight = local.fights.find((entry) => entry.id === matchId);
+    if (!fight || local.config.id !== config.id) return false;
+    if (reply.redId || reply.blueId) {
+      if (!reply.redId || !reply.blueId ||
+        !reconcileFightColors(config.id, matchId, reply.redId, reply.blueId)) {
+        toast.error("Los colores del resultado no coinciden con el combate local. No se aplicó el fallo.");
+        return false;
+      }
+      return true;
+    }
+    // Legacy/mocked replies lack canonical IDs. A matching live bout still lets
+    // us validate color mapping, but never trust a known mismatch.
+    const live = latestConnectionRef.current.state;
+    if (live.categoryId === config.id && live.match?.id === matchId) {
+      if (reconcileFightColors(config.id, matchId, live.match.red.id, live.match.blue.id)) return true;
+      toast.error("Los colores del tatami no coinciden con el resultado local.");
+      return false;
+    }
+    toast.error("No hay asignación de colores verificable para este resultado. No se avanzó la llave.");
+    return false;
+  }
+
   async function requestConfirmedResult(matchId: string, expectedRevision: number | undefined): Promise<MatchResultRecord | null> {
     const identity = { categoryId: config.id, matchId };
     // Confirm exactly the revision displayed to this chief; never silently adopt a newer winner.
     if (expectedRevision === undefined) {
-      const recovered = await request<{ ok: boolean; result: MatchResultRecord | null }>("match:result:get", identity);
+      const recovered = await request<MatchResultReply>("match:result:get", identity);
       // Read-only recovery may apply an already confirmed result, never approve a
       // newly discovered pending revision that this chief has not reviewed.
-      if (recovered?.ok && recovered.result?.status === "confirmed") return recovered.result;
+      if (recovered?.ok && recovered.result?.status === "confirmed" &&
+        reconcileResultColors(recovered, matchId)) return recovered.result;
       toast.error("Volvé al combate activo y revisá su resultado antes de confirmarlo.");
       return null;
     }
     if (!beginExplicitOperation()) return null;
     const confirmation = await request<{ ok: boolean; error?: string; result?: MatchResultRecord }>(
       "match:saveFallo",
-      { ...identity, expectedRevision },
+      withMatchContext("match:saveFallo", { ...identity, expectedRevision },
+        config.id, matchId, state.match?.preFight),
     );
+    // This active bout could start only after a live pair match. A pre-start
+    // swap cannot occur once started, so the confirmation retains that mapping.
     if (confirmation?.ok && confirmation.result?.status === "confirmed") return confirmation.result;
 
-    const recovered = await request<{ ok: boolean; error?: string; result: MatchResultRecord | null }>(
+    const recovered = await request<MatchResultReply>(
       "match:result:get",
       identity,
     );
-    if (recovered?.ok && recovered.result?.status === "confirmed") return recovered.result;
+    if (recovered?.ok && recovered.result?.status === "confirmed" &&
+      reconcileResultColors(recovered, matchId)) return recovered.result;
     if (confirmation?.error) toast.error(confirmation.error);
     else toast.error("No se pudo verificar el guardado. El combate sigue bloqueado y podés reintentar.");
     return null;
@@ -3141,11 +3416,19 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
     const before = useTournamentStore.getState();
     const target = before.fights.find((fight) => fight.id === result.fightId);
     if (!target) return false;
+    const active = latestConnectionRef.current.state;
+    if (active.categoryId === config.id && active.match?.id === result.fightId &&
+      !fightColorsMatch(target, active.match)) {
+      toast.error("El resultado no coincide con los colores activos; no se aplicó el fallo.");
+      return false;
+    }
     if (target.completed && target.winner !== result.winner) {
       toast.error("El resultado durable no coincide con el resultado local; no se sobrescribió la llave.");
       return false;
     }
     if (!target.completed) {
+      restOverrideRef.current = null;
+      setRestPrompt(null);
       completeFight(result.fightId, result.winner, result.reason, {
         flagsRed: result.flagsRed,
         flagsBlue: result.flagsBlue,
@@ -3681,6 +3964,76 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       })()}
 
       {/* ── FIGHT LIST DIALOG ──────────────────────────────────── */}
+      <Dialog open={!!restPrompt && restPrompt.categoryId === config.id &&
+        restPrompt.fightId === selectedFight?.id} onOpenChange={(open) => {
+          if (!open) setRestPrompt(null);
+        }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Descanso entre combates</DialogTitle>
+            <DialogDescription>Verificá el descanso antes de cargar el siguiente combate.</DialogDescription>
+          </DialogHeader>
+          {restPrompt?.read.kind === "known" && restPrompt.read.last && (
+            <p className="text-sm text-muted-foreground">
+              Último combate confirmado: {competitorNameInFights(fights, restPrompt.read.last.redId)} vs
+              {" "}{competitorNameInFights(fights, restPrompt.read.last.blueId)}.
+            </p>
+          )}
+          {restPrompt?.advisory.kind === "suggest" && (() => {
+            const alternativeId = restPrompt?.advisory.kind === "suggest"
+              ? restPrompt.advisory.alternativeFightId : "";
+            const suggested = fights.find((fight) => fight.id === alternativeId);
+            return <p className="text-sm">La pelea prevista repite competidor. Se sugiere cargar primero
+              {suggested ? ` ${suggested.red.name} vs ${suggested.blue.name}` : " otra pelea"} para dar descanso.
+              La lista guardada no cambiará de orden.</p>;
+          })()}
+          {restPrompt?.advisory.kind === "unavoidable" && (
+            <p className="text-sm">La pelea prevista repite competidor y no hay otra pelea pendiente y
+              elegible sin repetirlo. El descanso es inevitable.</p>
+          )}
+          {restPrompt?.read.kind === "ambiguous" && (
+            <p className="text-sm">Los últimos resultados confirmados tienen el mismo horario. No es
+              posible determinar con certeza quién peleó último.</p>
+          )}
+          {restPrompt?.read.kind === "unavailable" && (
+            <p className="text-sm">No se pudo verificar el último combate confirmado. No se asumirá que
+              la pelea prevista cumple el descanso.</p>
+          )}
+          <DialogFooter className="gap-2 sm:gap-2">
+            <Button type="button" variant="outline" onClick={() => setRestPrompt(null)}>Cancelar</Button>
+            {restPrompt?.advisory.kind === "suggest" && (
+              <Button type="button" variant="outline" onClick={() => {
+                const latest = useTournamentStore.getState();
+                const alternativeId = restPrompt.advisory.kind === "suggest"
+                  ? restPrompt.advisory.alternativeFightId : "";
+                const index = latest.fights.findIndex((fight) => fight.id === alternativeId && !fight.completed);
+                if (latest.config.id !== restPrompt.categoryId ||
+                  latest.fights[latest.currentFightIndex]?.id !== restPrompt.fightId || index < 0) {
+                  setRestPrompt(null);
+                  toast.warning("La selección cambió; revisá la lista antes de cargar.");
+                  return;
+                }
+                selectFight(index);
+              }}>Usar sugerida</Button>
+            )}
+            <Button type="button" onClick={() => {
+              if (!restPrompt || useTournamentStore.getState().config.id !== restPrompt.categoryId ||
+                useTournamentStore.getState().fights[useTournamentStore.getState().currentFightIndex]?.id !==
+                  restPrompt.fightId) {
+                setRestPrompt(null);
+                return;
+              }
+              restOverrideRef.current = { categoryId: restPrompt.categoryId,
+                fightId: restPrompt.fightId, readKey: restReadKey(restPrompt.read) };
+              setRestPrompt(null);
+            }}>
+              {restPrompt?.advisory.kind === "suggest" ? "Mantener prevista" :
+                restPrompt?.advisory.kind === "unavoidable" ? "Cargar igual" :
+                "Continuar sin verificación"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={showFightList} onOpenChange={setShowFightList}>
         <DialogContent className="max-w-md">
           <DialogHeader>
@@ -3691,8 +4044,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
               const regular = fights.filter((f) => !f.isTiebreakExtra && !f.isGoldenPointFight && !f.isFinalFight);
               const finals = fights.filter((f) => f.isFinalFight);
               const tiebreaks = fights.filter((f) => f.isTiebreakExtra || f.isGoldenPointFight);
-              const groups = Array.from(new Set(regular.map((f) => f.groupId ?? "—")));
-              const isGrouped = groups.some((g) => g !== "—");
+              const isGrouped = regular.some((fight) => fight.groupId);
 
               const mkRow = (f: FightEntry) => {
                 const i = fights.indexOf(f);
@@ -3704,19 +4056,21 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                 );
               };
 
-              const regularSection = isGrouped
-                ? groups.map((gid) => {
-                    const gFights = regular.filter((f) => (f.groupId ?? "—") === gid);
-                    return (
-                      <div key={gid}>
-                        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-1 pt-2 pb-1">
-                          Llave {gid}
-                        </p>
-                        {gFights.map(mkRow)}
-                      </div>
-                    );
-                  })
-                : regular.map(mkRow);
+              let previousGroupId: string | undefined;
+              const regularSection = regular.map((fight) => {
+                const showLabel = isGrouped && fight.groupId !== previousGroupId;
+                previousGroupId = fight.groupId;
+                return (
+                  <React.Fragment key={fight.id}>
+                    {showLabel && (
+                      <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/60 px-1 pt-2 pb-1">
+                        Llave {fight.groupId ?? "—"}
+                      </p>
+                    )}
+                    {mkRow(fight)}
+                  </React.Fragment>
+                );
+              });
 
               return [
                 ...regularSection,
@@ -3852,6 +4206,31 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
         <FightProgressStrip fights={fights} currentIndex={currentFightIndex} onSelect={selectFight} />
       </div>
 
+      {loaded && config.matchType === "sparring" && !currentFight?.isTiebreakExtra &&
+        !currentFight?.isGoldenPointFight && timingKind !== "continuation" &&
+        untouchedPreStart(state) && (
+          <div className="shrink-0 flex flex-wrap items-center justify-center gap-2 border-b border-border px-3 py-2">
+            <Button type="button" size="sm" variant="outline"
+              className="min-h-10 border-cyan-700 text-cyan-200 hover:bg-cyan-950/40"
+              disabled={swapPending || !canLoadFight ||
+                (swapUnresolved && swapRequestRef.current?.matchId !== currentFight?.id) ||
+                (!canOperateFight && !swapUnresolved)}
+              onClick={() => { void handleSwapCompetitors(); }}>
+              Intercambiar competidores
+            </Button>
+            <span className="text-xs text-muted-foreground">Rojo permanece a la izquierda · Azul a la derecha</span>
+          </div>
+        )}
+      {swapError && <p role="alert" className="shrink-0 px-3 py-2 text-center text-sm text-red-300">{swapError}</p>}
+      {swapUnresolved && !swapError &&
+        <p role="status" className="shrink-0 px-3 py-2 text-center text-sm text-amber-300">
+          Verificando intercambio. Iniciar combate permanece bloqueado.
+        </p>}
+      {selectedMatchesServer && !colorsAligned && !swapUnresolved &&
+        <p role="status" className="shrink-0 px-3 py-2 text-center text-sm text-amber-300">
+          Sincronizando colores con el tatami. El combate no puede iniciar todavía.
+        </p>}
+
       {config.mode === "elimination" && selectedFight?.completed &&
         selectedFight.winner === "draw" &&
         !fights.some((fight) => fight.continuationParentFightId === selectedFight.id) && (
@@ -3890,7 +4269,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
         <div className="hidden md:grid h-full grid-cols-[1fr_auto_1fr] relative">
 
           {/* ROJO */}
-          <div className="flex flex-col items-center justify-center gap-5 px-4 py-3 lg:px-8 lg:py-6 bg-red-950/50 border-r border-red-900/40">
+          <div data-testid="red-station-desktop" className="flex flex-col items-center justify-center gap-5 px-4 py-3 lg:px-8 lg:py-6 bg-red-950/50 border-r border-red-900/40">
             <p className="text-xl lg:text-3xl font-black text-red-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
               {redName}
             </p>
@@ -4055,7 +4434,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
           </div>
 
           {/* AZUL */}
-          <div className="flex flex-col items-center justify-center gap-5 px-4 py-3 lg:px-8 lg:py-6 bg-blue-950/50 border-l border-blue-900/40">
+          <div data-testid="blue-station-desktop" className="flex flex-col items-center justify-center gap-5 px-4 py-3 lg:px-8 lg:py-6 bg-blue-950/50 border-l border-blue-900/40">
             <p className="text-xl lg:text-3xl font-black text-blue-400 uppercase tracking-wide text-center leading-tight max-w-full truncate">
               {blueName}
             </p>
@@ -4127,7 +4506,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
           {/* Scores 2 columnas */}
           <div className="shrink-0 grid grid-cols-2 border-b border-border">
             {/* ROJO */}
-            <div className={cn("flex flex-col items-center justify-center px-3 bg-red-950/50 border-r border-red-900/40",
+            <div data-testid="red-station-mobile" className={cn("flex flex-col items-center justify-center px-3 bg-red-950/50 border-r border-red-900/40",
               canReviewSanctions ? "gap-1 py-2" : "gap-2 py-5")}>
               <p className="text-sm font-black text-red-400 uppercase tracking-wide text-center leading-tight w-full truncate">
                 {redName}
@@ -4158,7 +4537,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
               )}
             </div>
             {/* AZUL */}
-            <div className={cn("flex flex-col items-center justify-center px-3 bg-blue-950/50",
+            <div data-testid="blue-station-mobile" className={cn("flex flex-col items-center justify-center px-3 bg-blue-950/50",
               canReviewSanctions ? "gap-1 py-2" : "gap-2 py-5")}>
               <p className="text-sm font-black text-blue-400 uppercase tracking-wide text-center leading-tight w-full truncate">
                 {blueName}

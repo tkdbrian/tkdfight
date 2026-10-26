@@ -126,6 +126,9 @@ export function registerJudgeRoute(router: Router) {
   let connected = false;
   let activeCategoryId = null;
   let activeMatchId = null;
+  let activeLoadId = null;
+  let activeAssignmentRevision = null;
+  let swapFence = false;
   let goldenAttempt = 0;
   let judgeRegistrationPending = false;
   let myRed = 0, myBlue = 0;
@@ -148,12 +151,21 @@ export function registerJudgeRoute(router: Router) {
     });
   }
   socket.on('connect', registerJudge);
-  socket.on('disconnect', () => { connected = false; judgeRegistrationPending = false; statusEl.textContent = '\u26a0\ufe0f Reconectando...'; statusEl.style.color = '#f90'; });
+  socket.on('disconnect', () => { connected = false; judgeRegistrationPending = false;
+    activeCategoryId = null; activeMatchId = null; activeLoadId = null; activeAssignmentRevision = null;
+    statusEl.textContent = '\u26a0\ufe0f Reconectando...'; statusEl.style.color = '#f90'; });
+  socket.on('match:assignment-stale', () => {
+    statusEl.textContent = 'Asignacion actualizada; esperando estado nuevo...'; statusEl.style.color = '#f90';
+  });
   socket.on('state:update', (data) => {
     const m = data.match, ms = data.matchState;
     if (connected && m && Array.isArray(data.judges) && !data.judges.includes(JUDGE_ID)) registerJudge();
     activeCategoryId = data.categoryId || (m && m.categoryId) || null;
     activeMatchId = m ? m.id : null;
+    activeLoadId = m && m.preFight && m.preFight.loadId || null;
+    activeAssignmentRevision = m && m.preFight && Number.isInteger(m.preFight.revision)
+      ? m.preFight.revision : null;
+    swapFence = !!(m && m.preFight && m.preFight.swapCount > 0);
     if (m) {
       subtitleEl.textContent = m.red.name + ' vs ' + m.blue.name;
       document.getElementById('hdr-red').textContent = m.red.name;
@@ -207,31 +219,43 @@ export function registerJudgeRoute(router: Router) {
       const voted = ms.goldenPoint.votes && ms.goldenPoint.votes[JUDGE_ID];
       document.getElementById('golden-attempt').textContent = 'Intento ' + goldenAttempt;
       document.getElementById('golden-status').textContent = voted ? 'Voto registrado: ' + (voted === 'red' ? 'Rojo' : 'Azul') : 'Marcá el punto observado.';
-      document.getElementById('golden-red').disabled = !connected || !!voted;
-      document.getElementById('golden-blue').disabled = !connected || !!voted;
+      document.getElementById('golden-red').disabled = !connected || !!voted
+        || (swapFence && (!activeLoadId || activeAssignmentRevision === null));
+      document.getElementById('golden-blue').disabled = !connected || !!voted
+        || (swapFence && (!activeLoadId || activeAssignmentRevision === null));
     }
     const jt = data.judgeTotals && data.judgeTotals[JUDGE_ID];
     if (jt) { myRed = jt.red; myBlue = jt.blue; myRedEl.textContent = myRed; myBlueEl.textContent = myBlue; }
     const idle = !ms || ms.phase === 'idle' || ms.phase === 'finished';
     waitMsg.style.display = idle ? 'block' : 'none';
-    document.querySelectorAll('.s-btn').forEach(b => b.disabled = idle || !!gp);
+    document.querySelectorAll('.s-btn').forEach(b => b.disabled = idle || !!gp || !connected
+      || (swapFence && (!activeLoadId || activeAssignmentRevision === null)));
   });
   function emitMatchCommand(event, payload) {
-    if (!connected || !activeCategoryId || !activeMatchId) return;
-    socket.emit(event, Object.assign({}, payload, { categoryId: activeCategoryId, matchId: activeMatchId }));
+    if (!connected || !activeCategoryId || !activeMatchId
+      || (swapFence && (!activeLoadId || activeAssignmentRevision === null))) return false;
+    const assignment = activeLoadId && activeAssignmentRevision !== null
+      ? { expectedLoadId: activeLoadId, expectedAssignmentRevision: activeAssignmentRevision } : {};
+    socket.emit(event, Object.assign({}, payload, assignment,
+      { categoryId: activeCategoryId, matchId: activeMatchId }));
+    return true;
   }
   function tulVote(competitor) {
     if (!connected || !activeCategoryId || !activeMatchId) return;
-    emitMatchCommand('judge:vote', { judgeId: JUDGE_ID, vote: competitor });
+    if (!emitMatchCommand('judge:vote', { judgeId: JUDGE_ID, vote: competitor })) return;
     document.getElementById('tul-red-btn').disabled = true;
     document.getElementById('tul-blue-btn').disabled = true;
     document.getElementById('tul-voted').style.display = 'block';
   }
   function goldenVote(competitor) {
-    if (!connected || !activeCategoryId || !activeMatchId || !goldenAttempt) return;
+    if (!connected || !activeCategoryId || !activeMatchId || !goldenAttempt
+      || (swapFence && (!activeLoadId || activeAssignmentRevision === null))) return;
     document.getElementById('golden-red').disabled = true;
     document.getElementById('golden-blue').disabled = true;
-    socket.emit('golden:vote', { categoryId: activeCategoryId, matchId: activeMatchId, judgeId: JUDGE_ID, competitor, attempt: goldenAttempt }, (response) => {
+    const assignment = activeLoadId && activeAssignmentRevision !== null
+      ? { expectedLoadId: activeLoadId, expectedAssignmentRevision: activeAssignmentRevision } : {};
+    socket.emit('golden:vote', Object.assign({ categoryId: activeCategoryId, matchId: activeMatchId,
+      judgeId: JUDGE_ID, competitor, attempt: goldenAttempt }, assignment), (response) => {
       if (!response || !response.ok) {
         document.getElementById('golden-status').textContent = response && response.error || 'Voto rechazado. Esperá la actualización.';
       }
@@ -239,7 +263,7 @@ export function registerJudgeRoute(router: Router) {
   }
   function score(competitor, type, pts) {
     if (!connected || !activeCategoryId || !activeMatchId) return;
-    emitMatchCommand('match:event', { judgeId: JUDGE_ID, competitor, type });
+    if (!emitMatchCommand('match:event', { judgeId: JUDGE_ID, competitor, type })) return;
     if (competitor === 'red') { myRed += pts; myRedEl.textContent = myRed; }
     else { myBlue += pts; myBlueEl.textContent = myBlue; }
     scoreHistory.push({ competitor, pts, action: '+' });
@@ -250,7 +274,7 @@ export function registerJudgeRoute(router: Router) {
     if (!connected || !activeCategoryId || !activeMatchId) return;
     const current = competitor === 'red' ? myRed : myBlue;
     if (current < pts) return;
-    emitMatchCommand('match:event', { judgeId: JUDGE_ID, competitor, type: 'subtract_' + pts });
+    if (!emitMatchCommand('match:event', { judgeId: JUDGE_ID, competitor, type: 'subtract_' + pts })) return;
     if (competitor === 'red') { myRed -= pts; myRedEl.textContent = myRed; }
     else { myBlue -= pts; myBlueEl.textContent = myBlue; }
     scoreHistory.push({ competitor, pts, action: '-' });
@@ -259,7 +283,7 @@ export function registerJudgeRoute(router: Router) {
   }
   function undoLast() {
     if (!connected || !activeCategoryId || !activeMatchId || scoreHistory.length === 0) return;
-    emitMatchCommand('match:undo', { judgeId: JUDGE_ID });
+    if (!emitMatchCommand('match:undo', { judgeId: JUDGE_ID })) return;
     const last = scoreHistory.pop();
     if (last.action === '+') {
       if (last.competitor === 'red') { myRed = Math.max(0, myRed - last.pts); myRedEl.textContent = myRed; }

@@ -76,6 +76,14 @@ entry and compares its hash to the manifest. Empty role data folders contain no
 source DB or test fights. If a package run fails, the unique partial output is
 left untouched for diagnosis; choose a new build ID for a new attempt.
 
+For a newly numbered release, pass an explicit **single-component** prefix on
+both plan and package commands, for example
+`--release-prefix TKD_Fight_4.1.0`. This produces
+`release/TKD_Fight_4.1.0-<buildId>/`, its ZIP, and `.sha256` sidecar. The
+historical `Sunday-20261025` default stays unchanged for callers that omit the
+option. Invalid/path-like prefixes and occupied output names are rejected;
+never rename or overwrite an earlier release artifact.
+
 Before delivery, root QA must independently inspect ZIP contents, run from a
 fresh extraction path with spaces/accents, confirm role/port and no test data,
 verify backup/restore, and obtain physical-PC Windows 10/11 x64 offline tests.

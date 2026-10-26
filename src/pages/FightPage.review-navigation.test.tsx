@@ -413,8 +413,9 @@ describe("identificar el combate que bloquea una nueva carga", () => {
     viewWaiting();
     const idle = serverState(waiting, "idle"); idle.match = null; idle.matchState = null;
     useServerState(idle);
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200,
-      json: async () => ({ activeMatchLock: null }) })));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({ ok: true, status: 200,
+      json: async () => String(input).includes("last-confirmed")
+        ? { ok: true, last: null, ambiguous: false } : { activeMatchLock: null } })));
     let resolveLoad: (value: unknown) => void = () => {};
     mocks.request.mockImplementation(async (event: string) => event === "match:load"
       ? new Promise((resolve) => { resolveLoad = resolve; }) : { ok: true, result: null });
@@ -435,8 +436,9 @@ describe("identificar el combate que bloquea una nueva carga", () => {
     viewWaiting();
     const idle = serverState(waiting, "idle"); idle.match = null; idle.matchState = null;
     useServerState(idle);
-    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, status: 200,
-      json: async () => ({ activeMatchLock: null }) })));
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => ({ ok: true, status: 200,
+      json: async () => String(input).includes("last-confirmed")
+        ? { ok: true, last: null, ambiguous: false } : { activeMatchLock: null } })));
     mocks.request.mockImplementation(async (event: string) => event === "match:load"
       ? { ok: false, code: "match_in_progress", blockedFightId: nextFight.id, blockedCategoryId: categoryId,
         pendingConfirmation: true, blockedRedName: nextFight.red.name, blockedBlueName: nextFight.blue.name }
@@ -458,8 +460,10 @@ describe("identificar el combate que bloquea una nueva carga", () => {
     const idle = serverState(waiting, "idle"); idle.match = null; idle.matchState = null;
     useServerState(idle);
     vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, status: 200,
-      json: async () => url === "/api/ring/status" ? { activeMatchLock: {
-        fightId: nextFight.id, categoryId, resultStatus: "pending_confirmation" } } : [] })));
+      json: async () => url.includes("last-confirmed")
+        ? { ok: true, last: null, ambiguous: false }
+        : url === "/api/ring/status" ? { activeMatchLock: {
+          fightId: nextFight.id, categoryId, resultStatus: "pending_confirmation" } } : [] })));
     render(<FightPage />);
     fireEvent.click(screen.getAllByRole("button", { name: "Cargar combate" })[0]);
     await screen.findByRole("button", { name: "Ir al combate pendiente" });

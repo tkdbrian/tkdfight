@@ -426,7 +426,10 @@ describe("independent passive Combat route integration", () => {
     const status = new Promise<Response>((resolve) => {
       resolveStatus = resolve;
     });
-    const fetchStatus = vi.fn(() => status);
+    const fetchStatus = vi.fn((input: RequestInfo | URL) =>
+      String(input).includes("last-confirmed")
+        ? Promise.resolve(new Response(JSON.stringify({ ok: true, last: null, ambiguous: false })))
+        : status);
     vi.stubGlobal("fetch", fetchStatus);
     render(page(intent(selected)));
     await act(async () => {});
@@ -435,7 +438,8 @@ describe("independent passive Combat route integration", () => {
     await act(async () => {
       fireEvent.click(screen.getAllByRole("button", { name: "Cargar combate" })[0]);
     });
-    expect(fetchStatus).toHaveBeenCalledExactlyOnceWith("/api/ring/status");
+    expect(fetchStatus).toHaveBeenCalledWith("/api/ring/status");
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
     expect(transport.request).not.toHaveBeenCalled();
 
     act(() =>
@@ -450,7 +454,7 @@ describe("independent passive Combat route integration", () => {
     expect(
       screen.getByRole("heading", { name: "No se encontró el combate de esta continuación" })
     ).toBeVisible();
-    expect(fetchStatus).toHaveBeenCalledTimes(1);
+    expect(fetchStatus).toHaveBeenCalledTimes(2);
     expect(transport.request).not.toHaveBeenCalled();
     expect(transport.emit).not.toHaveBeenCalled();
     expect(JSON.stringify(useTournamentStore.getState().fights)).toBe(before);

@@ -9,6 +9,18 @@ import {
 import { recordedCategory } from "@/test/category-restart-fixtures";
 
 describe("restart replacement", () => {
+  it("preserves explicit and legacy RR ordering policies on a clean restart", () => {
+    for (const policy of ["rest-optimized", "group-blocks", undefined] as const) {
+      const previous = recordedCategory(8);
+      previous.config.rrOrderMode = policy;
+      const next = createRestartReplacement(previous);
+      expect(next.config.rrOrderMode).toBe(policy);
+      expect(next.fights.map((fight) => fight.groupId).join("")).toBe(
+        (policy === "rest-optimized" ? "112211221122" : "111111222222")
+          .split("").map((group) => `G${group}`).join(""),
+      );
+    }
+  });
   it("creates a clean RR execution, preserving human configuration and order only", () => {
     const previous = recordedCategory(6);
     previous.fights[0] = { ...previous.fights[0], completed: true, winner: "red", flagsRed: 3 };

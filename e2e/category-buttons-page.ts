@@ -6,12 +6,22 @@ export class CategoryButtonsPage {
   readonly categories: CategoriesPage;
   constructor(readonly page: Page) { this.setup = new SetupPage(page); this.categories = new CategoriesPage(page); }
   async configure(): Promise<void> {
-    for (const label of ["ADULTOS (18-35)", "GUPS", "Blancos y Puntas Amarillas", "Liviano A", "Masculino", "Round Robin"])
-      await expect(async () => {
-        const option = this.page.getByRole("button", { name: label, exact: true });
-        if (!(await option.isVisible())) await this.page.getByRole("button", { name: /Configurar categor/ }).click({ timeout: 1000 });
-        await option.click({ timeout: 1000 });
-      }).toPass({ timeout: 5000 });
+    const editor = this.page.locator("#category-editor");
+    await expect(editor).toBeVisible();
+    const choices: [string, string][] = [
+      ["Edad", "ADULTOS (18-35)"],
+      ["Sistema de grado", "GUPS"],
+      ["Rango GUP", "Blancos y Puntas Amarillas"],
+      ["Género", "Masculino"],
+      ["Disciplina", "Sparring"],
+      ["Peso", "Liviano A"],
+      ["Formato", "Round Robin"],
+    ];
+    for (const [step, label] of choices) {
+      await expect(this.page.getByTestId("guided-active-step")).toContainText(step);
+      await editor.getByRole("button", { name: label, exact: true }).click();
+    }
+    await expect(this.page.getByTestId("guided-review")).toBeVisible();
   }
   async create(prefix = "A", add = false): Promise<CategoryProgress> {
     if (add) await this.page.getByRole("button", { name: /Agregar categor/ }).click();

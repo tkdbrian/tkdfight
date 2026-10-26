@@ -39,6 +39,63 @@ describe("getGroupDistribution", () => {
 // ── generateGroupsTournament (round-robin) ────────────────────────────────
 
 describe("generateGroupsTournament", () => {
+  const restPatterns: Record<number, string> = {
+    6: "121212", 7: "221212122", 8: "112211221122", 9: "1121211221121211",
+    10: "11221122112211221122", 11: "221332123312233", 12: "112233112233112233",
+  };
+  const minimumRecovery: Record<number, number> = {
+    6: 1, 7: 1, 8: 2, 9: 2, 10: 3, 11: 3, 12: 4,
+  };
+
+  it("keeps legacy group blocks when the policy is omitted", () => {
+    for (let n = 3; n <= 12; n++) {
+      const fights = generateGroupsTournament(makeCompetitors(n)).fights;
+      expect(fights.map((fight) => fight.groupId)).toEqual(
+        [...fights].sort((a, b) => (a.groupId ?? "").localeCompare(b.groupId ?? ""))
+          .map((fight) => fight.groupId),
+      );
+    }
+  });
+
+  it("merges each group queue in its fixed rest-optimized order without changing pairs", () => {
+    for (let n = 3; n <= 12; n++) {
+      const competitors = makeCompetitors(n);
+      const blocked = generateGroupsTournament(competitors, "SERPENTINE", "group-blocks");
+      const optimized = generateGroupsTournament(competitors, "SERPENTINE", "rest-optimized");
+      const pattern = restPatterns[n] ?? "1".repeat(optimized.fights.length);
+      expect(optimized.fights.map((fight) => fight.groupId?.slice(1)).join("")).toBe(pattern);
+      expect(optimized.groups).toEqual(blocked.groups);
+      for (const group of blocked.groups) {
+        const pairs = (fights: typeof blocked.fights) => fights
+          .filter((fight) => fight.groupId === group.id)
+          .map((fight) => `${fight.red.id}-${fight.blue.id}`);
+        expect(pairs(optimized.fights)).toEqual(pairs(blocked.fights));
+      }
+      const pairKeys = optimized.fights.map((fight) =>
+        [fight.red.id, fight.blue.id].sort().join("-"));
+      expect(new Set(pairKeys).size).toBe(pairKeys.length);
+      for (let index = 1; n >= 6 && index < optimized.fights.length; index++) {
+        const previous = optimized.fights[index - 1];
+        const current = optimized.fights[index];
+        expect([previous.red.id, previous.blue.id]).not.toContain(current.red.id);
+        expect([previous.red.id, previous.blue.id]).not.toContain(current.blue.id);
+      }
+      if (n >= 6) {
+        const appearances = new Map<string, number[]>();
+        optimized.fights.forEach((fight, index) => {
+          for (const competitor of [fight.red, fight.blue]) {
+            appearances.set(competitor.id, [...(appearances.get(competitor.id) ?? []), index]);
+          }
+        });
+        const meanRecovery = [...appearances.values()].map((indexes) => {
+          const recoveries = indexes.slice(1).map((index, i) => index - indexes[i] - 1);
+          expect(Math.min(...recoveries)).toBeGreaterThanOrEqual(minimumRecovery[n]);
+          return recoveries.reduce((sum, value) => sum + value, 0) / recoveries.length;
+        });
+        expect(Math.max(...meanRecovery) - Math.min(...meanRecovery)).toBeLessThanOrEqual(4);
+      }
+    }
+  });
   it("generates the right number of fights for each supported size", () => {
     // Expected fight counts per group size (n choose 2): 3=3, 4=6, 5=10
     const cases: Array<[number, number]> = [

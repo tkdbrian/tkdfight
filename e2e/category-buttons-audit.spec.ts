@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import { test } from "./category-buttons-test";
 import { CategoryButtonsPage } from "./category-buttons-page";
+import { CompactCategoryPage } from "./compact-category-page";
 
 test("setup validation add edit remove and clear-list cancellation preserve intended roster", async ({ page }) => {
   const ui = new CategoryButtonsPage(page); await ui.setup.goto();
@@ -132,8 +133,14 @@ test("offline guard blocks lifecycle mutations and reconnect preserves category"
 for (const [mode, rosterCount] of [["elimination", 0], ["elimination", 1], ["round-robin", 0], ["round-robin", 1], ["round-robin", 2]] as const) {
   for (const destructive of [false, true]) test(`draft restart ${mode} roster ${rosterCount} delete ${destructive} then explicit start`, async ({ page }) => {
     const ui = new CategoryButtonsPage(page); await ui.setup.goto(); await ui.configure();
-    if (mode === "elimination") await ui.setup.selectCategoryOption("Eliminaci\u00f3n");
-    await ui.setup.addCompetitors(["Old Uno", "Old Dos", "Old Tres"]); await ui.setup.startCategory();
+    if (mode === "elimination") {
+      await page.getByRole("button", { name: /^Editar Formato:/ }).click();
+      await page.locator("#category-editor").getByRole("button", { name: "Eliminaci\u00f3n" }).click();
+      await expect(page.getByTestId("guided-review")).toBeVisible();
+    }
+    await ui.setup.addCompetitors(["Old Uno", "Old Dos", "Old Tres"]);
+    await expect(page.getByTestId("category-primary-action")).toBeEnabled();
+    await ui.setup.startCategory();
     await ui.competitors(); await page.getByRole("button", { name: "Vaciar lista", exact: true }).click();
     await page.getByRole("dialog").getByRole("button", { name: "Vaciar lista", exact: true }).click();
     await expect(page.getByRole("dialog")).not.toBeVisible();
@@ -168,3 +175,230 @@ for (const [mode, rosterCount] of [["elimination", 0], ["elimination", 1], ["rou
     else expect(started.fights).toHaveLength(3);
   });
 }
+
+test("guided category editor reveals one decision at a time across desktop mobile and remounts", async ({ page }, testInfo) => {
+  const compact = new CompactCategoryPage(page);
+  const categories = new CategoryButtonsPage(page).categories;
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await compact.openFreshTournament();
+  await expect(compact.activeStep).toContainText("Edad");
+  await expect(compact.editor.getByRole("group", { name: "G\u00e9nero" })).toHaveCount(0);
+  await compact.assertViewportAndTargets(["KIDS (3-5)"], testInfo, "guided-category-age-desktop");
+
+  const kids = compact.choice("KIDS (3-5)");
+  await kids.focus();
+  await expect(kids).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(compact.activeStep).toContainText("Sistema de grado");
+  await expect(compact.activeStep).toBeFocused();
+  await expect(compact.editor.getByRole("button", { name: /^Editar Edad:/ })).toBeVisible();
+  await page.keyboard.press("Tab");
+  await expect(compact.choice("GUPS")).toBeFocused();
+  await page.keyboard.press("Enter");
+  await compact.select("Rango GUP", "Blancos y Puntas Amarillas");
+  await compact.select("G\u00e9nero", "Masculino");
+  await compact.select("Disciplina", "Sparring");
+  await compact.select("Peso", "Liviano A");
+  await compact.select("Formato", "Round Robin");
+  await expect(compact.review).toBeVisible();
+  await expect(compact.editor.getByText("Tiempo y perfil activos")).toBeVisible();
+  await compact.capture(testInfo, "guided-category-review-desktop");
+  const categoryA = await categories.activeId();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await compact.assertViewportAndTargets([], testInfo, "guided-category-review-mobile");
+  await compact.edit("Disciplina");
+  await compact.assertViewportAndTargets(["Tul / Formas"], testInfo, "guided-category-discipline-mobile");
+  await compact.choice("Tul / Formas").click();
+  await expect(compact.review).toBeVisible();
+  await expect(compact.editor.getByRole("group", { name: "Peso" })).toHaveCount(0);
+  await compact.continueToCompetitors();
+
+  await page.getByRole("button", { name: /Agregar categor/ }).click();
+  await expect(compact.editor).toBeVisible();
+  const categoryB = await categories.activeId();
+  expect(categoryB).not.toBe(categoryA);
+  await compact.select("Edad", "KIDS (3-5)");
+  await compact.select("Sistema de grado", "GUPS");
+  await compact.select("Rango GUP", "Blancos y Puntas Amarillas");
+  await compact.skip("G\u00e9nero");
+  await compact.select("Disciplina", "Sparring");
+  await compact.select("Peso", "Mediano B");
+  await compact.select("Formato", "Round Robin");
+  await compact.continueToCompetitors();
+
+  await categories.select(categoryA);
+  await page.getByRole("button", { name: /Configurar categor/ }).click();
+  await expect(compact.editor).toBeVisible();
+  await compact.edit("Disciplina");
+  await compact.choice("Sparring").click();
+  await compact.edit("Peso");
+  await expect(compact.choice("Liviano A")).toHaveAttribute("aria-pressed", "true");
+
+  await categories.select(categoryB);
+  await page.getByRole("button", { name: /Configurar categor/ }).click();
+  await expect(compact.editor).toBeVisible();
+  await compact.edit("Peso");
+  await expect(compact.choice("Mediano B")).toHaveAttribute("aria-pressed", "true");
+});
+
+test("guided optional skips and custom ranges preserve start rules", async ({ page }) => {
+  const compact = new CompactCategoryPage(page);
+  await compact.openFreshTournament();
+  await compact.skip("Edad");
+  await compact.skip("Sistema de grado");
+  await compact.skip("G\u00e9nero");
+  await compact.select("Disciplina", "Sparring");
+  await compact.skip("Peso");
+  await compact.select("Formato", "Round Robin");
+  await expect(compact.review).toBeVisible();
+  await expect(compact.editor.getByRole("button", { name: /^Editar Edad: No especificar$/ })).toBeVisible();
+  await expect(compact.editor.getByRole("button", { name: /^Editar Peso: No especificar$/ })).toBeVisible();
+
+  await compact.edit("Edad");
+  await compact.choice("Personalizada").click();
+  await compact.editor.getByRole("spinbutton", { name: "Edad desde" }).fill("12");
+  await compact.editor.getByRole("spinbutton", { name: "Edad hasta" }).fill("8");
+  await compact.choice("Aplicar edad").click();
+  await expect(compact.editor.getByRole("alert")).toBeVisible();
+  await expect(compact.activeStep).toContainText("Edad");
+  await compact.editor.getByRole("spinbutton", { name: "Edad hasta" }).fill("14");
+  await compact.choice("Aplicar edad").click();
+  await expect(compact.review).toBeVisible();
+
+  await compact.edit("Sistema de grado");
+  await compact.select("Sistema de grado", "DANES");
+  await compact.editor.getByRole("spinbutton", { name: "Grado Dan desde" }).fill("3");
+  await compact.editor.getByRole("spinbutton", { name: "Grado Dan hasta" }).fill("1");
+  await compact.choice("Aplicar rango Dan").click();
+  await expect(compact.editor.getByRole("alert")).toBeVisible();
+  await expect(compact.activeStep).toContainText("Grado (Dan)");
+  await compact.editor.getByRole("spinbutton", { name: "Grado Dan desde" }).fill("1");
+  await compact.editor.getByRole("spinbutton", { name: "Grado Dan hasta" }).fill("3");
+  await compact.choice("Aplicar rango Dan").click();
+  await expect(compact.review).toBeVisible();
+  await compact.continueToCompetitors();
+  await expect(page.getByTestId("category-primary-action")).toBeDisabled();
+});
+test("Round Robin order appears after sixth entrant even when guided format was completed", async ({ page }, testInfo) => {
+  const ui = new CategoryButtonsPage(page);
+  await ui.setup.goto();
+  await ui.configure();
+  const compact = new CompactCategoryPage(page);
+  await expect(compact.review).toBeVisible();
+  await expect(compact.editor.getByRole("group", { name: "Orden de combates" })).toHaveCount(0);
+  await compact.continueToCompetitors();
+  await ui.setup.addCompetitors(["A", "B", "C", "D", "E", "F"]);
+  await page.getByRole("button", { name: /Configurar categor/ }).click();
+  const order = compact.editor.getByRole("group", { name: "Orden de combates" });
+  await expect(order).toBeVisible();
+  await expect(order.getByRole("button", { name: "Optimizar descanso (un tatami)" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await compact.capture(testInfo, "guided-category-rr-order-six");
+  await order.getByRole("button", { name: "Por llave (varios tatamis)" }).click();
+  await expect(order.getByRole("button", { name: "Por llave (varios tatamis)" }))
+    .toHaveAttribute("aria-pressed", "true");
+  await expect(compact.review).toBeVisible();
+});
+
+test("completed category answers form readable responsive cards", async ({ page }, testInfo) => {
+  const compact = new CompactCategoryPage(page);
+  await compact.openFreshTournament();
+  const ui = new CategoryButtonsPage(page);
+  await ui.configure();
+  const grid = page.getByTestId("category-answer-grid");
+  await expect(grid).toBeVisible();
+
+  const positions = async (): Promise<Array<{ x: number; y: number; width: number }>> => {
+    const cards = ["Edad", "Sistema de grado", "Rango GUP"].map((step) =>
+      grid.getByRole("button", { name: new RegExp(`^Editar ${step}:`) }),
+    );
+    const boxes = await Promise.all(cards.map((card) => card.boundingBox()));
+    return boxes.map((box, index) => {
+      expect(box, `card ${index + 1} has a layout box`).not.toBeNull();
+      if (!box) throw new Error(`Missing card ${index + 1}`);
+      return { x: box.x, y: box.y, width: box.width };
+    });
+  };
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  let cards = await positions();
+  expect(cards[0].y).toBeLessThan(cards[1].y);
+  expect(cards[1].y).toBeLessThan(cards[2].y);
+
+  await page.setViewportSize({ width: 1366, height: 768 });
+  cards = await positions();
+  expect(Math.abs(cards[0].y - cards[1].y)).toBeLessThan(3);
+  expect(cards[2].y).toBeGreaterThan(cards[0].y);
+  await compact.captureRegion(testInfo, "setup-review-cards-laptop", compact.editor);
+
+  await page.setViewportSize({ width: 1920, height: 900 });
+  cards = await positions();
+  expect(Math.abs(cards[0].y - cards[1].y)).toBeLessThan(3);
+  expect(Math.abs(cards[1].y - cards[2].y)).toBeLessThan(3);
+  expect(cards.every((card) => card.width > 200)).toBe(true);
+});
+
+test("three-person elimination preview shows semifinal and pending final with legible names", async ({ page }, testInfo) => {
+  const ui = new CategoryButtonsPage(page);
+  await ui.setup.goto();
+  await ui.configure();
+  const compact = new CompactCategoryPage(page);
+  await compact.edit("Formato");
+  await compact.choice("Eliminación").click();
+  await expect(compact.review).toBeVisible();
+
+  const names = [
+    "Juan Pedro Fernández del Club Central",
+    "Sebastián Martín González del Club Norte",
+    "Pedro Nicolás Rodríguez del Club Sur",
+  ];
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await ui.setup.addCompetitors(names);
+  const preview = page.getByTestId("setup-fixture-preview");
+  await expect(preview).toBeVisible();
+  await expect(preview.getByText("Semifinal", { exact: true })).toBeVisible();
+  await expect(preview.getByText("Final", { exact: true })).toBeVisible();
+  await expect(preview.getByText("Por definir", { exact: true })).toBeVisible();
+  await expect(preview.getByText("2 combates", { exact: true })).toBeVisible();
+
+  const input = compact.competitorName;
+  const listName = page.locator("#tour-competitor-card").getByText(names[0], { exact: true });
+  const previewName = preview.getByText(names[0], { exact: true }).first();
+  for (const locator of [input, listName, previewName]) {
+    await expect(locator).toBeVisible();
+    const fontSize = await locator.evaluate((element) => parseFloat(getComputedStyle(element).fontSize));
+    expect(fontSize).toBeGreaterThanOrEqual(16);
+  }
+  const inputHeight = await input.evaluate((element) => element.getBoundingClientRect().height);
+  expect(inputHeight).toBeGreaterThanOrEqual(48);
+  for (const name of [listName, previewName]) {
+    const style = await name.evaluate((element) => ({
+      whiteSpace: getComputedStyle(element).whiteSpace,
+      overflow: getComputedStyle(element).textOverflow,
+    }));
+    expect(style.whiteSpace).not.toBe("nowrap");
+    expect(style.overflow).not.toBe("ellipsis");
+  }
+  await compact.captureRegion(
+    testInfo,
+    "setup-elimination-preview-readable-laptop",
+    page.locator("#tour-competitor-card").locator(".."),
+  );
+
+  await page.setViewportSize({ width: 1093, height: 614 }); // ~1366 px at 125% zoom
+  await expect(previewName).toBeVisible();
+  const horizontalOverflow = await page.evaluate(() =>
+    document.documentElement.scrollWidth - window.innerWidth,
+  );
+  expect(horizontalOverflow).toBeLessThanOrEqual(1);
+
+  await page.getByTestId("category-primary-action").click();
+  await expect(page).toHaveURL(/\/bracket$/);
+  await page.getByRole("link", { name: "Competidores", exact: true }).click();
+  const savedPreview = page.getByTestId("setup-fixture-preview");
+  await expect(savedPreview.getByText("Semifinal", { exact: true })).toBeVisible();
+  await expect(savedPreview.getByText("Final", { exact: true })).toBeVisible();
+  await expect(savedPreview.getByText("Por definir", { exact: true })).toBeVisible();
+  await expect(savedPreview.getByText("0 de 2 combates completados")).toBeVisible();
+});

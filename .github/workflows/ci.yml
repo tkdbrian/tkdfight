@@ -32,5 +32,5 @@ jobs:
       - name: Unit tests (vitest)
         run: npx vitest run --maxWorkers 2
 
-      - name: Build (client + server)
-        run: npm run build:prod
+      - name: Build (client + server, sealed web identity)
+        run: npm run build:web

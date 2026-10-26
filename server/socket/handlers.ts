@@ -1,6 +1,8 @@
 import type { Server, Socket } from 'socket.io'
 import { randomUUID } from 'node:crypto'
 import { hasPostponeReceipt, releaseNeverStartedMatch } from '../db/match-postpone.js'
+import { hasSwapReceipt, isNeverStartedSparringState, swapNeverStartedMatch } from '../db/match-swap.js'
+import type { MatchSwapReply } from '../../src/lib/match-swap-contract.js'
 import {
   createMatch,
   createGoldenPointMatch,
@@ -27,6 +29,7 @@ import {
   getCategoryTournamentId,
   getMatchResult,
   getFightCompetitorNames,
+  getFightCompetitorIds,
   getMatchResultRevision,
   reopenPendingFlagResult,
   getSourceCategoryId,
@@ -57,6 +60,7 @@ import {
   matchLoadSchema,
   matchConfigureSchema,
   matchPostponeSchema,
+  matchSwapSchema,
   matchStartSchema,
   matchEventSchema,
   judgeVoteSchema,
@@ -90,7 +94,11 @@ const MATCH_CONTEXT_EVENTS = new Set([
   'tul:finish', 'tul:reset',
 ])
 
-const EXECUTION_WRITE_EVENTS = new Set([...MATCH_CONTEXT_EVENTS, 'match:load', 'match:configure', 'match:postpone',
+const ASSIGNMENT_FENCED_EVENTS = new Set([...MATCH_CONTEXT_EVENTS,
+  'mesa:setSanctionCount', 'mesa:undoRound',
+  'golden:vote', 'mesa:goldenVote', 'mesa:confirmGoldenOutcome'])
+
+const EXECUTION_WRITE_EVENTS = new Set([...MATCH_CONTEXT_EVENTS, 'match:load', 'match:configure', 'match:postpone', 'match:swapCompetitors',
   'mesa:setSanctionCount', 'mesa:undoRound', 'golden:vote', 'mesa:goldenVote',
   'mesa:confirmGoldenOutcome', 'match:deleteFallo', 'match:clearFallos',
   'tul:retry', 'tul:undoFinish'])
@@ -225,10 +233,12 @@ export function registerSocketHandlers(io: Server) {
           return
         }
       }
-      if (!MATCH_CONTEXT_EVENTS.has(event)) return next()
+      const enforceContext = MATCH_CONTEXT_EVENTS.has(event)
+      if (!ASSIGNMENT_FENCED_EVENTS.has(event)) return next()
       const context = matchCommandContextSchema.safeParse(raw)
       if (!context.success) {
-        next(new Error('stale_match_context'))
+        if (enforceContext) next(new Error('stale_match_context'))
+        else next() // Preserve the event's own invalid-payload ACK.
         return
       }
       const activeMatchMatches = context.data.categoryId === state.matchCategoryId
@@ -243,7 +253,25 @@ export function registerSocketHandlers(io: Server) {
         && pendingResultLock.categoryId === context.data.categoryId
         && getMatchResult(context.data.categoryId, context.data.matchId)?.status === 'pending_confirmation'
       if (!activeMatchMatches && !pendingResultMatches) {
-        next(new Error('stale_match_context'))
+        if (enforceContext) next(new Error('stale_match_context'))
+        else next() // These handlers return a specific wrong-context ACK.
+        return
+      }
+      // A color-assignment swap leaves the fight ID unchanged. Fence all later operational
+      // commands against the generation/revision their sender actually displayed.
+      const timing = state.match?.matchMode === 'sparring' ? state.match.preFight : null
+      const assignmentPayload = raw as Record<string, unknown>
+      const supplied = assignmentPayload.expectedLoadId !== undefined
+        || assignmentPayload.expectedAssignmentRevision !== undefined
+      if (timing && ((timing.swapCount ?? 0) > 0 || supplied)
+        && (assignmentPayload.expectedLoadId !== timing.loadId
+          || assignmentPayload.expectedAssignmentRevision !== timing.revision)) {
+        const response = { ok: false, code: 'stale_assignment',
+          error: 'La asignacion de competidores cambio. Actualiza la pelea antes de operar.' }
+        const reply: unknown = packet.at(-1)
+        if (typeof reply === 'function') reply(response)
+        else socket.emit('match:assignment-stale', response)
+        broadcast(io)
         return
       }
       next()
@@ -468,6 +496,74 @@ export function registerSocketHandlers(io: Server) {
       }
     })
 
+    socket.on('match:swapCompetitors', (raw: unknown, reply?: (value: MatchSwapReply) => void) => {
+      const parsed = matchSwapSchema.safeParse(raw)
+      if (!parsed.success) {
+        reply?.({ ok: false, code: 'invalid_payload', error: 'Solicitud de intercambio invalida.' })
+        return
+      }
+      const data = parsed.data
+      if (state.judges.has(socket.id)) {
+        reply?.({ ok: false, code: 'unauthorized_judge', error: 'Solo el jefe de mesa puede intercambiar competidores.' })
+        return
+      }
+      try {
+        if (hasSwapReceipt(data)) {
+          const current = state.match
+          if (state.matchCategoryId === data.categoryId && current?.id === data.matchId
+            && current.preFight?.loadId === data.expectedLoadId
+            && current.red.id === data.expectedBlueId && current.blue.id === data.expectedRedId) {
+            reply?.({ ok: true, alreadyApplied: true, match: current })
+          } else {
+            reply?.({ ok: false, code: 'request_superseded',
+              error: 'Otro cambio reemplazo este intercambio; actualiza la pelea.',
+              ...(current ? { match: current } : {}) })
+          }
+          broadcast(io)
+          return
+        }
+        const match = state.match
+        if (data.categoryId !== state.matchCategoryId || data.matchId !== match?.id) {
+          reply?.({ ok: false, code: 'stale_match_context', error: 'El combate cargado cambio.' })
+          return
+        }
+        if (!match.preFight || match.preFight.loadId !== data.expectedLoadId
+          || match.preFight.revision !== data.expectedRevision) {
+          reply?.({ ok: false, code: 'stale_revision', error: 'La carga o sus ajustes cambiaron.' })
+          return
+        }
+        if (match.red.id !== data.expectedRedId || match.blue.id !== data.expectedBlueId) {
+          reply?.({ ok: false, code: 'stale_competitors', error: 'Los competidores asignados cambiaron.' })
+          return
+        }
+        if (match.matchMode !== 'sparring' || match.goldenPoint
+          || (match.timingKind !== 'regular' && match.timingKind !== 'elimination-final')
+          || match.preFight.timingKind !== match.timingKind || state.rules?.mode !== 'sparring') {
+          reply?.({ ok: false, code: 'swap_unavailable', error: 'Esta pelea no admite intercambio.' })
+          return
+        }
+        if (match.preFight.started || !isNeverStartedSparringState(state.matchState, state.rules)
+          || state.matchPaused || state.resultConfirmed || state.tulPhase !== 'idle'
+          || state.roundFlags.length > 0 || state.judgeVotes.size > 0) {
+          reply?.({ ok: false, code: 'match_already_started', error: 'Solo se intercambia antes de toda actividad.' })
+          return
+        }
+        const nextMatch = swapNeverStartedMatch(data)
+        state.match = nextMatch
+        reply?.({ ok: true, match: nextMatch })
+        broadcast(io)
+      } catch (error) {
+        const code = error instanceof Error ? error.message : 'persistence_failed'
+        if (['request_conflict', 'stale_match_context', 'stale_revision', 'stale_competitors',
+          'swap_unavailable', 'match_already_started'].includes(code)) {
+          reply?.({ ok: false, code, error: 'El intercambio no se aplico; actualiza la pelea.' })
+          return
+        }
+        logger.error({ error, matchId: data.matchId }, '[match:swapCompetitors] transaction failed')
+        reply?.({ ok: false, code: 'persistence_failed', error: 'No se guardo el intercambio; no se modifico la pelea.' })
+      }
+    })
+
     type ConfigurationReply = {
       ok: boolean; code?: string; error?: string; alreadyApplied?: boolean
       preFight?: MatchInfo['preFight']; rules?: RuleSetSparring
@@ -495,6 +591,11 @@ export function registerSocketHandlers(io: Server) {
         return
       }
       const match = state.match, current = state.matchState, rules = state.rules
+      if (match?.preFight && ((match.preFight.swapCount ?? 0) > 0 || data.expectedLoadId !== undefined)
+        && data.expectedLoadId !== match.preFight.loadId) {
+        reply?.({ok: false, code: 'stale_assignment', error: 'La carga de competidores cambio.'})
+        return
+      }
       if (state.judges.has(socket.id)) {
         reply?.({ok: false, code: 'unauthorized_judge', error: 'Solo el jefe de mesa puede ajustar el combate.'})
         return
@@ -988,13 +1089,17 @@ export function registerSocketHandlers(io: Server) {
       ok: boolean
       error?: string
       result: StoredMatchResult | null
+      redId?: string
+      blueId?: string
     }) => void) => {
       const data = safeParse(matchResultQuerySchema, raw, 'match:result:get')
       if (!data) {
         callback?.({ ok: false, error: 'Consulta de resultado inválida', result: null })
         return
       }
-      callback?.({ ok: true, result: getMatchResult(data.categoryId, data.matchId) })
+      const pair = getFightCompetitorIds(data.categoryId, data.matchId)
+      callback?.({ ok: true, result: getMatchResult(data.categoryId, data.matchId),
+        ...(pair ? pair : {}) })
     })
 
     socket.on('match:saveFallo', (raw: unknown, callback?: (response: {

@@ -1,4 +1,4 @@
-# TKD Fight 4.0.2
+# TKD Fight 4.1.0
 
 Sistema de mesa para torneos de Taekwondo: Round Robin, eliminación, resultados,
 historial y respaldos. React/TypeScript + Vite, servidor Node/Express y SQLite.
@@ -20,7 +20,7 @@ historial y respaldos. React/TypeScript + Vite, servidor Node/Express y SQLite.
 - Persistencia local protegida, recuperación visible y portable de un clic con
   identidad propia por instalación.
 
-[Notas de entrega y evidencia de 4.0.2](docs/RELEASE_V4.0.2.md).
+[Notas de la versión 4.1.0](docs/RELEASE_V4.1.0.md). La [evidencia de la entrega 4.0.2](docs/RELEASE_V4.0.2.md) se conserva sin cambios.
 
 ## Usar en un torneo
 

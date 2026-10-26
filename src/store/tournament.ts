@@ -13,9 +13,17 @@ import { pendingDeleteAndRestartSource } from "@/lib/category-restart-journal";
 import { type CategoryDeleteAndRestartError, type CategoryDeleteAndRestartSuccess,
   categoryDeleteAndRestartErrorSchema, categoryDeleteAndRestartSuccessSchema } from "@/lib/category-restart-modes-contract";
 import { categoryDeletionInteractionBlocked, useCategoryDeletionState } from "@/store/category-deletion-state";
+import type { RrOrderMode } from "@/lib/bracket";
 
 export type TournamentPhase = "setup" | "fighting" | "results";
 export type TournamentMode = "round-robin" | "elimination" | "groups";
+export const CATEGORY_START_REASON = "Preparando el fixture de la categoría…";
+export const CATEGORY_START_RECOVERY_REASON =
+  "La preparación del fixture quedó incierta. No reintentes ni edites esta categoría; conservá los datos y revisá el estado del servidor.";
+
+function categoryStartBlocked(reason: string | null): boolean {
+  return reason === CATEGORY_START_REASON || reason === CATEGORY_START_RECOVERY_REASON;
+}
 
 export interface CompetitorEntry {
   id: string;
@@ -97,6 +105,8 @@ export interface TournamentConfig extends CategoryDimensions {
   ruleSet: RuleSet | null;
   judgesCount: number;
   mode: TournamentMode;
+  /** Missing on historical categories: their persisted fixtures use group blocks. */
+  rrOrderMode?: RrOrderMode;
   /** Disciplina: sparring convencional o Tul (formas, voto rojo/azul) */
   matchType: 'sparring' | 'tul';
   /** Rounds para la pelea final (si difiere de los rounds regulares) */
@@ -123,6 +133,8 @@ interface TournamentState {
   eventProfiles: Record<string, "yusan-2026">;
 
   setCategoryOperationReason: (reason: string | null) => void;
+  /** Atomically commit a fixture only for the unchanged draft holding the start lock. */
+  commitCategoryStart: (expected: TournamentCategorySnapshot, fixture: CategoryStartFixture) => boolean;
   getCategoryEntries: () => TournamentCategoryEntry[];
   hasValidCategoryRegistry: () => boolean;
   createCategory: () => string | null;
@@ -145,6 +157,8 @@ interface TournamentState {
   setGroups: (groups: TournamentGroup[]) => void;
   setCurrentFightIndex: (index: number) => void;
   completeFight: (fightId: string, winner: "red" | "blue" | "draw", reason: string, stats?: { flagsRed?: number; flagsBlue?: number; warningsRed?: number; warningsBlue?: number; foulsRed?: number; foulsBlue?: number }) => void;
+  /** Apply only the server's operative color assignment; bracket seeds stay structural. */
+  reconcileFightColors: (categoryId: string, fightId: string, redId: string, blueId: string) => boolean;
   resetFight: (fightId: string) => void;
   setBracket: (matches: BracketMatch[], seeds: (string | null)[]) => void;
   updateBracketSeed: (position: number, competitorId: string | null) => void;
@@ -183,6 +197,10 @@ export interface TournamentCategorySnapshot {
   bracketSeeds: (string | null)[];
   setupStarted: boolean;
 }
+
+type CategoryStartFixture =
+  | { mode: "elimination"; matches: BracketMatch[]; seeds: (string | null)[] }
+  | { mode: "round-robin"; fights: FightEntry[]; groups: TournamentGroup[] };
 
 interface TournamentCategoryRegistry {
   version: 2;
@@ -384,11 +402,13 @@ const initialConfig: TournamentConfig = {
   ruleSet: null,
   judgesCount: 4,
   mode: "round-robin",
+  rrOrderMode: "rest-optimized",
   matchType: "sparring",
 };
 
 function emptyDeletionDraft(config: TournamentConfig): TournamentCategorySnapshot {
   return { phase: "setup", config: { ...config, id: createCategoryId(), categoryName: "",
+    rrOrderMode: "rest-optimized",
     ruleSet: null, requiresGradeSelection: true, nameGenerated: true,
     weightLabel: undefined, ageDivision: undefined, categoryAgeFrom: undefined,
     categoryAgeTo: undefined, categoryAgeOpenEnded: undefined, sexDivision: undefined,
@@ -411,8 +431,13 @@ function localTournamentCacheKeys(): string[] {
 }
 
 export const useTournamentStore = create<TournamentState>()(persist((set, get) => {
-  const edit = (partial: Partial<TournamentState> | ((state: TournamentState) => Partial<TournamentState>)): void => {
+  const edit = (
+    partial: Partial<TournamentState> | ((state: TournamentState) => Partial<TournamentState>),
+    allowDuringStart = false,
+  ): void => {
     if (categoryRestartInteractionBlocked() || categoryExecutionUnavailable(get().config.id)) return;
+    const reason = get().categoryOperationReason;
+    if (categoryStartBlocked(reason) && (!allowDuringStart || reason === CATEGORY_START_RECOVERY_REASON)) return;
     const update = typeof partial === "function" ? partial(get()) : partial;
     if (update.config && categoryExecutionUnavailable(update.config.id)) return;
     set(update);
@@ -450,7 +475,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   hasValidCategoryRegistry: () => readCategoryRegistry() !== null,
 
   createCategory: () => {
-    if (categoryRestartInteractionBlocked()) return null;
+    if (categoryRestartInteractionBlocked() || categoryStartBlocked(get().categoryOperationReason)) return null;
     const current = get();
     if (categoryExecutionUnavailable(current.config.id)) return null;
     const registry = readCategoryRegistry();
@@ -464,9 +489,10 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
     const inheritedProfile = current.config.eventId
       ? current.eventProfiles[current.config.eventId] ?? current.config.profileId
       : current.config.profileId;
-    const config = {
+    const config: TournamentConfig = {
       ...current.config,
       id: categoryId,
+      rrOrderMode: "rest-optimized",
       categoryName: "",
       weightLabel: undefined,
       ageDivision: undefined,
@@ -525,7 +551,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   },
 
   selectCategory: (categoryId) => {
-    if (categoryRestartInteractionBlocked()) return false;
+    if (categoryRestartInteractionBlocked() || categoryStartBlocked(get().categoryOperationReason)) return false;
     if (categoryExecutionUnavailable(categoryId)) return false;
     const current = get();
     if (categoryId === current.config.id) return true;
@@ -543,7 +569,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   },
 
   hideCategory: (categoryId, fallbackCategoryId) => {
-    if (categoryRestartInteractionBlocked()) return false;
+    if (categoryRestartInteractionBlocked() || categoryStartBlocked(get().categoryOperationReason)) return false;
     const current = get();
     const registry = readCategoryRegistry();
     if (!registry || !registry.visibleCategoryIds.includes(categoryId) || registry.visibleCategoryIds.length <= 1) return false;
@@ -568,7 +594,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   },
 
   reopenCategory: (categoryId) => {
-    if (categoryRestartInteractionBlocked()) return false;
+    if (categoryRestartInteractionBlocked() || categoryStartBlocked(get().categoryOperationReason)) return false;
     if (categoryExecutionUnavailable(categoryId)) return false;
     const registry = readCategoryRegistry();
     if (!registry || !registry.categories[categoryId] || registry.archives?.[categoryId]) return false;
@@ -580,7 +606,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   },
 
   cancelCategoryCreation: (categoryId) => {
-    if (categoryRestartInteractionBlocked()) return false;
+    if (categoryRestartInteractionBlocked() || categoryStartBlocked(get().categoryOperationReason)) return false;
     const current = get();
     const registry = readCategoryRegistry();
     if (!registry || registry.draftCategoryId !== categoryId) return false;
@@ -606,7 +632,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   },
 
   restoreSavedCategorySelection: () => {
-    if (tournamentPersistenceBlocked()) return false;
+    if (tournamentPersistenceBlocked() || categoryStartBlocked(get().categoryOperationReason)) return false;
     const current = get();
     const registry = readCategoryRegistry();
     const categoryId = registry?.selectedCategoryId;
@@ -616,7 +642,29 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
     return true;
   },
 
-  setCategoryOperationReason: (categoryOperationReason) => edit({ categoryOperationReason }),
+  setCategoryOperationReason: (categoryOperationReason) => {
+    if (get().categoryOperationReason === CATEGORY_START_RECOVERY_REASON &&
+      categoryOperationReason !== CATEGORY_START_RECOVERY_REASON) return;
+    edit({ categoryOperationReason }, true);
+  },
+  commitCategoryStart: (expected, fixture) => {
+    const current = get();
+    if (current.categoryOperationReason !== CATEGORY_START_REASON ||
+      categoryRestartInteractionBlocked() || categoryExecutionUnavailable(current.config.id) ||
+      current.config !== expected.config || current.competitors !== expected.competitors ||
+      current.fights !== expected.fights || current.groups !== expected.groups ||
+      current.bracketMatches !== expected.bracketMatches ||
+      current.bracketSeeds !== expected.bracketSeeds ||
+      current.currentFightIndex !== expected.currentFightIndex ||
+      current.phase !== expected.phase || current.setupStarted !== expected.setupStarted ||
+      current.config.mode !== fixture.mode) return false;
+    set(fixture.mode === "elimination"
+      ? { phase: "fighting", fights: [], groups: [], currentFightIndex: 0,
+          bracketMatches: fixture.matches, bracketSeeds: fixture.seeds }
+      : { phase: "fighting", fights: fixture.fights, groups: fixture.groups,
+          currentFightIndex: 0, bracketMatches: [], bracketSeeds: [] });
+    return true;
+  },
   setPhase: (phase) => edit({ phase }),
   setSetupStarted: (v) => edit({ setupStarted: v }),
 
@@ -666,6 +714,21 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
         f.id === fightId ? { ...f, winner, winReason, completed: true, ...stats } : f
       ),
     })),
+
+  reconcileFightColors: (categoryId, fightId, redId, blueId) => {
+    const state = get();
+    const fight = state.fights.find((entry) => entry.id === fightId);
+    if (state.config.id !== categoryId || !fight || redId === blueId) return false;
+    if (fight.red.id === redId && fight.blue.id === blueId) return true;
+    // Repeated result reads may verify an already completed fight, but must
+    // never rewrite the color assignment underneath its recorded winner.
+    if (fight.completed) return false;
+    if (fight.red.id !== blueId || fight.blue.id !== redId) return false;
+    edit((current) => ({ fights: current.fights.map((entry) => entry.id === fightId
+      ? { ...entry, red: entry.blue, blue: entry.red } : entry) }));
+    const reconciled = get().fights.find((entry) => entry.id === fightId);
+    return reconciled?.red.id === redId && reconciled.blue.id === blueId;
+  },
 
   resetFight: (fightId) =>
     edit((s) => ({
@@ -922,7 +985,7 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   },
 
   resetAllLocalCategories: () => {
-    if (categoryRestartInteractionBlocked()) return false;
+    if (categoryRestartInteractionBlocked() || categoryStartBlocked(get().categoryOperationReason)) return false;
     const current = get();
     const registry = readCategoryRegistry();
     const lastReset = lastLocalResetSnapshot;
@@ -1016,12 +1079,14 @@ export const useTournamentStore = create<TournamentState>()(persist((set, get) =
   migrate: (persistedState) => {
     const persisted = (persistedState ?? {}) as Partial<TournamentState>;
     const config = { ...initialConfig, ...persisted.config };
+    if (persisted.config && !persisted.config.rrOrderMode) config.rrOrderMode = "group-blocks";
     if (typeof config.id !== "string" || !config.id.trim()) config.id = createCategoryId();
     return { ...persisted, config };
   },
   merge: (persistedState, currentState) => {
     const persisted = (persistedState ?? {}) as Partial<TournamentState>;
     const config = { ...currentState.config, ...persisted.config };
+    if (persisted.config && !persisted.config.rrOrderMode) config.rrOrderMode = "group-blocks";
     if (typeof config.id !== "string" || !config.id.trim()) config.id = createCategoryId();
     const deferredSource = useCategoryRestartState.getState().pendingDeleteAndRestartSourceId;
     const safeSnapshot = categoryExecutionUnavailable(config.id) && deferredSource !== config.id

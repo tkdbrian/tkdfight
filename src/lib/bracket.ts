@@ -41,6 +41,7 @@ const BASE_SCHEDULES: Record<number, [string, string][]> = {
 };
 
 export type SeedingMode = "REGISTRATION_ORDER" | "RANDOM" | "SERPENTINE";
+export type RrOrderMode = "rest-optimized" | "group-blocks";
 
 // ── Serpentine distribution ────────────────────────────────────────────────
 // Distributes competitors across groups using a snake pattern so that
@@ -69,22 +70,28 @@ function distributeSerpentine(competitors: CompetitorEntry[], sizes: number[]): 
 }
 
 // ── Fight interleaving ─────────────────────────────────────────────────────
-// Takes one fight from each group queue in round-robin order.
-// When a queue runs out, continues with remaining queues.
-function interleaveGroupFights(groupFights: FightEntry[][]): FightEntry[] {
-  const queues = groupFights.map((fights) => [...fights]);
-  const result: FightEntry[] = [];
+// Stable group-queue merges: preserve each group's optimized pairing order while
+// inserting fights from other groups to give athletes recovery time on one tatami.
+const REST_PATTERNS: Record<number, string> = {
+  6: "121212",
+  7: "221212122",
+  8: "112211221122",
+  9: "1121211221121211",
+  10: "11221122112211221122",
+  11: "221332123312233",
+  12: "112233112233112233",
+};
 
-  while (queues.some((q) => q.length > 0)) {
-    for (const queue of queues) {
-      if (queue.length > 0) {
-        // biome-ignore lint/style/noNonNullAssertion: queue.length > 0 checked above
-        result.push(queue.shift()!);
-      }
-    }
-  }
-
-  return result;
+function restOptimizedFights(groupFights: FightEntry[][], count: number): FightEntry[] {
+  const pattern = REST_PATTERNS[count];
+  if (!pattern) return groupFights.flat();
+  const cursors = groupFights.map(() => 0);
+  return [...pattern].map((digit) => {
+    const groupIndex = Number(digit) - 1;
+    const fight = groupFights[groupIndex]?.[cursors[groupIndex]++];
+    if (!fight) throw new Error(`Invalid rest pattern for ${count} competitors`);
+    return fight;
+  });
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
@@ -185,13 +192,14 @@ export function generateFinalFights(winners: CompetitorEntry[]): FightEntry[] {
 }
 
 /**
- * Generates groups + interleaved fights for 3–12 competitors.
+ * Generates groups + ordered fights for 3–12 competitors.
  * Each group uses the optimal fight schedule for its size.
  * Competitors are distributed via serpentine seeding by default.
  */
 export function generateGroupsTournament(
   competitors: CompetitorEntry[],
   seedingMode: SeedingMode = "SERPENTINE",
+  rrOrderMode: RrOrderMode = "group-blocks",
 ): { groups: TournamentGroup[]; fights: FightEntry[] } {
   const n = competitors.length;
   const sizes = GROUP_DISTRIBUTION[n];
@@ -243,9 +251,11 @@ export function generateGroupsTournament(
     groupFightsList.push(gFights);
   }
 
-  // Peleas agrupadas en bloque por llave: primero todas las de G1, luego G2, etc.
-  // Esto permite enviar una llave entera a otro cuadrilátero sin mezclar peleas.
-  const fights = groupFightsList.flat();
+  // Group blocks preserve the historical multi-tatami fixture; the optional
+  // rest policy merges group queues for a single tatami without re-pairing.
+  const fights = rrOrderMode === "rest-optimized"
+    ? restOptimizedFights(groupFightsList, n)
+    : groupFightsList.flat();
 
   return { groups, fights };
 }

@@ -12,7 +12,7 @@ export type MatchInfo = {
   category?: string
   matchMode?: 'sparring' | 'patterns' | 'tul'
   timingKind?: 'regular' | 'elimination-final' | 'continuation'
-  preFight?: { loadId?: string; revision: number; started: boolean; defaultRounds?: number; timingKind: 'regular' | 'elimination-final' | 'continuation' }
+  preFight?: { loadId?: string; revision: number; started: boolean; defaultRounds?: number; swapCount?: number; timingKind: 'regular' | 'elimination-final' | 'continuation' }
   goldenPoint?: boolean
   /** RR regular: table chief must record one flag from every configured judge. */
   requireIndividualFlags?: boolean

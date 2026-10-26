@@ -1,8 +1,8 @@
-﻿import { useRef, useState, useEffect } from "react";
+import { useRef, useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { useSocket } from "@/hooks/useSocket";
-import { useTournamentStore, type CompetitorEntry, type TournamentMode } from "@/store/tournament";
+import { CATEGORY_START_REASON, CATEGORY_START_RECOVERY_REASON, useTournamentStore, type BracketMatch, type CompetitorEntry } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -18,8 +18,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import * as XLSX from "xlsx";
-import { Pencil, Trash2, Swords, AlertCircle, Plus, Wifi, Smartphone, Zap, ArrowRight, Trophy, FileSpreadsheet, X, ChevronDown } from "lucide-react";
+import { Pencil, Trash2, Swords, AlertCircle, Plus, Wifi, Smartphone, Zap, ArrowRight, Trophy, FileSpreadsheet, X, ChevronDown, Check } from "lucide-react";
 import { generateGroupsTournament, generateEliminationBracket, getGroupDistribution } from "@/lib/bracket";
+import type { RrOrderMode } from "@/lib/bracket";
 import { cn } from "@/lib/utils";
 import { buildCategoryName, GUP_GRADE_OPTIONS, type GradeSystem } from "@/lib/category-name";
 import { availableCategoryFormats, defaultCategoryFormat, isCategoryFormatAllowed } from "@/lib/category-mode";
@@ -331,26 +332,31 @@ function buildRoundLabels(fights: PreviewFight[]): Record<number, string> {
   return labels;
 }
 
+function isPlayablePreviewMatch(match: BracketMatch): boolean {
+  // The generator records completed single-sided first-round byes so their
+  // athlete advances, but those are not bouts for the table chief to run.
+  return match.round > 0 || Boolean(match.red.competitor && match.blue.competitor);
+}
+
 function computePreview(
   competitors: CompetitorEntry[],
   mode: string,
+  rrOrderMode: RrOrderMode,
 ): PreviewFight[] {
   if (competitors.length < 2) return [];
   if (mode === "elimination") {
     return generateEliminationBracket(competitors).matches
-      .filter((m) => m.red.competitor && m.blue.competitor)
+      .filter(isPlayablePreviewMatch)
       .map((m, i) => ({
         id: m.id,
         n: i + 1,
-        // biome-ignore lint/style/noNonNullAssertion: filter above guarantees competitor is not null
-        red: m.red.competitor!.name,
-        // biome-ignore lint/style/noNonNullAssertion: filter above guarantees competitor is not null
-        blue: m.blue.competitor!.name,
+        red: m.red.competitor?.name ?? "Por definir",
+        blue: m.blue.competitor?.name ?? "Por definir",
         round: m.round,
       }));
   }
   if (competitors.length < 3 || competitors.length > 12) return [];
-  const { fights } = generateGroupsTournament(competitors);
+  const { fights } = generateGroupsTournament(competitors, "SERPENTINE", rrOrderMode);
   return fights.map((f, i) => ({
     id: f.id, n: i + 1, red: f.red.name, blue: f.blue.name, round: 0,
     group: f.groupId ?? "G1",
@@ -359,13 +365,18 @@ function computePreview(
 
 function FightRow({ fight, showNumber }: Readonly<{ fight: PreviewFight; showNumber: boolean }>) {
   return (
-    <div className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5 text-sm">
+    <div data-testid="preview-fight-row"
+      className="flex min-h-14 items-center gap-2 rounded-lg border border-border px-3 py-2 text-base sm:text-lg">
       {showNumber && (
-        <span className="text-muted-foreground text-xs w-5 text-right shrink-0">{fight.n}.</span>
+        <span className="text-muted-foreground text-sm w-6 text-right shrink-0">{fight.n}.</span>
       )}
-      <span className="font-medium text-red-400 flex-1 truncate text-right">{fight.red}</span>
-      <span className="text-muted-foreground text-xs shrink-0">vs</span>
-      <span className="font-medium text-blue-400 flex-1 truncate">{fight.blue}</span>
+      <span className="min-w-0 flex-1 break-words text-right font-semibold leading-snug text-red-400">
+        {fight.red}
+      </span>
+      <span className="shrink-0 text-sm text-muted-foreground">vs</span>
+      <span className="min-w-0 flex-1 break-words font-semibold leading-snug text-blue-400">
+        {fight.blue}
+      </span>
     </div>
   );
 }
@@ -379,17 +390,17 @@ function FixturePreview({ fights, mode, roundLabels }: Readonly<{
     return (
       <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
         <Swords className="size-6 opacity-20" />
-        <p className="text-xs">Aparece al agregar competidores</p>
+        <p className="text-sm">Aparece al agregar competidores</p>
       </div>
     );
   }
   if (mode === "elimination") {
     const rounds = Array.from(new Set(fights.map((f) => f.round)));
     return (
-      <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
+      <div className="space-y-4 max-h-[28rem] overflow-y-auto pr-1">
         {rounds.map((round) => (
           <div key={round}>
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
+            <p className="mb-2 text-sm font-semibold uppercase tracking-wider text-muted-foreground">
               {roundLabels[round] ?? `Ronda ${round + 1}`}
             </p>
             <div className="space-y-1">
@@ -402,32 +413,98 @@ function FixturePreview({ fights, mode, roundLabels }: Readonly<{
       </div>
     );
   }
-  // Round-robin: group by llave
-  const groups = Array.from(new Set(fights.map((f) => f.group ?? "G1")));
+  // Keep chronological order: interleaved groups cannot be grouped into blocks.
   return (
-    <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-      {groups.map((gid) => {
-        const gFights = fights.filter((f) => (f.group ?? "G1") === gid);
-        return (
-          <div key={gid}>
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">
-              Llave {gid}
-            </p>
-            <div className="space-y-1">
-              {gFights.map((f) => <FightRow key={f.id} fight={f} showNumber />)}
-            </div>
-          </div>
-        );
-      })}
+    <div className="space-y-2 max-h-[28rem] overflow-y-auto pr-1">
+      {fights.map((fight) => (
+        <div key={fight.id} className="flex items-center gap-2">
+          <span className="w-16 shrink-0 text-sm text-muted-foreground">
+            Llave {fight.group ?? "G1"}
+          </span>
+          <div className="min-w-0 flex-1"><FightRow fight={fight} showNumber /></div>
+        </div>
+      ))}
     </div>
   );
 }
 
 const PESO_OPTIONS = ["Liviano A", "Liviano B", "Mediano A", "Mediano B", "Pesado A", "Pesado B", "Pesado C"];
 const GENERO_OPTIONS = ["Masculino", "Femenino", "Mixto"];
+function withoutNamedWeight(name: string): string {
+  let next = name;
+  for (const weight of PESO_OPTIONS) {
+    next = next.replace(new RegExp(`\\b(?:Peso\\s+)?${weight}\\b`, "gi"), "");
+  }
+  return next.replace(/\s*·\s*/g, " · ").replace(/^[\s·–—-]+|[\s·–—-]+$/g, "").trim();
+}
+// Ephemeral browser-session state: AppLayout remounts SetupPage for each category tab.
+const sessionWeightStash = new Map<string, string>();
+const sessionPreviousWeight = new Map<string, string>();
 
 type CatState = { weight: string; gradeSystem: GradeSystem | ""; beltFrom: string; beltTo: string; gupBand: string; gender: string; ageFrom: string; ageTo: string; ageOpenEnded: boolean; ageMode: "preset" | "custom" };
-const EMPTY_CAT: CatState = { weight: "", gradeSystem: "", beltFrom: "", beltTo: "", gupBand: "", gender: "", ageFrom: "", ageTo: "", ageOpenEnded: false, ageMode: "custom" };
+const EMPTY_CAT: CatState = { weight: "", gradeSystem: "", beltFrom: "", beltTo: "", gupBand: "", gender: "", ageFrom: "", ageTo: "", ageOpenEnded: false, ageMode: "preset" };
+type GuidedStep = "age" | "grade" | "grade-range" | "gender" | "discipline" | "weight" | "format";
+type GuidedProgress = { active: GuidedStep | null; completed: GuidedStep[] };
+const ALL_GUIDED_STEPS: GuidedStep[] = ["age", "grade", "grade-range", "gender", "discipline", "weight", "format"];
+const GUIDED_LABELS: Record<GuidedStep, string> = {
+  age: "Edad", grade: "Sistema de grado", "grade-range": "Rango de grado",
+  gender: "Género", discipline: "Disciplina", weight: "Peso", format: "Formato",
+};
+
+function guidedSteps(gradeSystem: CatState["gradeSystem"], matchType: string): GuidedStep[] {
+  return ["age", "grade", ...(gradeSystem ? ["grade-range" as const] : []),
+    "gender", "discipline", ...(matchType === "tul" ? [] : ["weight" as const]), "format"];
+}
+
+function guidedProgressKey(categoryId: string): string {
+  return `tkd-category-guided-v1:${categoryId}`;
+}
+
+function readGuidedProgress(
+  categoryId: string,
+  newDraft: boolean,
+  gradeSystem: CatState["gradeSystem"],
+  matchType: string,
+): GuidedProgress {
+  try {
+    const raw = sessionStorage.getItem(guidedProgressKey(categoryId));
+    if (raw) {
+      const parsed: unknown = JSON.parse(raw);
+      if (parsed && typeof parsed === "object" && "completed" in parsed &&
+        Array.isArray(parsed.completed) && "active" in parsed &&
+        (parsed.active === null || ALL_GUIDED_STEPS.includes(parsed.active as GuidedStep))) {
+        const completed = parsed.completed.filter((step: unknown): step is GuidedStep =>
+          typeof step === "string" && ALL_GUIDED_STEPS.includes(step as GuidedStep));
+        const applicable = guidedSteps(gradeSystem, matchType);
+        const savedActive = parsed.active as GuidedStep | null;
+        return {
+          active: savedActive && !applicable.includes(savedActive)
+            ? (applicable.find((step) => !completed.includes(step)) ?? null) : savedActive,
+          completed,
+        };
+      }
+    }
+  } catch { /* Browser storage can be unavailable; the form remains usable. */ }
+  return newDraft
+    ? { active: "age", completed: [] }
+    : { active: null, completed: [...ALL_GUIDED_STEPS] };
+}
+
+function writeGuidedProgress(categoryId: string, progress: GuidedProgress): void {
+  try { sessionStorage.setItem(guidedProgressKey(categoryId), JSON.stringify(progress)); }
+  catch { /* Browser storage is a convenience, not category data. */ }
+}
+
+function validateCustomAge(from: string, to: string): string | null {
+  const first = Number(from);
+  const last = Number(to);
+  if (!/^\d+$/.test(from) || !/^\d+$/.test(to) ||
+    !Number.isSafeInteger(first) || !Number.isSafeInteger(last) || first < 1 || last < 1) {
+    return "Ingresá ambas edades como números enteros positivos.";
+  }
+  return first > last ? "La edad inicial no puede superar la final." : null;
+}
+
 function ChipGroup({ label, options, value, onChange }: Readonly<{
   label: string;
   options: string[];
@@ -435,27 +512,28 @@ function ChipGroup({ label, options, value, onChange }: Readonly<{
   onChange: (v: string) => void;
 }>) {
   return (
-    <div className="space-y-2">
-      <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">{label}</span>
+    <fieldset className="min-w-0 space-y-2">
+      <legend className="text-sm font-semibold text-foreground">{label}</legend>
       <div className="flex flex-wrap gap-2 items-center">
         {options.map((opt) => (
           <button
             key={opt}
             type="button"
-            onClick={() => onChange(value === opt ? "" : opt)}
+            onClick={() => onChange(opt)}
             aria-pressed={value === opt}
             className={cn(
-              "rounded-full border font-medium transition-all duration-150",
+              "inline-flex min-h-11 items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
               value === opt
-                ? "px-5 py-2 text-sm font-bold border-2 border-primary bg-primary/10 text-primary ring-2 ring-primary/20 shadow-sm"
-                : "px-3 py-1.5 text-xs border border-border/50 text-muted-foreground/60 hover:border-border hover:text-muted-foreground hover:bg-secondary",
+                ? "border-2 border-primary bg-primary/10 text-foreground font-bold"
+                : "border-border bg-background text-foreground hover:border-primary/60 hover:bg-secondary",
             )}
           >
+            {value === opt && <Check aria-hidden="true" className="size-4 shrink-0" />}
             {opt === "DAN" ? "DANES" : opt}
           </button>
         ))}
       </div>
-    </div>
+    </fieldset>
   );
 }
 
@@ -471,12 +549,9 @@ export function SetupPage() {
     clearCompetitors,
     updateCompetitor,
     setConfig,
-    setFights,
-    setPhase,
-    setBracket,
+    commitCategoryStart,
     addImportedFights,
     completeFight,
-    setGroups,
     setupStarted,
     setSetupStarted,
     startNewTournament,
@@ -492,12 +567,9 @@ export function SetupPage() {
       clearCompetitors: s.clearCompetitors,
       updateCompetitor: s.updateCompetitor,
       setConfig: s.setConfig,
-      setFights: s.setFights,
-      setPhase: s.setPhase,
-      setBracket: s.setBracket,
+      commitCategoryStart: s.commitCategoryStart,
       addImportedFights: s.addImportedFights,
       completeFight: s.completeFight,
-      setGroups: s.setGroups,
       setupStarted: s.setupStarted,
       setSetupStarted: s.setSetupStarted,
       startNewTournament: s.startNewTournament,
@@ -506,6 +578,9 @@ export function SetupPage() {
   const navigate = useNavigate();
   const { socket, connected, stateReady, state: serverState, request } = useSocket();
   const interactionBlocked = useCategoryInteractionBlocked();
+  const startPending = useTournamentStore((state) =>
+    state.categoryOperationReason === CATEGORY_START_REASON ||
+    state.categoryOperationReason === CATEGORY_START_RECOVERY_REASON);
   const snapshot = { phase, config, competitors, fights, bracketMatches, setupStarted,
     groups: useTournamentStore((state) => state.groups),
     currentFightIndex: useTournamentStore((state) => state.currentFightIndex),
@@ -514,22 +589,66 @@ export function SetupPage() {
   const primaryAction = useCategoryPrimaryAction(lifecycleContext, request);
   const categoryIsActive = isCategoryInitialized(snapshot);
   const [cat, setCat] = useState<CatState>(EMPTY_CAT);
+  const [customAgeDraft, setCustomAgeDraft] = useState({ from: "", to: "" });
+  const [danDraft, setDanDraft] = useState({ from: "", to: "" });
+  const [danError, setDanError] = useState<string | null>(null);
   useEffect(() => {
-    const age = AGE_DIVISIONS.find((division) => division.id === config.ageDivision);
+    // Hydration is intentionally keyed to category identity, not autosaved field changes.
+    const selected = useTournamentStore.getState().config;
+    if (selected.id !== config.id) return;
+    const age = AGE_DIVISIONS.find((division) => division.id === selected.ageDivision);
+    const activeWeight = selected.matchType === "tul" ? "" : (selected.weightLabel ?? "");
     setCat({
       ...EMPTY_CAT,
-      weight: config.weightLabel ?? "",
-      gradeSystem: config.gradeSystem ?? "",
-      beltFrom: config.danFrom === undefined ? "" : String(config.danFrom),
-      beltTo: config.danTo === undefined ? "" : String(config.danTo),
-      gupBand: config.gupBand ?? "",
-      gender: config.sexDivision ?? "",
-      ageFrom: config.categoryAgeFrom ?? (age ? String(age.from) : ""),
-      ageTo: config.categoryAgeTo ?? (age?.to === undefined ? "" : String(age.to)),
-      ageOpenEnded: config.categoryAgeOpenEnded ?? (!!age && age.to === undefined),
-      ageMode: age ? "preset" : "custom",
+      weight: activeWeight,
+      gradeSystem: selected.gradeSystem ?? "",
+      beltFrom: selected.danFrom === undefined ? "" : String(selected.danFrom),
+      beltTo: selected.danTo === undefined ? "" : String(selected.danTo),
+      gupBand: selected.gupBand ?? "",
+      gender: selected.sexDivision ?? "",
+      ageFrom: selected.categoryAgeFrom ?? (age ? String(age.from) : ""),
+      ageTo: selected.categoryAgeTo ?? (age?.to === undefined ? "" : String(age.to)),
+      ageOpenEnded: selected.categoryAgeOpenEnded ?? (!!age && age.to === undefined),
+      ageMode: age || (!selected.categoryAgeFrom && !selected.categoryAgeTo)
+        ? "preset" : "custom",
+    });
+    setCustomAgeDraft({
+      from: selected.categoryAgeFrom ?? (age ? String(age.from) : ""),
+      to: selected.categoryAgeTo ?? (age?.to === undefined ? "" : String(age.to)),
+    });
+    setDanDraft({
+      from: selected.danFrom === undefined ? "" : String(selected.danFrom),
+      to: selected.danTo === undefined ? "" : String(selected.danTo),
     });
   }, [config.id]);
+  useEffect(() => {
+    // Normalize legacy Tul drafts independently; never rehydrate local fields on autosave.
+    if (config.matchType !== "tul") return;
+    const staleGeneratedWeight = config.nameGenerated === true && PESO_OPTIONS.some((weight) =>
+      config.categoryName.toLocaleLowerCase().includes(weight.toLocaleLowerCase()));
+    if (!config.weightLabel && !staleGeneratedWeight) return;
+    if (config.weightLabel) {
+      sessionWeightStash.set(config.id, config.weightLabel);
+      sessionPreviousWeight.set(config.id, config.weightLabel);
+    }
+    const selected = useTournamentStore.getState().config;
+    const age = AGE_DIVISIONS.find((division) => division.id === selected.ageDivision);
+    setConfig({
+      weightLabel: undefined,
+      ...((!config.categoryName.trim() || config.nameGenerated === true)
+        ? { categoryName: buildCategoryName({
+          weight: "",
+          gradeSystem: selected.gradeSystem ?? "",
+          beltFrom: selected.danFrom === undefined ? "" : String(selected.danFrom),
+          beltTo: selected.danTo === undefined ? "" : String(selected.danTo),
+          gupBand: selected.gupBand ?? "",
+          gender: selected.sexDivision ?? "",
+          ageFrom: selected.categoryAgeFrom ?? (age ? String(age.from) : ""),
+          ageTo: selected.categoryAgeTo ?? (age?.to === undefined ? "" : String(age.to)),
+          ageOpenEnded: selected.categoryAgeOpenEnded ?? (!!age && age.to === undefined),
+        }), nameGenerated: true } : {}),
+    });
+  }, [config.id, config.matchType, config.weightLabel, config.categoryName, config.nameGenerated, setConfig]);
   const [welcomeDismissed, setWelcomeDismissed] = useState(false);
   useEffect(() => {
     if (config.matchType === "tul" && !isCategoryFormatAllowed("tul", config.mode as "round-robin" | "elimination")) {
@@ -589,7 +708,7 @@ export function SetupPage() {
     }
     socket.on("fights:imported", onFightsImported);
     return () => { socket.off("fights:imported", onFightsImported); };
-  }, [socket, addImportedFights, navigate, config.id]);
+  }, [socket, addImportedFights, navigate, config.id, config.mode]);
 
   // Cuando el tatami destino termina una pelea reasignada, recibir el resultado.
   useEffect(() => {
@@ -618,6 +737,9 @@ export function SetupPage() {
 
   function updateCat(patch: Partial<CatState>) {
     const next = { ...cat, ...patch };
+    if (patch.weight !== undefined && patch.weight !== cat.weight && cat.weight) {
+      sessionPreviousWeight.set(config.id, cat.weight);
+    }
     setCat(next);
     const dimensions = {
       weightLabel: next.weight || undefined,
@@ -683,7 +805,129 @@ export function SetupPage() {
   const nameRef = useRef<HTMLInputElement>(null);
 
   // Category card starts expanded when no category is set yet, collapsed otherwise
-  const [catExpanded, setCatExpanded] = useState(config.categoryName === "");
+  const [catExpanded, setCatExpanded] = useState(() =>
+    config.categoryName === "" || readGuidedProgress(config.id, false,
+      config.gradeSystem ?? "", config.matchType ?? "sparring").active !== null);
+  const namedWithoutGeneration = !!config.categoryName.trim() && config.nameGenerated !== true;
+  const newGuidedDraft = !categoryIsActive && !namedWithoutGeneration &&
+    (useTournamentStore.getState().getCategoryEntries().some((entry) =>
+      entry.id === config.id && entry.isDraft) || !config.categoryName.trim());
+  const [guided, setGuided] = useState<GuidedProgress>(() => categoryIsActive || namedWithoutGeneration
+    ? { active: null, completed: [...ALL_GUIDED_STEPS] }
+    : readGuidedProgress(config.id, newGuidedDraft,
+      config.gradeSystem ?? "", config.matchType ?? "sparring"));
+  const guidedFocusRequested = useRef(false);
+  const [customAgeError, setCustomAgeError] = useState<string | null>(null);
+  useEffect(() => {
+    // Imported/manual names edit directly, even when an import fills the current blank draft.
+    const progress = categoryIsActive || namedWithoutGeneration
+      ? { active: null, completed: [...ALL_GUIDED_STEPS] } satisfies GuidedProgress
+      : readGuidedProgress(config.id, newGuidedDraft,
+        config.gradeSystem ?? "", config.matchType ?? "sparring");
+    writeGuidedProgress(config.id, progress);
+    setGuided(progress);
+    setCustomAgeError(null);
+    setDanError(null);
+  }, [config.id, config.gradeSystem, config.matchType, newGuidedDraft,
+    namedWithoutGeneration, categoryIsActive]);
+  useEffect(() => {
+    if (!guidedFocusRequested.current || !catExpanded) return;
+    guidedFocusRequested.current = false;
+    const target = document.getElementById(guided.active
+      ? `guided-${guided.active}-heading` : "guided-review-heading");
+    target?.focus({ preventScroll: true });
+    target?.scrollIntoView?.({ block: "nearest" });
+  }, [guided.active, catExpanded]);
+
+  function setGuidedProgress(progress: GuidedProgress): void {
+    writeGuidedProgress(config.id, progress);
+    guidedFocusRequested.current = true;
+    setGuided(progress);
+  }
+
+  function editGuidedStep(step: GuidedStep): void {
+    setCustomAgeError(null);
+    setGuidedProgress({ ...guided, active: step });
+  }
+
+  function finishGuidedStep(
+    step: GuidedStep,
+    nextGradeSystem = cat.gradeSystem,
+    nextMatchType = config.matchType ?? "sparring",
+  ): void {
+    const completed = new Set(guided.completed);
+    completed.add(step);
+    if (step === "grade") completed.delete("grade-range");
+    const next = guidedSteps(nextGradeSystem, nextMatchType)
+      .find((candidate) => !completed.has(candidate)) ?? null;
+    setGuidedProgress({ active: next, completed: [...completed] });
+  }
+
+  function skipGuidedStep(step: GuidedStep): void {
+    if (step === "age") updateCat({ ageFrom: "", ageTo: "", ageOpenEnded: false, ageMode: "preset" });
+    if (step === "grade" || step === "grade-range") {
+      updateCat({ gradeSystem: "", gupBand: "", beltFrom: "", beltTo: "" });
+    }
+    if (step === "gender") updateCat({ gender: "" });
+    if (step === "weight") updateCat({ weight: "" });
+    finishGuidedStep(step, step === "grade" || step === "grade-range" ? "" : cat.gradeSystem);
+  }
+
+  function selectDiscipline(t: "sparring" | "tul"): void {
+    if (t === "tul" && cat.weight) {
+      sessionWeightStash.set(config.id, cat.weight);
+      updateCat({ weight: "" });
+    } else if (t === "sparring") {
+      const restoredWeight = sessionWeightStash.get(config.id);
+      if (restoredWeight) {
+        updateCat({ weight: restoredWeight });
+        sessionWeightStash.delete(config.id);
+        sessionPreviousWeight.delete(config.id);
+      }
+    }
+    const mode = defaultCategoryFormat(t);
+    const timing = config.profileId === "yusan-2026" && config.profileApplied
+      ? yusanConfigPatch(config, config, mode, BASE) : null;
+    setConfig({ ...(timing ?? {}), matchType: t, mode });
+    finishGuidedStep("discipline", cat.gradeSystem, t);
+  }
+
+  function selectFormat(m: "round-robin" | "elimination"): void {
+    if (!isCategoryFormatAllowed(config.matchType ?? "sparring", m)) return;
+    if (config.profileId === "yusan-2026" && config.profileApplied) {
+      const patch = yusanConfigPatch(config, config, m, BASE);
+      setConfig(patch ?? { mode: m });
+    } else if (m === "round-robin") {
+      const rules = config.ruleSet?.mode === "sparring"
+        ? (config.ruleSet as RuleSetSparring) : BASE;
+      const judges = config.judgesCount ?? BASE.judgesCount;
+      setConfig({
+        mode: m,
+        ruleSet: {
+          ...BASE, ...rules, judgesCount: judges,
+          rounds: { ...rules.rounds, count: 1, duration_seconds: 60 },
+        },
+      });
+    } else setConfig({ mode: m });
+    finishGuidedStep("format");
+  }
+
+  function guidedStepLabel(step: GuidedStep): string {
+    if (step === "grade-range") return cat.gradeSystem === "DAN" ? "Grado (Dan)" : "Rango GUP";
+    return GUIDED_LABELS[step];
+  }
+
+  function guidedStepSummary(step: GuidedStep): string {
+    if (step === "age") return formatCategoryAge(cat) || "No especificar";
+    if (step === "grade") return cat.gradeSystem === "DAN" ? "DANES" : cat.gradeSystem || "No especificar";
+    if (step === "grade-range") return cat.gradeSystem === "DAN"
+      ? (cat.beltFrom && cat.beltTo ? `${cat.beltFrom}-${cat.beltTo} Dan` : "No especificar")
+      : cat.gupBand || "No especificar";
+    if (step === "gender") return cat.gender || "No especificar";
+    if (step === "discipline") return config.matchType === "tul" ? "Tul / Formas" : "Sparring";
+    if (step === "weight") return cat.weight || "No especificar";
+    return config.mode === "round-robin" ? "Round Robin" : "Eliminación";
+  }
 
   // ── Presets ────────────────────────────────────────────────────────────────
   const [serverPresets, setServerPresets] = useState<TimePreset[]>([]);
@@ -748,6 +992,11 @@ export function SetupPage() {
   const _fs = config.finalSeconds ?? _rd;
   const _tb = config.tiebreakerSeconds ?? 30;
   const _gp = _ar.rounds.golden_point ?? true;
+  const priorWeight = sessionPreviousWeight.get(config.id);
+  const staleNamedWeight = priorWeight && priorWeight !== cat.weight &&
+    config.categoryName.toLocaleLowerCase().includes(priorWeight.toLocaleLowerCase());
+  const tulNamedWeight = config.matchType === "tul" && PESO_OPTIONS.some((weight) =>
+    config.categoryName.toLocaleLowerCase().includes(weight.toLocaleLowerCase()));
   function _fmt(s: number) { return s < 60 ? `${s} s` : `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; }
 
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -860,47 +1109,99 @@ export function SetupPage() {
   }
 
   async function handleStart(): Promise<void> {
-    if (primaryAction.kind !== "start" || primaryAction.disabled || interactionBlocked) return;
-    let lock: { categoryId: string | null } | null;
-    try {
-      const response = await fetch("/api/ring/status");
-      if (!response.ok) throw new Error("No se pudo verificar el tatami.");
-      const status = await response.json() as { activeMatchLock?: { categoryId: string | null } | null };
-      lock = status.activeMatchLock ?? null;
-    } catch {
-      toast.warning("Sin respuesta del servidor. Podés editar esta categoría, pero no iniciarla todavía.");
+    if (primaryAction.kind !== "start" || primaryAction.disabled || interactionBlocked ||
+      useTournamentStore.getState().categoryOperationReason) return;
+    const draft = useTournamentStore.getState();
+    // The start lock serializes ordinary edits. Keep identity checks as a
+    // defense against unexpected state replacement outside store actions.
+    const draftIsCurrent = (): boolean => {
+      const current = useTournamentStore.getState();
+      return current.config === draft.config && current.competitors === draft.competitors &&
+        current.fights === draft.fights && current.groups === draft.groups &&
+        current.bracketMatches === draft.bracketMatches && current.phase === draft.phase &&
+        current.bracketSeeds === draft.bracketSeeds &&
+        current.currentFightIndex === draft.currentFightIndex &&
+        current.setupStarted === draft.setupStarted;
+    };
+    const warnChangedDraft = (): void => {
+      toast.warning("La categoría cambió mientras se preparaba. Revisá los datos e intentá iniciar otra vez.");
+    };
+    if (draft.config !== config || draft.competitors !== competitors ||
+      draft.fights !== fights || draft.bracketMatches !== bracketMatches || !draftIsCurrent()) {
+      warnChangedDraft();
       return;
     }
-    const preparingOtherCategory = Boolean(lock);
-    if (config.mode === "elimination") {
-      const { matches, seeds } = generateEliminationBracket(competitors);
-      setBracket(matches, seeds); setFights([]); setGroups([]);
-    } else {
-      const generated = generateGroupsTournament(competitors);
-      if (!preparingOtherCategory) {
-        try {
+    useTournamentStore.getState().setCategoryOperationReason(CATEGORY_START_REASON);
+    if (useTournamentStore.getState().categoryOperationReason !== CATEGORY_START_REASON) {
+      toast.warning("Hay otra operación de categoría en curso. Intentá de nuevo cuando termine.");
+      return;
+    }
+    try {
+      let lock: { categoryId: string | null } | null;
+      try {
+        const response = await fetch("/api/ring/status");
+        if (!response.ok) throw new Error("No se pudo verificar el tatami.");
+        const status = await response.json() as { activeMatchLock?: { categoryId: string | null } | null };
+        lock = status.activeMatchLock ?? null;
+      } catch {
+        toast.warning("Sin respuesta del servidor. Podés editar esta categoría, pero no iniciarla todavía.");
+        return;
+      }
+      if (!draftIsCurrent()) { warnChangedDraft(); return; }
+      if (draft.config.mode === "elimination") {
+        const { matches, seeds } = generateEliminationBracket(draft.competitors);
+        if (!commitCategoryStart(draft, { mode: "elimination", matches, seeds })) {
+          warnChangedDraft();
+          return;
+        }
+      } else {
+        const generated = generateGroupsTournament(
+          draft.competitors, "SERPENTINE", draft.config.rrOrderMode ?? "group-blocks",
+        );
+        if (!lock) {
           const response = await fetch("/api/ring/sync-fights", {
             method: "POST", headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ competitors, fights: generated.fights.map((fight) => ({
+            body: JSON.stringify({ competitors: draft.competitors, fights: generated.fights.map((fight) => ({
               id: fight.id, red_id: fight.red.id, blue_id: fight.blue.id, group_id: fight.groupId,
-            })), categoryId: config.id, categoryName: config.categoryName, tournamentName: config.tournamentName }),
+            })), categoryId: draft.config.id, categoryName: draft.config.categoryName,
+              tournamentName: draft.config.tournamentName }),
           });
           if (!response.ok) throw new Error("El servidor rechazó la preparación de peleas.");
-        } catch (error) { toast.error(error instanceof Error ? error.message : "No se pudo sincronizar."); return; }
+          if (!draftIsCurrent()) {
+            useTournamentStore.getState().setCategoryOperationReason(CATEGORY_START_RECOVERY_REASON);
+            toast.error(CATEGORY_START_RECOVERY_REASON);
+            return;
+          }
+        }
+        if (!commitCategoryStart(draft, { mode: "round-robin",
+          groups: generated.groups, fights: generated.fights })) {
+          if (!lock) {
+            useTournamentStore.getState().setCategoryOperationReason(CATEGORY_START_RECOVERY_REASON);
+            toast.error(CATEGORY_START_RECOVERY_REASON);
+          } else warnChangedDraft();
+          return;
+        }
       }
-      setGroups(generated.groups); setFights(generated.fights);
+      navigate(draft.config.mode === "elimination" ? "/bracket" : "/standings");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "No se pudo sincronizar.");
+    } finally {
+      if (useTournamentStore.getState().categoryOperationReason === CATEGORY_START_REASON) {
+        useTournamentStore.getState().setCategoryOperationReason(null);
+      }
     }
-    setPhase("fighting");
-    navigate(config.mode === "elimination" ? "/bracket" : "/standings");
   }
   const previewFights: PreviewFight[] = categoryIsActive
     ? config.mode === "elimination"
-      ? bracketMatches.map((match, index) => ({ id: match.id, n: index + 1,
+      ? bracketMatches.filter(isPlayablePreviewMatch).map((match, index) => ({ id: match.id, n: index + 1,
           red: match.red.competitor?.name ?? "Por definir", blue: match.blue.competitor?.name ?? "Por definir", round: match.round }))
       : fights.map((fight, index) => ({ id: fight.id, n: index + 1, red: fight.red.name,
           blue: fight.blue.name, round: 0, group: fight.groupId ?? "G1" }))
-    : computePreview(competitors, config.mode);
+    : computePreview(competitors, config.mode, config.rrOrderMode ?? "group-blocks");
   const roundLabels = buildRoundLabels(previewFights);
+  const completedPreviewCount = config.mode === "elimination"
+    ? bracketMatches.filter((match) => isPlayablePreviewMatch(match) && match.completed).length
+    : fights.filter((fight) => fight.completed).length;
   const groupDist = config.mode === "round-robin" ? getGroupDistribution(competitors.length) : undefined;
 
   if (showWelcome) {
@@ -997,7 +1298,7 @@ export function SetupPage() {
   }
 
   return (
-    <div className="flex-1 overflow-auto p-4 space-y-4">
+    <div className="flex-1 overflow-auto p-4 space-y-4" inert={startPending} aria-busy={startPending}>
       {/* ── HEADER ─────────────────────────────────────────────── */}
       <div className="space-y-2">
         <a href="/maintenance" className="inline-block text-sm text-blue-400 underline">
@@ -1020,9 +1321,11 @@ export function SetupPage() {
               <button
                 id="tour-cat-btn"
                 type="button"
+                aria-expanded={catExpanded}
+                aria-controls={catExpanded ? "category-editor" : undefined}
                 onClick={() => setCatExpanded((v) => !v)}
                 className={cn(
-                  "rounded-lg px-4 py-2 text-sm font-semibold border transition-colors flex items-center gap-2",
+                  "min-h-11 rounded-lg px-4 py-2 text-sm font-semibold border transition-colors flex items-center gap-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
                   catExpanded
                     ? "border-border text-muted-foreground hover:text-foreground hover:bg-secondary"
                     : "border-primary/60 bg-primary/5 text-primary hover:bg-primary/10",
@@ -1039,22 +1342,26 @@ export function SetupPage() {
             </div>
           </div>
           <div className="flex flex-col items-end gap-1.5 shrink-0">
-            <Button id="tour-start-btn" data-testid="category-primary-action"
-              disabled={primaryAction.disabled || interactionBlocked} size="xl"
-              onClick={() => {
-                if (primaryAction.route) {
-                  if (primaryAction.fightId) {
-                    const index = fights.findIndex((fight) => fight.id === primaryAction.fightId);
-                    if (index >= 0) useTournamentStore.getState().setCurrentFightIndex(index);
-                  }
-                  navigate(primaryAction.route, primaryAction.route === "/fight" && primaryAction.fightId
-                    ? { state: { kind: "category-continue", categoryId: config.id, fightId: primaryAction.fightId } }
-                    : undefined);
-                } else { void handleStart(); }
-              }}>
-              <Swords className="size-5" />{primaryAction.label}
-            </Button>
-            {primaryAction.reason && <p className="text-xs text-muted-foreground">{primaryAction.reason}</p>}
+            {primaryAction.kind !== "start" && (
+              <>
+                <Button id="tour-start-btn" data-testid="category-primary-action"
+                  disabled={primaryAction.disabled || interactionBlocked || startPending} size="xl"
+                  onClick={() => {
+                    if (primaryAction.route) {
+                      if (primaryAction.fightId) {
+                        const index = fights.findIndex((fight) => fight.id === primaryAction.fightId);
+                        if (index >= 0) useTournamentStore.getState().setCurrentFightIndex(index);
+                      }
+                      navigate(primaryAction.route, primaryAction.route === "/fight" && primaryAction.fightId
+                        ? { state: { kind: "category-continue", categoryId: config.id, fightId: primaryAction.fightId } }
+                        : undefined);
+                    } else { void handleStart(); }
+                  }}>
+                  <Swords className="size-5" />{primaryAction.label}
+                </Button>
+                {primaryAction.reason && <p className="text-xs text-muted-foreground">{primaryAction.reason}</p>}
+              </>
+            )}
             {categoryIsActive && <Button variant="outline" size="sm" onClick={() => navigate(config.mode === "elimination" ? "/bracket" : "/standings")}>
               {config.mode === "elimination" ? "Ver llave" : "Ver clasificación"}
             </Button>}
@@ -1063,245 +1370,349 @@ export function SetupPage() {
           </div>
         </div>
 
-        {/* Inline chip editor — abre al hacer click en el nombre de categoría */}
+        {/* Las respuestas anteriores se resumen; solo hay una decisión activa. */}
         {catExpanded && (
-          <div className="rounded-xl border border-border/40 bg-secondary/20 px-4 py-4 space-y-4">
-
-            {/* Presets rápidos */}
-            <div className="space-y-2">
-              <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">⚡ Preset</span>
-              <div className="flex gap-2 flex-wrap">
-                {serverPresets.map((p) => (
-                  <button
-                    key={p.id ?? p.name}
-                    type="button"
-                    onClick={() => applyPreset(p)}
-                    className={cn(
-                      "px-3 py-1.5 rounded-lg border text-sm font-medium transition-colors",
-                      isPresetActive(p)
-                        ? "border-primary bg-primary/10 text-primary"
-                        : "border-border/50 bg-background/50 text-muted-foreground hover:bg-secondary hover:text-foreground"
-                    )}
-                  >
-                    {p.name}
+          <div id="category-editor" className="rounded-xl border border-border bg-secondary/20 p-3 sm:p-4 space-y-4">
+            <div className={cn(
+              "grid grid-cols-1 items-start gap-4",
+              guided.active === null
+                ? "lg:grid-cols-2"
+                : "lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]",
+            )}>
+              <fieldset className={cn(
+                "min-w-0 space-y-4 rounded-xl border border-border bg-background p-3 sm:p-4",
+                guided.active === null && "lg:col-span-2",
+              )}>
+                <legend className="px-1 text-base font-bold text-foreground">Categoría</legend>
+              <p className="text-sm text-muted-foreground">Elegí una opción. Podés volver a cambiar cualquier respuesta.</p>
+              <div data-testid="category-answer-grid" className={cn(
+                "grid grid-cols-1 gap-2",
+                guided.active === null ? "lg:grid-cols-2 2xl:grid-cols-3" : "xl:grid-cols-2",
+              )}>
+                {guidedSteps(cat.gradeSystem, config.matchType ?? "sparring").filter((step) =>
+                  guided.completed.includes(step) && guided.active !== step).map((step) => (
+                  <button key={step} type="button"
+                    aria-label={`Editar ${guidedStepLabel(step)}: ${guidedStepSummary(step)}`}
+                    onClick={() => editGuidedStep(step)}
+                    className="flex min-h-16 min-w-0 w-full flex-col gap-1 whitespace-normal rounded-lg border border-border bg-secondary/20 px-3 py-2.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 hover:border-primary/60">
+                    <span className="flex w-full items-start justify-between gap-2 text-sm">
+                      <span className="font-semibold">{guidedStepLabel(step)}</span>
+                      <span aria-hidden="true" className="shrink-0 text-primary underline underline-offset-2">Editar</span>
+                    </span>
+                    <span className="min-w-0 break-words text-base font-medium leading-snug text-foreground">
+                      {guidedStepSummary(step)}
+                    </span>
                   </button>
                 ))}
               </div>
-            </div>
-            {config.profileId === "yusan-2026" && (
-              <div className="rounded-lg border border-primary/30 bg-primary/5 p-3 space-y-2">
-                <p className="text-sm font-semibold">Perfil Yusan 2026 {config.profileApplied ? "activo" : "seleccionado"}</p>
-                {!config.profileApplied && (
-                  <Button type="button" size="sm" variant="outline" onClick={() => {
-                    const patch = yusanConfigPatch(config, config, config.mode, BASE);
-                    if (!patch) { toast.error("Elegí una edad y un sistema de grado antes de aplicar Yusan 2026."); return; }
-                    setConfig(patch);
-                  }}>Aplicar Yusan 2026 a esta categoría</Button>
-                )}
-              </div>
-            )}
-            {!config.profileId && (
-              <Button type="button" size="sm" variant="outline" onClick={() => setConfig({
-                eventId: config.eventId ?? crypto.randomUUID(),
-                profileId: "yusan-2026",
-                profileApplied: false,
-              })}>Seleccionar perfil Yusan 2026 para este torneo</Button>
-            )}
-
-            {/* Resumen de la config activa */}
-            <p className="text-xs text-muted-foreground/70 leading-relaxed">
-              {_rc} round{_rc > 1 ? "s" : ""} × {_fmt(_rd)}
-              {_rest > 0 ? ` · Descanso: ${_fmt(_rest)}` : " · Sin descanso"}
-              {config.mode !== "round-robin" && (_fr !== _rc || _fs !== _rd) ? ` · Final: ${_fr} × ${_fmt(_fs)}` : ""}
-              {` · Desempate: ${_fmt(_tb)}`}
-              {_gp ? " · Golden Point" : ""}
-            </p>
-
-            <div className="space-y-5">
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Edad</span>
+              {guided.active && (
+                <h3 id={`guided-${guided.active}-heading`} data-testid="guided-active-step" tabIndex={-1}
+                  className="text-sm font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  Paso {guidedSteps(cat.gradeSystem, config.matchType ?? "sparring").indexOf(guided.active) + 1} de {guidedSteps(cat.gradeSystem, config.matchType ?? "sparring").length}: {guidedStepLabel(guided.active)}
+                </h3>
+              )}
+              {guided.active === null && <h3 id="guided-review-heading" data-testid="guided-review" tabIndex={-1}
+                className="text-sm font-semibold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Configuración lista para revisar</h3>}
+              {guided.active === "age" && (
+              <fieldset className="min-w-0 space-y-2">
+                <legend className="text-sm font-semibold text-foreground">Edad</legend>
                 <div className="flex flex-wrap gap-1.5">
                   {AGE_DIVISIONS.map((age) => (
                     <button key={age.id} type="button" aria-pressed={ageDivisionForRange(cat.ageFrom, cat.ageTo, cat.ageOpenEnded) === age.id} className={cn(
-                      "rounded-full border px-2.5 py-1 text-xs",
+                      "inline-flex min-h-11 items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                       ageDivisionForRange(cat.ageFrom, cat.ageTo, cat.ageOpenEnded) === age.id
-                        ? "border-primary bg-primary/10 text-primary" : "border-border text-muted-foreground",
-                    )} onClick={() => updateCat({ ageFrom: String(age.from), ageTo: age.to === undefined ? "" : String(age.to), ageOpenEnded: age.to === undefined, ageMode: "preset" })}>
+                        ? "border-2 border-primary bg-primary/10 font-bold" : "border-border bg-background hover:border-primary/60 hover:bg-secondary",
+                    )} onClick={() => {
+                      updateCat({ ageFrom: String(age.from), ageTo: age.to === undefined ? "" : String(age.to), ageOpenEnded: age.to === undefined, ageMode: "preset" });
+                      finishGuidedStep("age");
+                    }}>
+                      {ageDivisionForRange(cat.ageFrom, cat.ageTo, cat.ageOpenEnded) === age.id && <Check aria-hidden="true" className="size-4 shrink-0" />}
                       {age.label} ({age.from}{age.to === undefined ? "+" : `-${age.to}`})
                     </button>
                   ))}
                 </div>
-                {cat.ageMode === "preset" ? (
-                  <div className="flex h-9 items-center gap-2">
-                    <span className="text-sm font-medium">{formatCategoryAge(cat)}</span>
-                    <button type="button" className="text-xs text-primary underline-offset-4 hover:underline" onClick={() => updateCat({ ageMode: "custom" })}>Personalizada</button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <Input type="number" aria-label="Edad desde" placeholder="Desde" value={cat.ageFrom} onChange={(e) => updateCat({ ageFrom: e.target.value, ageOpenEnded: false })} className="w-24 h-9 text-sm" />
-                    <span className="text-xs text-muted-foreground/50">?</span>
-                    <Input type="number" aria-label="Edad hasta" placeholder="Hasta" value={cat.ageTo} onChange={(e) => updateCat({ ageTo: e.target.value, ageOpenEnded: false })} className="w-24 h-9 text-sm" />
+                <button type="button" className="min-h-11 rounded-lg px-3 text-sm font-semibold text-primary underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => { setCat((current) => ({ ...current, ageMode: "custom" })); setCustomAgeDraft({ from: cat.ageFrom, to: cat.ageTo }); setCustomAgeError(null); }}>Personalizada</button>
+                {cat.ageMode === "custom" && (
+                  <div className="space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Input type="number" min="1" aria-label="Edad desde" placeholder="Desde" value={customAgeDraft.from}
+                        onChange={(e) => { setCustomAgeDraft({ ...customAgeDraft, from: e.target.value }); setCustomAgeError(null); }} className="w-28 h-11 text-sm" />
+                      <span className="text-sm text-muted-foreground">a</span>
+                      <Input type="number" min="1" aria-label="Edad hasta" placeholder="Hasta" value={customAgeDraft.to}
+                        onChange={(e) => { setCustomAgeDraft({ ...customAgeDraft, to: e.target.value }); setCustomAgeError(null); }} className="w-28 h-11 text-sm" />
+                    </div>
+                    {customAgeError && <p role="alert" className="text-sm text-destructive">{customAgeError}</p>}
+                    <Button type="button" variant="outline" className="min-h-11" onClick={() => {
+                      const error = validateCustomAge(customAgeDraft.from, customAgeDraft.to);
+                      if (error) { setCustomAgeError(error); return; }
+                      updateCat({ ageFrom: customAgeDraft.from, ageTo: customAgeDraft.to, ageOpenEnded: false, ageMode: "custom" });
+                      finishGuidedStep("age");
+                    }}>Aplicar edad</Button>
                   </div>
                 )}
-              </div>
-              <div className="space-y-3">
+                <button type="button" aria-label="No especificar Edad" className="min-h-11 rounded-lg px-3 text-sm text-muted-foreground underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => skipGuidedStep("age")}>No especificar</button>
+              </fieldset>
+              )}
+              {guided.active === "grade" && <div className="space-y-3">
                 <ChipGroup
                   label="Sistema de grado"
                   options={["GUPS", "DAN"]}
                   value={cat.gradeSystem}
                   onChange={(value) => {
-                    if (value === "DAN" || value === "GUPS") updateCat({ gradeSystem: value });
+                    if (value === "DAN" || value === "GUPS") {
+                      updateCat({ gradeSystem: value });
+                      setDanDraft({ from: cat.beltFrom, to: cat.beltTo });
+                      finishGuidedStep("grade", value);
+                    }
                   }}
                 />
+                <button type="button" aria-label="No especificar Sistema de grado" className="min-h-11 rounded-lg px-3 text-sm text-muted-foreground underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => skipGuidedStep("grade")}>No especificar</button>
+              </div>}
+              {guided.active === "grade-range" && <div className="space-y-3">
                 {cat.gradeSystem === "GUPS" && (
                   <ChipGroup
                     label="Rango GUP"
                     options={[...GUP_GRADE_OPTIONS]}
                     value={cat.gupBand}
-                    onChange={(value) => updateCat({ gupBand: value })}
+                    onChange={(value) => { updateCat({ gupBand: value }); finishGuidedStep("grade-range"); }}
                   />
                 )}
                 {cat.gradeSystem === "DAN" && (
-                  <div className="space-y-2">
-                    <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Grado (Dan)</span>
-                    <div className="flex items-center gap-1.5">
+                  <fieldset className="min-w-0 space-y-2">
+                    <legend className="text-sm font-semibold text-foreground">Grado (Dan)</legend>
+                    <div className="flex flex-wrap items-center gap-2">
                       <Input
                         type="number"
                         aria-label="Grado Dan desde"
                         min="1"
                         step="1"
                         placeholder="Desde"
-                        value={cat.beltFrom}
-                        onChange={(e) => updateCat({ beltFrom: e.target.value })}
-                        className="w-24 h-9 text-sm"
+                        value={danDraft.from}
+                        onChange={(e) => { setDanDraft({ ...danDraft, from: e.target.value }); setDanError(null); }}
+                        className="w-28 h-11 text-sm"
                       />
-                      <span className="text-xs text-muted-foreground/50">—</span>
+                      <span className="text-sm text-muted-foreground">a</span>
                       <Input
                         type="number"
                         aria-label="Grado Dan hasta"
                         min="1"
                         step="1"
                         placeholder="Hasta"
-                        value={cat.beltTo}
-                        onChange={(e) => updateCat({ beltTo: e.target.value })}
-                        className="w-24 h-9 text-sm"
+                        value={danDraft.to}
+                        onChange={(e) => { setDanDraft({ ...danDraft, to: e.target.value }); setDanError(null); }}
+                        className="w-28 h-11 text-sm"
                       />
                     </div>
-                    {cat.beltFrom || cat.beltTo ? (
-                      <p className="text-xs text-destructive">{validateDanRange(cat.beltFrom, cat.beltTo)}</p>
-                    ) : null}
-                  </div>
+                    {danError && <p role="alert" className="text-sm text-destructive">{danError}</p>}
+                    <Button type="button" variant="outline" className="min-h-11" onClick={() => {
+                      const error = validateDanRange(danDraft.from, danDraft.to);
+                      if (error) { setDanError(error); return; }
+                      updateCat({ beltFrom: danDraft.from, beltTo: danDraft.to });
+                      finishGuidedStep("grade-range");
+                    }}>Aplicar rango Dan</Button>
+                  </fieldset>
                 )}
-              </div>
-              <ChipGroup label="Género" options={GENERO_OPTIONS} value={cat.gender} onChange={(v) => updateCat({ gender: v })} />
-              <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight} onChange={(v) => updateCat({ weight: v })} />
-              {!config.nameGenerated && !!config.categoryName.trim() && (
-                <div className="rounded-lg border border-border/60 p-2 space-y-2">
-                  <p className="text-xs text-muted-foreground">
-                    El nombre original se conserva aunque edites los datos estructurados.
+                <button type="button" aria-label="No especificar Sistema de grado" className="min-h-11 rounded-lg px-3 text-sm text-muted-foreground underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => skipGuidedStep("grade-range")}>Omitir sistema y rango de grado</button>
+              </div>}
+              {guided.active === "gender" && <div className="space-y-2">
+                <ChipGroup label="Género" options={GENERO_OPTIONS} value={cat.gender}
+                  onChange={(value) => { updateCat({ gender: value }); finishGuidedStep("gender"); }} />
+                <button type="button" aria-label="No especificar Género" className="min-h-11 rounded-lg px-3 text-sm text-muted-foreground underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => skipGuidedStep("gender")}>No especificar</button>
+              </div>}
+              {guided.active === "discipline" && (
+                <fieldset className="min-w-0 space-y-2">
+                  <legend className="text-sm font-semibold text-foreground">Disciplina</legend>
+                  <div className="flex flex-wrap gap-2">
+                    {(["sparring", "tul"] as const).map((type) => (
+                      <button key={type} type="button" aria-pressed={(config.matchType ?? "sparring") === type}
+                        onClick={() => selectDiscipline(type)}
+                        className={cn(
+                          "inline-flex min-h-11 items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                          (config.matchType ?? "sparring") === type
+                            ? "border-2 border-primary bg-primary/10 font-bold" : "border-border bg-background hover:border-primary/60",
+                        )}>
+                        {(config.matchType ?? "sparring") === type && <Check aria-hidden="true" className="size-4" />}
+                        {type === "sparring" ? "Sparring" : "Tul / Formas"}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+              {guided.active === "weight" && (config.matchType ?? "sparring") === "sparring" && <div className="space-y-2">
+                <ChipGroup label="Peso" options={PESO_OPTIONS} value={cat.weight}
+                  onChange={(value) => { updateCat({ weight: value }); finishGuidedStep("weight"); }} />
+                <button type="button" aria-label="No especificar Peso" className="min-h-11 rounded-lg px-3 text-sm text-muted-foreground underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  onClick={() => skipGuidedStep("weight")}>No especificar</button>
+              </div>}
+              {guided.active === "format" && (
+                <fieldset className="min-w-0 space-y-2">
+                  <legend className="text-sm font-semibold text-foreground">Formato</legend>
+                  <div className="flex flex-wrap gap-2">
+                    {availableCategoryFormats(config.matchType ?? "sparring").map((mode) => (
+                      <button key={mode} type="button" aria-pressed={config.mode === mode}
+                        onClick={() => selectFormat(mode)}
+                        className={cn(
+                          "inline-flex min-h-11 items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
+                          config.mode === mode
+                            ? "border-2 border-primary bg-primary/10 font-bold" : "border-border bg-background hover:border-primary/60",
+                        )}>
+                        {config.mode === mode && <Check aria-hidden="true" className="size-4" />}
+                        {mode === "round-robin" ? "Round Robin" : "Eliminación"}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+              {guided.active === null && !buildCategoryName(cat).trim() && (
+                <div className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3">
+                  <Label htmlFor="category-manual-name" className="text-sm font-semibold">Nombre de la categoría</Label>
+                  <p id="category-manual-name-help" className="text-sm text-muted-foreground">
+                    {config.categoryName.trim()
+                      ? "Podés editar este nombre sin completar las divisiones opcionales."
+                      : "Omitiste todas las divisiones. Poné un nombre para poder iniciar la categoría."}
                   </p>
-                  <Button type="button" size="sm" variant="outline" onClick={() => setConfig({
-                    categoryName: buildCategoryName(cat),
-                    nameGenerated: true,
-                  })}>Reemplazar nombre con los datos seleccionados</Button>
+                  <Input id="category-manual-name" aria-describedby="category-manual-name-help"
+                    value={config.categoryName}
+                    onChange={(event) => setConfig({ categoryName: event.target.value, nameGenerated: false })}
+                    className="h-11 w-full text-sm" />
                 </div>
               )}
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Disciplina</span>
-                <div className="flex gap-2">
-                  {(["sparring", "tul"] as const).map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      aria-pressed={(config.matchType ?? "sparring") === t}
-                      onClick={() => {
-                        // Defaults por disciplina: tul → eliminación; sparring → round-robin
-                        const mode = defaultCategoryFormat(t);
-                        const timing = config.profileId === "yusan-2026" && config.profileApplied
-                          ? yusanConfigPatch(config, config, mode, BASE) : null;
-                        setConfig({ ...(timing ?? {}), matchType: t, mode });
-                      }}
-                      className={cn(
-                        "rounded-full border font-medium transition-all duration-150",
-                        (config.matchType ?? "sparring") === t
-                          ? "px-5 py-2 text-sm font-bold border-2 border-primary bg-primary/10 text-primary ring-2 ring-primary/20 shadow-sm"
-                          : "px-3 py-1.5 text-xs border border-border/50 text-muted-foreground/60 hover:border-border hover:text-muted-foreground hover:bg-secondary",
-                      )}
-                    >
-                      {t === "sparring" ? "Sparring" : "Tul / Formas"}
-                    </button>
-                  ))}
+              {guided.active === null && !config.nameGenerated && !!config.categoryName.trim() && (
+                <div className="rounded-lg border border-border/60 p-2 space-y-2">
+                  <p className="text-sm text-foreground">
+                    {staleNamedWeight || tulNamedWeight
+                      ? "El nombre original menciona el peso anterior; revisalo antes de continuar."
+                      : "El nombre original se conserva aunque edites los datos estructurados."}
+                  </p>
+                  {!!(buildCategoryName(cat).trim() ||
+                    ((staleNamedWeight || tulNamedWeight) && withoutNamedWeight(config.categoryName))) && (
+                    <Button type="button" variant="outline" className="min-h-11 h-auto whitespace-normal text-left" onClick={() => setConfig({
+                      categoryName: buildCategoryName(cat).trim() || withoutNamedWeight(config.categoryName),
+                      nameGenerated: !!buildCategoryName(cat).trim(),
+                    })}>Actualizar nombre con los datos seleccionados</Button>
+                  )}
                 </div>
+              )}
+              </fieldset>
+              <fieldset className="min-w-0 space-y-4 rounded-xl border border-border bg-background p-3 sm:p-4">
+                <legend className="px-1 text-base font-bold text-foreground">Combate y tiempos</legend>
+              {guided.active === null && config.mode === "round-robin" && (groupDist?.length ?? 0) > 1 && !categoryIsActive && (
+                <fieldset className="min-w-0 space-y-2">
+                  <legend className="text-sm font-semibold text-foreground">Orden de combates</legend>
+                  <div className="flex flex-wrap gap-2">
+                    {([
+                      ["rest-optimized", "Optimizar descanso (un tatami)"],
+                      ["group-blocks", "Por llave (varios tatamis)"],
+                    ] as const).map(([value, label]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        disabled={startPending}
+                        aria-pressed={(config.rrOrderMode ?? "group-blocks") === value}
+                        onClick={() => setConfig({ rrOrderMode: value })}
+                        className={cn(
+                          "min-h-11 rounded-lg border px-3 py-2 text-sm font-medium text-foreground",
+                          (config.rrOrderMode ?? "group-blocks") === value
+                            ? "border-2 border-primary bg-primary/10 font-bold"
+                            : "border-border bg-background hover:border-primary/60 hover:bg-secondary",
+                        )}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </fieldset>
+              )}
+              <div className="rounded-lg border border-border bg-secondary/20 p-3 space-y-1">
+                <p className="text-sm font-semibold text-foreground">Tiempo y perfil activos</p>
+                <p className="text-sm text-foreground leading-relaxed">
+                  {_rc} round{_rc > 1 ? "s" : ""} × {_fmt(_rd)}
+                  {_rest > 0 ? ` · Descanso: ${_fmt(_rest)}` : " · Sin descanso"}
+                  {config.mode !== "round-robin" && (_fr !== _rc || _fs !== _rd) ? ` · Final: ${_fr} × ${_fmt(_fs)}` : ""}
+                  {` · Desempate: ${_fmt(_tb)}`}
+                  {_gp ? " · Golden Point" : ""}
+                  {` · Perfil: ${config.profileId === "yusan-2026" ? (config.profileApplied ? "Yusan 2026 activo" : "Yusan 2026 seleccionado") : "Personalizado"}`}
+                </p>
               </div>
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Formato</span>
-                <div className="flex gap-2">
-                  {availableCategoryFormats(config.matchType ?? "sparring").map((m) => (
-                    <button
-                      key={m}
-                      type="button"
-                      aria-pressed={config.mode === m}
-                      onClick={() => {
-                        if (!isCategoryFormatAllowed(config.matchType ?? "sparring", m)) return;
-                        if (config.profileId === "yusan-2026" && config.profileApplied) {
-                          const patch = yusanConfigPatch(config, config, m, BASE);
-                          setConfig(patch ?? { mode: m });
-                          return;
-                        }
-                        if (m === "round-robin") {
-                          const rules = config.ruleSet?.mode === "sparring"
-                            ? (config.ruleSet as RuleSetSparring)
-                            : BASE;
-                          const judges = config.judgesCount ?? BASE.judgesCount;
-                          setConfig({
-                            mode: m,
-                            ruleSet: {
-                              ...BASE,
-                              ...rules,
-                              judgesCount: judges,
-                              rounds: {
-                                ...rules.rounds,
-                                count: 1,
-                                duration_seconds: 60,
-                              },
-                            },
-                          });
-                          return;
-                        }
-                        setConfig({ mode: m });
-                      }}
-                      className={cn(
-                        "rounded-full border font-medium transition-all duration-150",
-                        config.mode === m
-                          ? "px-5 py-2 text-sm font-bold border-2 border-primary bg-primary/10 text-primary ring-2 ring-primary/20 shadow-sm"
-                          : "px-3 py-1.5 text-xs border border-border/50 text-muted-foreground/60 hover:border-border hover:text-muted-foreground hover:bg-secondary",
+              {guided.active === null && (
+              <details className="rounded-lg border border-border p-3">
+                <summary className="min-h-11 cursor-pointer rounded-lg py-2 text-sm font-semibold text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Opciones avanzadas: presets y Yusan</summary>
+                <div className="space-y-4 pt-3">
+                  <fieldset className="space-y-2">
+                    <legend className="text-sm font-semibold text-foreground">Preset</legend>
+                    <div className="flex flex-wrap gap-2">
+                      {serverPresets.map((p) => (
+                        <button
+                          key={p.id ?? p.name}
+                          type="button"
+                          aria-pressed={isPresetActive(p)}
+                          onClick={() => applyPreset(p)}
+                          className={cn(
+                            "inline-flex min-h-11 items-center gap-1 rounded-lg border px-3 py-2 text-sm font-medium text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                            isPresetActive(p) ? "border-2 border-primary bg-primary/10 font-bold" : "border-border bg-background hover:bg-secondary",
+                          )}
+                        >
+                          {isPresetActive(p) && <Check aria-hidden="true" className="size-4 shrink-0" />}
+                          {p.name}
+                        </button>
+                      ))}
+                    </div>
+                  </fieldset>
+                  {config.profileId === "yusan-2026" && (
+                    <div className="space-y-2">
+                      <p className="text-sm font-semibold text-foreground">Perfil Yusan 2026 {config.profileApplied ? "activo" : "seleccionado"}</p>
+                      {!config.profileApplied && (
+                        <Button type="button" variant="outline" className="min-h-11 h-auto whitespace-normal" onClick={() => {
+                          const patch = yusanConfigPatch(config, config, config.mode, BASE);
+                          if (!patch) { toast.error("Elegí una edad y un sistema de grado antes de aplicar Yusan 2026."); return; }
+                          setConfig(patch);
+                        }}>Aplicar Yusan 2026 a esta categoría</Button>
                       )}
-                    >
-                      {m === "round-robin" ? "Round Robin" : "Eliminación"}
-                    </button>
-                  ))}
+                    </div>
+                  )}
+                  {!config.profileId && (
+                    <Button type="button" variant="outline" className="min-h-11 h-auto whitespace-normal" onClick={() => setConfig({
+                      eventId: config.eventId ?? crypto.randomUUID(),
+                      profileId: "yusan-2026",
+                      profileApplied: false,
+                    })}>Seleccionar perfil Yusan 2026 para este torneo</Button>
+                  )}
                 </div>
-              </div>
-            </div>
-            <div className="flex flex-wrap gap-4 items-end">
-              <div className="space-y-2">
-                <span className="text-[11px] font-bold uppercase tracking-widest text-muted-foreground/50">Jefe de mesa</span>
+              </details>
+              )}
+              </fieldset>
+              {guided.active === null && (
+              <details className="min-w-0 rounded-xl border border-border bg-background p-3 sm:p-4">
+                <summary className="min-h-11 cursor-pointer py-2 text-base font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Mesa (opcional)</summary>
+              <fieldset className="min-w-0 space-y-2 rounded-xl border border-border bg-background p-3 sm:p-4">
+                <legend className="px-1 text-base font-bold text-foreground">Mesa</legend>
+                <label htmlFor="category-table-chief" className="block text-sm font-semibold text-foreground">Jefe de mesa</label>
+                <span className="text-sm text-muted-foreground">Opcional</span>
                 <Input
+                  id="category-table-chief"
                   placeholder="Nombre del jefe de mesa"
                   value={config.tableChief ?? ""}
                   onChange={(e) => setConfig({ tableChief: e.target.value })}
-                  className="w-52 h-9 text-sm"
+                  className="w-full h-11 text-sm"
                 />
-              </div>
+              </fieldset>
+              </details>
+              )}
             </div>
-
-            <button
-              type="button"
-              onClick={() => setCatExpanded(false)}
-              className="text-xs text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2"
-            >
-              Listo
-            </button>
+            {guided.active === null && (
+            <Button type="button" size="lg" className="min-h-11 w-full sm:w-auto" onClick={() => {
+              setCatExpanded(false);
+              nameRef.current?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+              nameRef.current?.focus();
+            }}>
+              Continuar con competidores <ArrowRight aria-hidden="true" className="size-4" />
+            </Button>
+            )}
           </div>
         )}
       </div>
@@ -1329,17 +1740,17 @@ export function SetupPage() {
         </Card>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
         <Card id="tour-competitor-card">
           <CardHeader className="pb-2 pt-4 px-4">
-            <CardTitle className="text-sm flex items-center gap-2">
+            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
               Lista
               <Badge variant="secondary">{competitors.length}</Badge>
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 disabled={importLoading}
-                className="ml-auto flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium border border-border/60 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors disabled:opacity-50"
+                className="ml-auto flex min-h-11 items-center gap-1.5 rounded-md border border-border/60 px-2.5 py-1 text-sm font-medium text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground disabled:opacity-50"
               >
                 <FileSpreadsheet className="size-3.5" />
                 {importLoading ? "Cargando..." : "Importar Excel"}
@@ -1348,7 +1759,7 @@ export function SetupPage() {
                 <button
                   type="button"
                   onClick={() => setClearConfirmOpen(true)}
-                  className="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium border border-destructive/40 text-destructive/80 hover:bg-destructive/10 hover:text-destructive transition-colors"
+                  className="flex min-h-11 items-center gap-1.5 rounded-md border border-destructive/40 px-2.5 py-1 text-sm font-medium text-destructive/80 transition-colors hover:bg-destructive/10 hover:text-destructive"
                   title="Vaciar lista de competidores (para cargar otra categoría)"
                 >
                   <Trash2 className="size-3.5" />
@@ -1365,66 +1776,94 @@ export function SetupPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4 space-y-3">
-            <div className="flex gap-2">
+            <div className="flex flex-col gap-2 sm:flex-row">
               <Input
                 ref={nameRef}
                 placeholder="Nombre del competidor"
+                aria-label="Nombre del competidor"
                 value={quickName}
                 onChange={(e) => setQuickName(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") handleQuickAdd(); }}
-                className="flex-1"
-                autoFocus
+                className="h-12 min-w-0 flex-1 text-base md:text-base"
               />
               <Input
                 placeholder="Club (opcional)"
+                aria-label="Club (opcional)"
                 value={quickTeam}
                 onChange={(e) => setQuickTeam(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter") handleQuickAdd(); }}
-                className="w-36"
+                className="h-12 w-full text-base md:text-base sm:w-40"
               />
               <Button
                 size="icon"
                 onClick={handleQuickAdd}
                 disabled={!quickName.trim()}
                 title="Agregar (Enter)"
+                aria-label="Agregar competidor"
+                className="h-12 w-full shrink-0 sm:w-12"
               >
-                <Plus className="size-4" />
+                <Plus className="size-5" />
               </Button>
             </div>
+
+            {primaryAction.kind === "start" && (
+              <div className="flex flex-col items-start gap-1.5">
+                <Button
+                  id="tour-start-btn"
+                  data-testid="category-primary-action"
+                  type="button"
+                  size="xl"
+                  className="w-full sm:w-auto"
+                  disabled={primaryAction.disabled || interactionBlocked || startPending}
+                  aria-describedby={primaryAction.reason ? "category-start-reason" : undefined}
+                  onClick={() => { void handleStart(); }}
+                >
+                  <Swords className="size-5" />{primaryAction.label}
+                </Button>
+                {primaryAction.reason && (
+                  <p id="category-start-reason" className="text-sm text-muted-foreground" role="status">
+                    {primaryAction.reason}
+                  </p>
+                )}
+              </div>
+            )}
 
             {competitors.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-muted-foreground gap-2">
                 <AlertCircle className="size-6 opacity-30" />
-                <p className="text-xs">Escribe un nombre y presiona Enter</p>
+                <p className="text-sm">Escribe un nombre y presiona Enter</p>
               </div>
             ) : (
-              <div className="space-y-0.5 max-h-80 overflow-y-auto pr-1">
+              <div data-testid="setup-competitor-list"
+                className="max-h-[28rem] space-y-1 overflow-y-auto pr-1">
                 {competitors.map((c, i) => (
                   <div
                     key={c.id}
-                    className="flex items-center gap-2.5 rounded-lg px-2 py-2.5 hover:bg-secondary/50 group"
+                    className="group flex min-h-14 items-center gap-2.5 rounded-lg px-2 py-1.5 hover:bg-secondary/50"
                   >
-                    <span className="size-6 shrink-0 rounded-full bg-secondary text-[11px] font-bold text-muted-foreground flex items-center justify-center">
+                    <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-bold text-muted-foreground">
                       {i + 1}
                     </span>
                     <div className="flex-1 min-w-0">
-                      <span className="font-medium text-sm truncate block">{c.name}</span>
-                      {c.team && <span className="text-xs text-muted-foreground truncate block">{c.team}</span>}
+                      <span className="block break-words text-lg font-semibold leading-snug">{c.name}</span>
+                      {c.team && <span className="block break-words text-sm text-muted-foreground">{c.team}</span>}
                     </div>
-                    <div className="flex gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className="flex shrink-0 gap-0.5">
                       <button
                         type="button"
                         onClick={() => openEdit(c)}
-                        className="p-1 rounded hover:bg-secondary text-muted-foreground"
+                        aria-label={`Editar a ${c.name}`}
+                        className="flex size-11 items-center justify-center rounded text-muted-foreground hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        <Pencil className="size-3" />
+                        <Pencil className="size-4" />
                       </button>
                       <button
                         type="button"
                         onClick={() => removeCompetitor(c.id)}
-                        className="p-1 rounded hover:bg-secondary text-destructive"
+                        aria-label={`Eliminar a ${c.name}`}
+                        className="flex size-11 items-center justify-center rounded text-destructive hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       >
-                        <Trash2 className="size-3" />
+                        <Trash2 className="size-4" />
                       </button>
                     </div>
                   </div>
@@ -1434,12 +1873,14 @@ export function SetupPage() {
           </CardContent>
         </Card>
 
-        <Card>
+        <Card data-testid="setup-fixture-preview">
           <CardHeader className="pb-2 pt-4 px-4">
-            <CardTitle className="text-sm flex items-center gap-2">
+            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
               {categoryIsActive ? (config.mode === "elimination" ? "Llave guardada" : "Fixture guardado") : (config.mode === "elimination" ? "Llave (preview)" : "Fixture (preview)")}
               {previewFights.length > 0 && (
-                <Badge variant="secondary">{previewFights.length} combates</Badge>
+                <Badge variant="secondary" className="text-sm">
+                  {previewFights.length} {previewFights.length === 1 ? "combate" : "combates"}
+                </Badge>
               )}
               {config.mode === "round-robin" && groupDist && (
                 <Badge variant="outline" className="text-xs">
@@ -1454,7 +1895,9 @@ export function SetupPage() {
             </CardTitle>
           </CardHeader>
           <CardContent className="px-4 pb-4">
-            {categoryIsActive && <p className="text-xs text-muted-foreground">{fights.filter((fight) => fight.completed).length} de {fights.length} combates completados</p>}
+            {categoryIsActive && <p className="mb-3 text-sm text-muted-foreground">
+              {completedPreviewCount} de {previewFights.length} combates completados
+            </p>}
             <FixturePreview
               fights={previewFights}
               mode={config.mode}

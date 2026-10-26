@@ -384,6 +384,7 @@ export function BracketPage() {
           <BracketSection
             label="Grilla A"
             matches={matchesA}
+            fights={fights}
             competitors={competitors}
             selectedMatchId={selectedMatchId}
             onSelectMatch={setSelectedMatchId}
@@ -394,6 +395,7 @@ export function BracketPage() {
           <BracketSection
             label="Grilla B"
             matches={matchesB}
+            fights={fights}
             competitors={competitors}
             selectedMatchId={selectedMatchId}
             onSelectMatch={setSelectedMatchId}
@@ -425,6 +427,7 @@ export function BracketPage() {
             <div className="space-y-3">
               <MatchDetailCard
                 match={selectedMatch}
+                fight={fights.find((fight) => fight.bracketMatchId === selectedMatch.id)}
                 competitors={competitors}
                 totalRounds={totalRounds}
                 onStartFight={handleStartMatchFight}
@@ -444,6 +447,7 @@ import type { BracketMatch, CompetitorEntry } from "@/store/tournament";
 function BracketSection({
   label,
   matches,
+  fights,
   competitors,
   selectedMatchId,
   onSelectMatch,
@@ -453,6 +457,7 @@ function BracketSection({
 }: Readonly<{
   label: string;
   matches: BracketMatch[];
+  fights: FightEntry[];
   competitors: CompetitorEntry[];
   selectedMatchId: string | null;
   onSelectMatch: (id: string) => void;
@@ -494,6 +499,7 @@ function BracketSection({
           <div className="space-y-3">
             <MatchDetailCard
               match={selectedMatch}
+              fight={fights.find((fight) => fight.bracketMatchId === selectedMatch.id)}
               competitors={competitors}
               totalRounds={totalRounds}
               onStartFight={onStartFight}
@@ -507,16 +513,21 @@ function BracketSection({
 
 function MatchDetailCard({
   match,
+  fight,
   competitors,
   totalRounds,
   onStartFight,
 }: Readonly<{
   match: BracketMatch;
+  fight?: FightEntry;
   competitors: CompetitorEntry[];
   totalRounds: number;
   onStartFight: (matchId: string) => void;
 }>) {
   const canFight = !match.completed && !!match.red.competitor && !!match.blue.competitor;
+  const operativeRed = fight?.red ?? match.red.competitor;
+  const operativeBlue = fight?.blue ?? match.blue.competitor;
+  const colorsSwapped = !!fight && fight.red.id !== match.red.competitor?.id;
   return (
     <Card>
       <CardHeader className="pb-2">
@@ -525,22 +536,23 @@ function MatchDetailCard({
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3 pb-4">
+        {colorsSwapped && <p className="text-xs text-cyan-300">Colores operativos del combate intercambiados; la llave conserva su orden.</p>}
         <div className="flex items-center justify-between border border-border rounded-lg p-3">
           <div>
-            <p className={cn("font-bold", match.red.competitor ? "text-red-400" : "text-muted-foreground")}>
-              {match.red.competitor?.name ?? "Por confirmar"}
+            <p className={cn("font-bold", operativeRed ? "text-red-400" : "text-muted-foreground")}>
+              {operativeRed?.name ?? "Por confirmar"}
             </p>
-            {match.red.competitor?.team && (
-              <p className="text-xs text-muted-foreground">{match.red.competitor.team}</p>
+            {operativeRed?.team && (
+              <p className="text-xs text-muted-foreground">{operativeRed.team}</p>
             )}
           </div>
           <span className="text-muted-foreground text-xs px-2">vs</span>
           <div className="text-right">
-            <p className={cn("font-bold", match.blue.competitor ? "text-blue-400" : "text-muted-foreground")}>
-              {match.blue.competitor?.name ?? "Por confirmar"}
+            <p className={cn("font-bold", operativeBlue ? "text-blue-400" : "text-muted-foreground")}>
+              {operativeBlue?.name ?? "Por confirmar"}
             </p>
-            {match.blue.competitor?.team && (
-              <p className="text-xs text-muted-foreground">{match.blue.competitor.team}</p>
+            {operativeBlue?.team && (
+              <p className="text-xs text-muted-foreground">{operativeBlue.team}</p>
             )}
           </div>
         </div>

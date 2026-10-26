@@ -65,6 +65,7 @@ const config = z.strictObject({
   ruleSet: z.union([sparringRules, patternsRules]).nullable(),
   judgesCount: z.number().int().min(1).max(5),
   mode: z.enum(["round-robin", "elimination", "groups"]),
+  rrOrderMode: z.enum(["rest-optimized", "group-blocks"]).optional(),
   matchType: z.enum(["sparring", "tul"]),
   finalRounds: count.optional(),
   finalSeconds: count.optional(),

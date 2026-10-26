@@ -1,10 +1,11 @@
 import type { Express } from 'express'
 import type { Server } from 'socket.io'
+import { z } from 'zod'
 import { getRingConfig, setRingConfig } from '../ring-config.js'
 import { getLocalIp } from '../helpers.js'
 import { state } from '../state.js'
 import { broadcast } from '../broadcast.js'
-import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, clearTournamentData, insertFightIfNew, isFightPending, createTournament, renameTournament, getCompetitorCount, getActiveMatchLock, getCategoryTournamentId, getSourceCategoryId, getTournamentCategoryId, resolveCategoryTournament, setSelectedTournamentId } from '../db/index.js'
+import { getFights, getCompetitors, upsertCompetitor, upsertFight, deletePendingFights, clearTournamentData, insertFightIfNew, isFightPending, createTournament, renameTournament, getCompetitorCount, getActiveMatchLock, getCategoryTournamentId, getLastConfirmedCategoryFight, getSourceCategoryId, getTournamentCategoryId, resolveCategoryTournament, setSelectedTournamentId } from '../db/index.js'
 import db from '../db/index.js'
 import { eliminationContinuationSchema } from '../../src/lib/elimination-continuation-contract.js'
 import { ensureEliminationContinuation, getEliminationContinuation, ContinuationConflict } from '../db/elimination-continuations.js'
@@ -21,6 +22,19 @@ export function registerRingRoute(app: Express, io: Server) {
   registerCategoryRestartRoutes(app, io)
   registerCategoryDeletionRoutes(app, io)
   registerCategoryRestartModesRoutes(app, io)
+  app.get('/api/ring/categories/:categoryId/last-confirmed', (req, res) => {
+    const parsed = z.strictObject({ categoryId: z.string().trim().min(1) })
+      .safeParse({ categoryId: req.params.categoryId })
+    if (!parsed.success) {
+      res.status(400).json({ error: 'invalid_category_id' })
+      return
+    }
+    if (getCategoryTournamentId(parsed.data.categoryId) === null) {
+      res.status(404).json({ error: 'category_not_found' })
+      return
+    }
+    res.json({ ok: true, ...getLastConfirmedCategoryFight(parsed.data.categoryId) })
+  })
   // Guard explicit identities AND existing owners before handlers can select, replace or broadcast.
   const executionWrites = new Set(['/import-fights', '/full-reset', '/activate-category',
     '/sync-fights', '/remove-fights', '/remote-result'])

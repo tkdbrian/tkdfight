@@ -123,9 +123,17 @@ export function rewriteIndexRevision(sw, oldRevision, newRevision) {
     (_match, prefix, suffix) => `${prefix}${newRevision}${suffix}`);
 }
 
-export function assertFreshOutput(outputRoot, buildId) {
+export function assertFreshOutput(outputRoot, buildId, releasePrefix = "Sunday-20261025") {
   const root = resolve(outputRoot);
-  const name = `Sunday-20261025-${buildId}`;
+  // A single path component only: never allow a CLI-provided name to escape outputRoot.
+  if (typeof releasePrefix !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(releasePrefix)
+    || releasePrefix.includes("..") || releasePrefix.endsWith(".")) {
+    throw new Error("Invalid release prefix");
+  }
+  if (typeof buildId !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._-]{3,79}$/.test(buildId)) {
+    throw new Error("Invalid buildId");
+  }
+  const name = `${releasePrefix}-${buildId}`;
   const folder = join(root, name);
   const zip = `${folder}.zip`;
   const sidecar = `${zip}.sha256`;

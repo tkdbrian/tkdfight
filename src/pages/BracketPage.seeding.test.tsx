@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { generateEliminationBracket } from "@/lib/bracket";
@@ -14,6 +14,26 @@ afterEach(() => { cleanup(); act(() => useTournamentStore.setState(initial, true
   socket.connected = true; socket.stateReady = true; socket.state.activeMatchLock = null; });
 
 describe("bracket reseeding operating safety", () => {
+  it("shows operative swapped colors in detail without reseeding the bracket", async () => {
+    const competitors = ["Alice", "Bob"].map((name) => ({ id: name, name }));
+    const bracket = generateEliminationBracket(competitors);
+    const match = bracket.matches.find((entry) => entry.red.competitor && entry.blue.competitor);
+    if (!match?.red.competitor || !match.blue.competitor) throw new Error("Test requires a full match");
+    const red = match.red.competitor;
+    const blue = match.blue.competitor;
+    useTournamentStore.setState({
+      config: { ...initial.config, id: "selected", mode: "elimination" }, phase: "fighting",
+      competitors, bracketMatches: bracket.matches, bracketSeeds: bracket.seeds,
+      fights: [{ id: "prepared", red: blue, blue: red, bracketMatchId: match.id, completed: false }],
+    });
+    const { container } = await act(async () => render(<MemoryRouter><BracketPage /></MemoryRouter>));
+    const matchNode = container.querySelector("svg g.cursor-pointer");
+    if (!matchNode) throw new Error("Expected selectable match");
+    fireEvent.click(matchNode);
+    expect(screen.getByText(/Colores operativos del combate intercambiados/)).toBeInTheDocument();
+    expect(useTournamentStore.getState().bracketMatches).toEqual(bracket.matches);
+  });
+
   it.each(["ready", "own-loaded", "other-loaded", "unknown", "prepared"])("handles %s without changing fights or sending commands", async (mode) => {
     const competitors = ["Pedro", "Juan", "Cris"].map((name) => ({ id: name, name }));
     const bracket = generateEliminationBracket(competitors);
