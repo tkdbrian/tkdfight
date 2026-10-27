@@ -265,6 +265,13 @@ describe("category primary action", () => {
     expect(getCategoryPrimaryAction(context(snapshot)).kind).toBe("continue");
     snapshot.fights[snapshot.fights.length - 1].winner = "red";
     expect(getCategoryPrimaryAction(context(snapshot)).kind).toBe("results");
+    const bracketBeforeSwap = JSON.stringify(snapshot.bracketMatches);
+    snapshot.fights[snapshot.fights.length - 1] = {
+      ...snapshot.fights[snapshot.fights.length - 1], red: blue, blue: red, winner: "blue",
+    };
+    expect(resolveEliminationOutcome(snapshot)).toMatchObject({ status: "resolved",
+      championId: red.id, runnerUpId: blue.id, decisiveFightId: "ab" });
+    expect(JSON.stringify(snapshot.bracketMatches)).toBe(bracketBeforeSwap);
   });
 });
 
@@ -295,6 +302,25 @@ describe("elimination outcome authority", () => {
     expect(resolveEliminationOutcome(snapshot)).toMatchObject({ status: "resolved",
       championId: snapshot.competitors[0].id, runnerUpId: snapshot.competitors[1].id,
       decisiveFightId: "simple-final", requiredResultIds: ["simple-final"] });
+  });
+
+  it("resolves a prestart colour swap without swapping structural bracket slots", () => {
+    const snapshot = recordedCategory(3);
+    snapshot.config.mode = "elimination";
+    snapshot.competitors = snapshot.competitors.slice(0, 2);
+    const [bracketRed, bracketBlue] = snapshot.competitors;
+    const final = generateEliminationBracket(snapshot.competitors).matches[0];
+    snapshot.bracketMatches = [{ ...final, completed: true, winnerId: bracketBlue.id }];
+    snapshot.fights = [{ id: "swapped-final", red: bracketBlue, blue: bracketRed,
+      bracketMatchId: final.id, completed: true, winner: "red", isFinalFight: true }];
+    const structuralBracket = JSON.stringify(snapshot.bracketMatches);
+    expect(resolveEliminationOutcome(snapshot)).toMatchObject({ status: "resolved",
+      championId: bracketBlue.id, runnerUpId: bracketRed.id,
+      requiredResultIds: ["swapped-final"] });
+    expect(JSON.stringify(snapshot.bracketMatches)).toBe(structuralBracket);
+
+    snapshot.fights[0] = { ...snapshot.fights[0], blue: { id: "unrelated", name: "Intruso" } };
+    expect(resolveEliminationOutcome(snapshot).status).toBe("review");
   });
 
   it("requires exact timed-extra to golden-point lineage before awarding gold", () => {

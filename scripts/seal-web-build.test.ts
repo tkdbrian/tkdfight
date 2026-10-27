@@ -10,19 +10,26 @@ const roots: string[] = [];
 const helper = resolve("scripts/seal-web-build.mjs");
 const commit = "a".repeat(40);
 function md5(value: string): string { return createHash("md5").update(value).digest("hex"); }
-function fixture(): string {
+function fixture(demo = false): string {
   const root = mkdtempSync(join(tmpdir(), "tkd-web-build-test-"));
   roots.push(root);
   mkdirSync(join(root, "dist")); mkdirSync(join(root, "dist-server"));
-  const html = "<html><head><title>TKD</title></head><body></body></html>";
+  const html = demo
+    ? `<html><head><title>TKD</title><script id="tkd-demo-canonical"></script><script id="tkd-demo-legacy-bridge">dataset.tkdDemoBridge='1'</script><script id="tkd-worker-registration">navigator.serviceWorker.register('/sw.js',{scope:'/'});'demo.webmanifest'</script></head><body></body></html>`
+    : "<html><head><title>TKD</title></head><body></body></html>";
   writeFileSync(join(root, "dist/index.html"), html);
-  writeFileSync(join(root, "dist/sw.js"), `precacheAndRoute([{url:"index.html",revision:"${md5(html)}"}]);createHandlerBoundToURL("index.html")`);
+  writeFileSync(join(root, demo ? "dist/demo-sw.js" : "dist/sw.js"), `precacheAndRoute([{url:"index.html",revision:"${md5(html)}"}]);createHandlerBoundToURL("${demo ? "/" : ""}index.html")${demo ? ";tkd-browser-demo" : ""}`);
+  if (demo) {
+    writeFileSync(join(root, "dist/sw.js"), `precacheAndRoute([{url:"index.html",revision:"${md5(html)}"}]);createHandlerBoundToURL("index.html");api-cache;demo(?:`);
+    writeFileSync(join(root, "dist/manifest.webmanifest"), JSON.stringify({ start_url: "/", scope: "/", orientation: "landscape" }));
+    writeFileSync(join(root, "dist/demo.webmanifest"), JSON.stringify({ start_url: "/demo/", scope: "/demo/", orientation: "any" }));
+  }
   writeFileSync(join(root, "dist-server/index.mjs"), "// bundled server\n");
   return root;
 }
-function seal(root: string, revision = commit): ReturnType<typeof spawnSync> {
+function seal(root: string, revision = commit, demo = false): ReturnType<typeof spawnSync> {
   return spawnSync(process.execPath, [helper, "--root", root], {
-    cwd: root, encoding: "utf8", env: { ...process.env, RENDER_GIT_COMMIT: revision },
+    cwd: root, encoding: "utf8", env: { ...process.env, RENDER_GIT_COMMIT: revision, TKD_BROWSER_DEMO_BUILD: demo ? "1" : "0" },
   });
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -39,6 +46,29 @@ it("seals matching web/server identities and updates the exact PWA index revisio
   expect(readFileSync(join(root, "dist/sw.js"), "utf8")).toContain(`revision:"${md5(html)}"`);
   expect(readFileSync(join(root, "dist-server/index.mjs"), "utf8")).toBe(beforeServer);
 });
+
+it("seals scoped demo and compatible root bridge workers together", () => {
+  const root = fixture(true);
+  const result = seal(root, commit, true); expect(result.status, String(result.stderr)).toBe(0);
+  const html = readFileSync(join(root, "dist/index.html"), "utf8");
+  expect(readFileSync(join(root, "dist/demo-sw.js"), "utf8")).toContain(`revision:"${md5(html)}"`);
+  expect(readFileSync(join(root, "dist/sw.js"), "utf8")).toContain(`revision:"${md5(html)}"`);
+});
+
+it.each(["wrong-scope", "stale-demo-worker", "unexpected-root-worker", "root-deletes-demo-cache"])(
+  "rejects %s before sealing the demo build", (kind) => {
+    const root = fixture(true);
+    if (kind === "wrong-scope") writeFileSync(join(root, "dist/demo.webmanifest"), JSON.stringify({ start_url: "/demo/", scope: "/" }));
+    if (kind === "stale-demo-worker") writeFileSync(join(root, "dist/demo-sw.js"), 'precacheAndRoute([{url:"index.html",revision:"' + "0".repeat(32) + '"}])');
+    if (kind === "unexpected-root-worker") writeFileSync(join(root, "dist/sw.js"), "// wrong scope");
+    if (kind === "root-deletes-demo-cache") writeFileSync(join(root, "dist/sw.js"), readFileSync(join(root, "dist/sw.js"), "utf8") + ";cleanupOutdatedCaches");
+    const before = readFileSync(join(root, "dist/index.html"), "utf8");
+    const result = seal(root, commit, true);
+    expect(result.status).not.toBe(0);
+    expect(readFileSync(join(root, "dist/index.html"), "utf8")).toBe(before);
+    expect(existsSync(join(root, "build-id.json"))).toBe(false);
+  }
+);
 
 it.each(["invalid-commit", "stale-sw", "missing-bundle", "already-sealed", "ambiguous-head"])("rejects %s before writing any identity or changing HTML", (kind) => {
   const root = fixture();

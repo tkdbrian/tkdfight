@@ -17,7 +17,12 @@ import {
   resolveJury,
   undoLastEvent,
 } from '../../src/engine/match-machine.js'
-import type { Competitor, MatchState, RuleSetSparring } from '../../src/engine/types.js'
+import type { MatchState, RuleSetSparring } from '../../src/engine/types.js'
+import {
+  confirmFlagRound, finishPointsFromJudgeTotals, finishTulVoting,
+  hasPreFightActivity as hasDeskPreFightActivity, reopenTulVoting,
+  resultFlagCounts, startTulVoting,
+} from '../../src/engine/desk-operations.js'
 import type { MatchInfo } from '../state.js'
 import { state, MAX_FALLOS_IN_MEMORY } from '../state.js'
 import { broadcast, serverUrl } from '../broadcast.js'
@@ -83,8 +88,6 @@ import {
   safeParse,
 } from './schemas.js'
 
-type FightWinner = Competitor | 'draw'
-
 const MATCH_CONTEXT_EVENTS = new Set([
   'match:start', 'match:event', 'match:finishRound', 'match:confirmPenalties',
   'match:resolveJury', 'match:reset', 'judge:vote', 'match:undo',
@@ -130,39 +133,7 @@ function persistIndividualFlagState(
 }
 
 function hasPreFightActivity(): boolean {
-  const current = state.matchState
-  return !current || current.phase !== 'idle' || current.currentRound !== 0 || !!current.result
-    || current.firstPoint !== null || state.roundFlags.length > 0 || state.judgeVotes.size > 0
-    || current.rounds.some(round => round.events.length > 0)
-    || current.timeLeft !== state.rules?.rounds.duration_seconds
-}
-
-function tallyFlagWinner(votes: Map<string, string>, n: number): { red: number; blue: number; draw: number; winner: FightWinner } {
-  let red = 0, blue = 0, draw = 0
-  for (let i = 1; i <= n; i++) {
-    const v = votes.get(`J${i}`)
-    if (v === 'red') red++
-    else if (v === 'blue') blue++
-    else if (v === 'draw') draw++
-  }
-  let winner: FightWinner
-  // Regla de mesa:
-  // 1) Si empate es mayoría clara (draw > red y draw > blue), gana empate.
-  // 2) Si rojo y azul empatan entre sí, gana empate.
-  // 3) Si no, gana el color con más votos entre rojo/azul (aunque empate tenga el mismo valor).
-  if (draw > red && draw > blue) winner = 'draw'
-  else if (red === blue) winner = 'draw'
-  else winner = red > blue ? 'red' : 'blue'
-  return { red, blue, draw, winner }
-}
-
-function roundsWinner(flags: Array<{ red: number; blue: number; draw?: number; winner: string }>): FightWinner {
-  const redR = flags.filter(r => r.winner === 'red').length
-  const blueR = flags.filter(r => r.winner === 'blue').length
-  const drawR = flags.filter(r => r.winner === 'draw').length
-  if (drawR > redR && drawR > blueR) return 'draw'
-  if (redR === blueR) return 'draw'
-  return redR > blueR ? 'red' : 'blue'
+  return hasDeskPreFightActivity(state.matchState, state.rules, state.roundFlags, state.judgeVotes)
 }
 
 export function registerSocketHandlers(io: Server) {
@@ -658,7 +629,7 @@ export function registerSocketHandlers(io: Server) {
       // Tul: sin timer ni rounds — ir directo a fase de votación
       if (state.match?.matchMode === 'tul') {
         if (state.tulPhase !== 'idle') return
-        const nextState: MatchState = { ...state.matchState, phase: 'rest', result: null }
+        const nextState = startTulVoting(state.matchState)
         if (!persistIndividualFlagState(nextState, state.roundFlags, new Map<string, string>())) return
         state.matchState = nextState
         state.tulPhase = 'voting'
@@ -805,26 +776,9 @@ export function registerSocketHandlers(io: Server) {
       if (state.matchState.phase !== 'penalties') return
       // Misma regla que banderines: empate solo si draw/tie es mayoría clara,
       // o si rojo y azul están empatados entre sí.
-      const jt = computeJudgeTotals()
-      const judgeValues = Object.values(jt)
-      let redLeads = 0, blueLeads = 0, tiedLeads = 0
-      for (const t of judgeValues) {
-        if (t.red > t.blue) redLeads++
-        else if (t.blue > t.red) blueLeads++
-        else tiedLeads++
-      }
-      let overall: FightWinner
-      if (tiedLeads > redLeads && tiedLeads > blueLeads) overall = 'draw'
-      else if (redLeads === blueLeads) overall = 'draw'
-      else overall = redLeads > blueLeads ? 'red' : 'blue'
-      state.matchState = {
-        ...state.matchState,
-        phase: 'finished',
-        pendingJuryDecision: false,
-        result: { winner: overall, reason: 'points' },
-      }
+      state.matchState = finishPointsFromJudgeTotals(state.matchState, computeJudgeTotals())
       stopTicker()
-      saveFallo(overall)
+      saveFallo(state.matchState.result?.winner)
       broadcast(io)
     })
 
@@ -1231,30 +1185,14 @@ export function registerSocketHandlers(io: Server) {
 
     socket.on('mesa:confirmRound', () => {
       if (!state.rules || !state.matchState) return
-      // Only allow flag confirmation during rest phase (or pending jury decision in points mode)
-      const msPhase = state.matchState.phase
-      if (msPhase !== 'rest' && !(msPhase === 'finished' && state.matchState.pendingJuryDecision)) return
-      if (state.match?.requireIndividualFlags) {
-        if (msPhase !== 'rest' || state.rules.judgingMode !== 'flags') return
-        const judgeIds = Array.from({ length: state.rules.judgesCount }, (_, i) => `J${i + 1}`)
-        if (!judgeIds.every((id) => {
-          const vote = state.judgeVotes.get(id)
-          return vote === 'red' || vote === 'blue' || vote === 'draw'
-        })) return
-      }
-      const { red, blue, draw, winner } = tallyFlagWinner(state.judgeVotes, state.rules.judgesCount)
-      const votes = Object.fromEntries(state.judgeVotes)
-      const nextFlags = [...state.roundFlags, { red, blue, draw, winner, votes }]
-      const totalRounds = state.rules.rounds.count
-      if (nextFlags.length >= totalRounds) {
-        const overall = roundsWinner(nextFlags)
-        const nextState: MatchState = {
-          ...state.matchState,
-          phase: 'finished',
-          timeLeft: 0,
-          pendingJuryDecision: false,
-          result: { winner: overall, reason: 'points' },
-        }
+      const decision = confirmFlagRound({ matchState: state.matchState, rules: state.rules,
+        roundFlags: state.roundFlags, judgeVotes: state.judgeVotes,
+        requireIndividualFlags: state.match?.requireIndividualFlags })
+      if (!decision) return
+      const nextFlags = decision.roundFlags
+      if (decision.winner !== null) {
+        const overall = decision.winner
+        const nextState = decision.matchState
         const input = state.matchCategoryId && state.match
           ? buildMatchResultInput(state.matchCategoryId, state.match.id, overall, nextState, nextFlags) : null
         if (!input || !state.match) return
@@ -1272,7 +1210,7 @@ export function registerSocketHandlers(io: Server) {
         stopTicker()
         appendPendingFallo(input)
       } else {
-        if (!persistIndividualFlagState(state.matchState, nextFlags, new Map<string, string>())) return
+        if (!persistIndividualFlagState(decision.matchState, nextFlags, new Map<string, string>())) return
         state.roundFlags = nextFlags
         state.judgeVotes.clear()
       }
@@ -1381,10 +1319,9 @@ export function registerSocketHandlers(io: Server) {
         return reject('stale_result_revision', 'La votación cambió; revisá el resultado.')
       if (state.tulPhase !== 'voting') return reject('wrong_phase', 'La votación no está abierta.')
       const judgesCount = state.rules?.judgesCount ?? 3
-      const { winner } = tallyFlagWinner(state.judgeVotes, judgesCount)
-      if (winner === 'draw') return reject('draw_not_allowed', 'En formas no se permite empate; corregí los votos.')
-      const nextState: MatchState = { ...state.matchState, phase: 'finished',
-        result: { winner, reason: 'points' } }
+      const nextState = finishTulVoting(state.matchState, state.judgeVotes, judgesCount)
+      if (!nextState) return reject('draw_not_allowed', 'En formas no se permite empate; corregí los votos.')
+      const winner = nextState.result!.winner
       const input = buildMatchResultInput(data.categoryId, data.matchId, winner, nextState)
       if (!input) return reject('wrong_phase', 'No hay resultado disponible.')
       try {
@@ -1430,7 +1367,7 @@ export function registerSocketHandlers(io: Server) {
         stored.reason !== 'points') return reject('wrong_phase', 'No hay votación pendiente para corregir.')
       if (data.expectedRevision !== getMatchResultRevision(data.categoryId, data.matchId))
         return reject('stale_result_revision', 'El resultado cambió; revisá la pantalla.')
-      const nextState: MatchState = { ...state.matchState, phase: 'rest', result: null }
+      const nextState = reopenTulVoting(state.matchState)
       let revision: number
       try {
         revision = reopenPendingFlagResult(data.matchId, data.categoryId, state.matchTournamentId,
@@ -1466,17 +1403,11 @@ function buildMatchResultInput(
 
   const winner = winnerOverride ?? result?.winner
   if (!winner) return null
-  const { red: flagsRed, blue: flagsBlue } = state.match.goldenPoint
-    ? {
-        red: Object.values(matchState?.goldenPoint?.votes ?? {}).filter((vote) => vote === 'red').length,
-        blue: Object.values(matchState?.goldenPoint?.votes ?? {}).filter((vote) => vote === 'blue').length,
-      }
-    : state.match.matchMode === "tul"
-    ? tallyFlagWinner(state.judgeVotes, state.rules?.judgesCount ?? 3)
-    : {
-        red: roundFlags.reduce((sum, round) => sum + round.red, 0),
-        blue: roundFlags.reduce((sum, round) => sum + round.blue, 0),
-      }
+  const { red: flagsRed, blue: flagsBlue } = resultFlagCounts({
+    matchMode: state.match.matchMode, goldenPoint: state.match.goldenPoint,
+    matchState, roundFlags, judgeVotes: state.judgeVotes,
+    judgesCount: state.rules?.judgesCount ?? 3,
+  })
   const penalties = computePenaltyCounts()
   return {
     fightId: matchId,

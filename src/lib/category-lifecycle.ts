@@ -96,6 +96,18 @@ function winnerId(fight: FightEntry): string | null {
   return null;
 }
 
+/** Colour assignment may be swapped before a bout; bracket lineage is not. */
+function sameContestants(
+  fightRedId: string,
+  fightBlueId: string,
+  bracketRedId: string,
+  bracketBlueId: string,
+): boolean {
+  return fightRedId !== fightBlueId && bracketRedId !== bracketBlueId &&
+    ((fightRedId === bracketRedId && fightBlueId === bracketBlueId) ||
+      (fightRedId === bracketBlueId && fightBlueId === bracketRedId));
+}
+
 function matchFinal(matches: BracketMatch[]): BracketMatch | null {
   if (!matches.length) return null;
   const referenced = new Set(matches.flatMap((match) =>
@@ -179,8 +191,8 @@ export function resolveEliminationOutcome(
     const fight = originals[0];
     const sequence = resolveFinalSequence(fight, fights, []);
     if (sequence.status === "pending") return unresolved("pending");
-    if (fight.red.id !== match.red.competitor.id ||
-      fight.blue.id !== match.blue.competitor.id ||
+    if (!sameContestants(fight.red.id, fight.blue.id,
+      match.red.competitor.id, match.blue.competitor.id) ||
       sequence.status !== "resolved" || sequence.championId !== match.winnerId)
       return unresolved("review");
     requiredResultIds.push(...sequence.requiredResultIds);
@@ -196,7 +208,7 @@ export function resolveEliminationOutcome(
     if (!finals.length) return unresolved("pending");
     if (finals.length !== 1) return unresolved("review");
     const final = finals[0];
-    if (final.red.id !== a.winnerId || final.blue.id !== b.winnerId)
+    if (!sameContestants(final.red.id, final.blue.id, a.winnerId, b.winnerId))
       return unresolved("review");
     return resolveFinalSequence(final, fights, requiredResultIds);
   }

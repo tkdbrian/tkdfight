@@ -5,7 +5,8 @@ import { useNavigate } from "react-router-dom";
 import { useTournamentStore, type FightEntry, type CompetitorEntry, type TournamentGroup } from "@/store/tournament";
 import { useShallow } from "zustand/react/shallow";
 import { generateFinalFights } from "@/lib/bracket";
-import { closedGroupBasis, resolveFirstPlace, groupWinnerId, isExternalGuestFight, rankedGroupIds, preparePlayoffFights, type FirstPlaceResolution } from "@/lib/round-robin-resolution";
+import { closedGroupBasis, resolveFirstPlace, groupWinnerId, isExternalGuestFight, rankedGroupIds, preparePlayoffFights,
+  projectRoundRobinStandings as computeGroupStandings, type RoundRobinStanding, type FirstPlaceResolution } from "@/lib/round-robin-resolution";
 import { POINTS_WIN, POINTS_DRAW } from "@/rules/round-robin";
 import { Button } from "@/components/ui/button";
 import { CategoryCombatAction } from "@/components/CategoryCombatAction";
@@ -29,93 +30,7 @@ import { CategoryFormatFallback } from "@/components/CategoryFormatFallback";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
-interface StandingRow {
-  id: string;
-  name: string;
-  team?: string;
-  played: number;
-  wins: number;
-  draws: number;
-  losses: number;
-  points: number;       // 3×wins + 1×draws
-  flagsFor: number;
-  foulsAgainst: number;
-  warnings: number;
-}
-
-// ── Logic ──────────────────────────────────────────────────────────────────
-
-function computeGroupStandings(fights: FightEntry[]): Map<string, StandingRow[]> {
-  const byGroup = new Map<string, Map<string, StandingRow>>();
-
-  function ensureRow(groupId: string, id: string, name: string, team?: string): StandingRow {
-    let group = byGroup.get(groupId);
-    if (!group) {
-      group = new Map<string, StandingRow>();
-      byGroup.set(groupId, group);
-    }
-    let row = group.get(id);
-    if (!row) {
-      row = { id, name, team, played: 0, wins: 0, draws: 0, losses: 0, points: 0, flagsFor: 0, foulsAgainst: 0, warnings: 0 };
-      group.set(id, row);
-    }
-    return row;
-  }
-
-  // Only count regular (non-tiebreak / non-golden-point) fights for main standings
-  for (const f of fights) {
-    if (f.isTiebreakExtra || f.isGoldenPointFight || isExternalGuestFight(f)) continue;
-    const gid = f.groupId ?? "G1";
-    ensureRow(gid, f.red.id, f.red.name, f.red.team);
-    ensureRow(gid, f.blue.id, f.blue.name, f.blue.team);
-
-    if (!f.completed) continue;
-
-    const red = ensureRow(gid, f.red.id, f.red.name, f.red.team);
-    const blue = ensureRow(gid, f.blue.id, f.blue.name, f.blue.team);
-
-    red.played++;
-    blue.played++;
-
-    // Flags (judge votes in favour of each side)
-    const fr = f.flagsRed ?? 0;
-    const fb = f.flagsBlue ?? 0;
-    red.flagsFor += fr;
-    blue.flagsFor += fb;
-    // Puntos en contra (fouls received by each side)
-    red.foulsAgainst += f.foulsRed ?? 0;
-    blue.foulsAgainst += f.foulsBlue ?? 0;
-    // Warnings
-    red.warnings += f.warningsRed ?? 0;
-    blue.warnings += f.warningsBlue ?? 0;
-
-    if (f.winner === "red") {
-      red.wins++;   red.points += POINTS_WIN;
-      blue.losses++;
-    } else if (f.winner === "blue") {
-      blue.wins++;  blue.points += POINTS_WIN;
-      red.losses++;
-    } else {
-      red.draws++;  red.points += POINTS_DRAW;
-      blue.draws++; blue.points += POINTS_DRAW;
-    }
-  }
-
-  // Sort each group
-  const result = new Map<string, StandingRow[]>();
-  for (const [gid, map] of byGroup) {
-    const rows = [...map.values()];
-    rows.sort((a, b) => {
-      if (b.points !== a.points) return b.points - a.points;
-      if (b.flagsFor !== a.flagsFor) return b.flagsFor - a.flagsFor;
-      if (a.foulsAgainst !== b.foulsAgainst) return a.foulsAgainst - b.foulsAgainst;
-      return a.warnings - b.warnings;
-    });
-    result.set(gid, rows);
-  }
-
-  return result;
-}
+type StandingRow = RoundRobinStanding;
 
 type TiebreakInfo = FirstPlaceResolution;
 

@@ -1,5 +1,6 @@
 import type { CompetitorEntry, FightEntry, TournamentGroup } from "@/store/tournament";
 import { generateTiebreakFights } from "./bracket";
+import { POINTS_DRAW, POINTS_WIN } from "@/rules/round-robin";
 
 export interface RankedCompetitor {
   id: string;
@@ -7,6 +8,70 @@ export interface RankedCompetitor {
   flagsFor: number;
   foulsAgainst: number;
   warnings: number;
+}
+
+export interface RoundRobinStanding extends RankedCompetitor {
+  name: string;
+  team?: string;
+  played: number;
+  wins: number;
+  draws: number;
+  losses: number;
+}
+
+/** Regular fight projection used by both the standings screen and local desk. */
+export function projectRoundRobinStandings(fights: FightEntry[]): Map<string, RoundRobinStanding[]> {
+  const byGroup = new Map<string, Map<string, RoundRobinStanding>>();
+  function ensureRow(groupId: string, competitor: CompetitorEntry): RoundRobinStanding {
+    let group = byGroup.get(groupId);
+    if (!group) {
+      group = new Map<string, RoundRobinStanding>();
+      byGroup.set(groupId, group);
+    }
+    let row = group.get(competitor.id);
+    if (!row) {
+      row = { id: competitor.id, name: competitor.name, team: competitor.team,
+        played: 0, wins: 0, draws: 0, losses: 0, points: 0,
+        flagsFor: 0, foulsAgainst: 0, warnings: 0 };
+      group.set(competitor.id, row);
+    }
+    return row;
+  }
+
+  for (const fight of fights) {
+    if (fight.isTiebreakExtra || fight.isGoldenPointFight || isExternalGuestFight(fight)) continue;
+    const groupId = fight.groupId ?? "G1";
+    const red = ensureRow(groupId, fight.red);
+    const blue = ensureRow(groupId, fight.blue);
+    if (!fight.completed) continue;
+    red.played++;
+    blue.played++;
+    red.flagsFor += fight.flagsRed ?? 0;
+    blue.flagsFor += fight.flagsBlue ?? 0;
+    red.foulsAgainst += fight.foulsRed ?? 0;
+    blue.foulsAgainst += fight.foulsBlue ?? 0;
+    red.warnings += fight.warningsRed ?? 0;
+    blue.warnings += fight.warningsBlue ?? 0;
+    if (fight.winner === "red") {
+      red.wins++; red.points += POINTS_WIN; blue.losses++;
+    } else if (fight.winner === "blue") {
+      blue.wins++; blue.points += POINTS_WIN; red.losses++;
+    } else {
+      red.draws++; red.points += POINTS_DRAW;
+      blue.draws++; blue.points += POINTS_DRAW;
+    }
+  }
+
+  const result = new Map<string, RoundRobinStanding[]>();
+  for (const [groupId, group] of byGroup) {
+    result.set(groupId, [...group.values()].sort(compare));
+  }
+  return result;
+}
+
+/** A single group, with all competitors from scheduled fights included before results. */
+export function rankRoundRobinGroup(groupId: string, fights: FightEntry[]): RoundRobinStanding[] {
+  return projectRoundRobinStandings(fights).get(groupId) ?? [];
 }
 
 export interface FirstPlaceResolution {

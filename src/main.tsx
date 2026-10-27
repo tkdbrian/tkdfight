@@ -72,6 +72,27 @@ async function acquireSharedOperationLock(): Promise<void> {
 }
 
 async function start(mount: HTMLElement): Promise<void> {
+  // One-time rescue URL: the v4.1.1 root worker excludes /tv/* from its cache,
+  // so the new HTML can install the scoped demo worker before redirecting.
+  if (location.pathname === "/tv/demo" && document.documentElement.dataset.tkdDemoBridge === "1") {
+    mount.textContent = "Preparando la demo individual en este navegador…";
+    return;
+  }
+  // The browser-only desk must never enter the shared SQL/Socket.IO bootstrap.
+  // In particular, this branch must run before reading any legacy tkd-* browser keys.
+  if (location.pathname === "/demo" || location.pathname.startsWith("/demo/")) {
+    // The nested service worker owns /demo/ (not the parent / scope). Keep the
+    // visible URL inside its scope before it registers on the first load.
+    if (location.pathname === "/demo") history.replaceState(history.state, "", `/demo/${location.search}${location.hash}`);
+    const { DemoShell } = await import("@/demo/DemoShell");
+    createRoot(mount).render(
+      <StrictMode>
+        <DemoShell />
+      </StrictMode>
+    );
+    return;
+  }
+
   const mode = decideBackupBoot(
     location.pathname,
     localStorage.getItem(BACKUP_PENDING_MARKER) !== null,
