@@ -14,10 +14,10 @@ describe("product version", () => {
       );
     }
   });
-  it("shows the 4.1.0 release version and keeps source metadata aligned", () => {
+  it("shows the 4.1.1 web release version and keeps source metadata aligned", () => {
     const define = (viteConfig as { define?: Record<string, string> }).define;
 
-    expect(packageJson.version).toBe("4.1.0");
+    expect(packageJson.version).toBe("4.1.1");
     expect(packageLock.version).toBe(packageJson.version);
     expect(packageLock.packages[""].version).toBe(packageJson.version);
     expect(define?.__APP_VERSION__).toBe(JSON.stringify(packageJson.version));
