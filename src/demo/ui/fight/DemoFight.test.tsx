@@ -52,15 +52,35 @@ describe("DemoFight browser-only desk", () => {
     const calls = mount(fixture([fight("AB", "A", "B")]));
     fireEvent.click(screen.getByRole("button", { name: "Cargar pelea" }));
     await screen.findByRole("button", { name: "Intercambiar competidores" });
+    const station = screen.getByTestId("demo-fight-station");
+    expect(station.className).toContain("-mx-3");
+    expect(within(station).getByText("Rojo · izquierda").parentElement?.className).toContain("bg-red-950/50");
+    expect(within(station).getByText("Azul · derecha").parentElement?.className).toContain("bg-blue-950/50");
+    expect(within(station).getAllByText("0")[0].className).toContain("text-[clamp(3.25rem,16vw,5rem)]");
     fireEvent.click(screen.getByRole("button", { name: "Intercambiar competidores" }));
     await waitFor(() => expect(screen.getByText("Rojo · izquierda").parentElement?.textContent).toContain("Competidor B"));
     expect(screen.getByText("Azul · derecha").parentElement?.textContent).toContain("Competidor A");
     fireEvent.click(screen.getByRole("button", { name: "Iniciar combate" }));
     await waitFor(() => expect(calls.map((item) => item.command.type)).toContain("fight/start"));
+    expect(screen.getByRole("group", { name: "Juez J1" }).parentElement?.className).toContain("min-[360px]:grid-cols-2");
     await waitFor(() => expect(screen.queryByRole("button", { name: "Intercambiar competidores" })).toBeNull());
     const swap = calls.find((item) => item.command.type === "fight/swap");
     expect(swap?.commandId).toMatch(/^g1:/);
     expect(swap?.command).toMatchObject({ expectedRedId: "A", expectedBlueId: "B" });
+  });
+
+  it("keeps complete long competitor names visible on both color stations", async () => {
+    const bout = fight("AB", "A", "B");
+    bout.red = { ...bout.red, name: "Competidora Nombre y Apellido Muy Extenso" };
+    bout.blue = { ...bout.blue, name: "Competidor con Dos Apellidos Muy Extensos" };
+    mount(fixture([bout]));
+    fireEvent.click(screen.getByRole("button", { name: "Cargar pelea" }));
+    const red = await screen.findByText(bout.red.name);
+    const blue = screen.getByText(bout.blue.name);
+    expect(red.className).not.toContain("line-clamp");
+    expect(blue.className).not.toContain("line-clamp");
+    expect(red.className).toContain("[overflow-wrap:anywhere]");
+    expect(blue.className).toContain("[overflow-wrap:anywhere]");
   });
 
   it("suggests the first resting bout after a confirmed AB fight instead of loading AE", async () => {

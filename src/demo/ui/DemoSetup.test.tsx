@@ -60,6 +60,22 @@ it("guides a new category one decision at a time and keeps optional answers opti
   expect(latest.categories["cat-1"].phase).toBe("setup");
 });
 
+it("uses large grouped choices and compact editable summaries like the original editor", async () => {
+  const visualState = reduceDemoDeskState(emptyDemoDeskState("event-visual"), { type: "category/create", categoryId: "cat-visual" });
+  render(<Harness initial={visualState} />);
+  const age = screen.getByRole("button", { name: /KIDS/ });
+  expect(age).toHaveAttribute("aria-pressed", "false");
+  expect(age).toHaveClass("min-h-14");
+  expect(age.parentElement).toHaveClass("grid-cols-2");
+  age.focus();
+  expect(age).toHaveFocus();
+  fireEvent.click(age);
+  const summary = await screen.findByRole("button", { name: /Editar Edad/ });
+  expect(summary).toHaveClass("min-h-16");
+  expect(summary.parentElement).toHaveClass("sm:grid-cols-2");
+  expect(screen.getByRole("heading", { name: /Sistema de grado/ })).toBeVisible();
+});
+
 it("preserves fixed red/blue fixture preview and adds competitors without starting", async () => {
   let state = startState();
   state = reduceDemoDeskState(state, { type: "category/configure", categoryId: "cat-1", patch: { categoryName: "Prueba", nameGenerated: false } });

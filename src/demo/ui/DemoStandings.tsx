@@ -5,7 +5,7 @@ import { projectRoundRobinStandings, type RoundRobinStanding } from "@/lib/round
 import { getDemoCategoryOutcome, getDemoPendingFights } from "../runtime/selectors";
 import type { DemoDeskState } from "../runtime/types";
 
-const button = "min-h-11 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-base hover:border-cyan-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300";
+const button = "min-h-11 rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-medium text-foreground hover:border-primary/60 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 
 function csvCell(value: string | number): string {
   const text = String(value);
@@ -38,8 +38,8 @@ function exportStandingsCsv(categoryName: string, groups: Map<string, RoundRobin
 export function DemoStandings({ state, categoryId }: Readonly<{ state: DemoDeskState; categoryId: string | null }>) {
   const [showOfficialReport, setShowOfficialReport] = useState(false);
   const category = categoryId ? state.categories[categoryId] : undefined;
-  if (!category || !categoryId) return <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5">
-    <h2 className="text-xl font-bold">Tabla y clasificación</h2><p className="mt-2 text-slate-300">Primero seleccioná una categoría.</p>
+  if (!category || !categoryId) return <section className="rounded-xl border border-border bg-card p-5">
+    <h2 className="text-xl font-bold">Tabla y clasificación</h2><p className="mt-2 text-muted-foreground">Primero seleccioná una categoría.</p>
   </section>;
   const outcome = getDemoCategoryOutcome(state, categoryId);
   const pending = getDemoPendingFights(state, categoryId);
@@ -63,13 +63,13 @@ export function DemoStandings({ state, categoryId }: Readonly<{ state: DemoDeskS
   const report = createCategoryPrintReport(category, { categoryId, verified: matchingHistory,
     confirmedResultIds: state.history.filter((entry) => entry.categoryId === categoryId).map((entry) => entry.fightId) });
 
-  return <section className="rounded-2xl border border-slate-700 bg-slate-900 p-4 sm:p-5" aria-label="Tabla de la categoría">
+  return <section className="rounded-xl border border-border bg-card p-4 sm:p-5" aria-label="Tabla de la categoría">
     <div className="flex flex-wrap items-start justify-between gap-2"><div><h2 className="text-xl font-bold">Tabla y clasificación</h2>
-      <p className="text-slate-300">{category.config.categoryName || "Categoría sin nombre"} · {category.config.mode === "round-robin" ? "Round Robin" : "Eliminación"}</p></div>
+      <p className="text-sm text-muted-foreground">{category.config.categoryName || "Categoría sin nombre"} · {category.config.mode === "round-robin" ? "Round Robin" : "Eliminación"}</p></div>
       <div className="flex flex-wrap gap-2"><button type="button" className={button} onClick={() => window.print()}>Imprimir vista</button>
         {category.config.mode === "round-robin" && projected.size > 0 && <button type="button" className={button}
           onClick={() => exportStandingsCsv(category.config.categoryName, projected)}>Exportar CSV</button>}
-        {report && <button type="button" className={`${button} border-cyan-400`} onClick={() => setShowOfficialReport(true)}>Planilla oficial / PDF</button>}
+        {report && <button type="button" className={`${button} border-primary/50`} onClick={() => setShowOfficialReport(true)}>Planilla oficial / PDF</button>}
       </div></div>
     {category.phase === "setup" ? <p className="mt-4 rounded-lg border border-slate-600 p-3">La categoría aún no comenzó; la vista previa está en Categorías.</p>
       : <>

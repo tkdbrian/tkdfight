@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { DatabaseBackup, History, Info, ListOrdered, Swords, Trophy, Users } from "lucide-react";
 import { createBrowserDeskRuntime, makeDemoCommandId } from "./runtime";
 import type { DemoDeskCommand } from "./runtime/types";
 import { requestDemoStoragePersistence } from "./storage";
@@ -24,7 +25,14 @@ function essentialAssetPaths(): string[] {
 type Runtime = ReturnType<typeof createBrowserDeskRuntime>;
 type View = Awaited<ReturnType<Runtime["read"]>>;
 type Tab = "setup" | "fight" | "standings" | "history" | "data";
-const button = "min-h-11 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-base text-slate-50 hover:border-cyan-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:opacity-50";
+const button = "min-h-11 rounded-lg border border-border bg-secondary px-3 py-2 text-sm font-medium text-foreground transition-colors hover:border-primary/60 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50";
+const navigation: { key: Tab; label: string; short: string; icon: typeof Users }[] = [
+  { key: "setup", label: "Categorías", short: "Compet.", icon: Users },
+  { key: "fight", label: "Combate", short: "Combate", icon: Swords },
+  { key: "standings", label: "Tabla", short: "Tabla", icon: ListOrdered },
+  { key: "history", label: "Historial", short: "Hist.", icon: History },
+  { key: "data", label: "Respaldo", short: "Respaldo", icon: DatabaseBackup },
+];
 let retainedRuntime: Runtime | null = null;
 let runtimeUsers = 0;
 let closeTimer: ReturnType<typeof setTimeout> | null = null;
@@ -173,68 +181,89 @@ export function DemoShell() {
     setPersistenceStatus(await requestDemoStoragePersistence());
   }, []);
 
-  return <main className="min-h-screen bg-slate-950 px-3 py-5 text-slate-50 sm:px-6 sm:py-7">
-    <div className="mx-auto max-w-7xl space-y-4">
-      <header className="rounded-2xl border border-slate-700 bg-slate-900 p-4 sm:p-5">
-        <p className="text-sm font-bold uppercase tracking-wide text-cyan-300">TKD Fight · Demo individual</p>
-        <h1 className="mt-1 text-2xl font-bold sm:text-3xl">Mesa de prueba</h1>
-        <p className="mt-2 text-base text-slate-200">Solo en este navegador: tus categorías, peleas y resultados no se mezclan con los de otra persona. No uses esta demo como único respaldo de un torneo real.</p>
-        <button type="button" className={`${button} mt-3`} disabled={persistenceStatus === "requesting"}
-          onClick={() => void conserveDemo()}>Conservar demo en este navegador</button>
-        {persistenceStatus !== "idle" && <p role="status" className="mt-2 text-sm text-slate-200">
-          {persistenceStatus === "requesting" ? "Solicitando almacenamiento persistente al navegador…"
-            : persistenceStatus === "granted" ? "El navegador aceptó conservar los datos locales. Exportá respaldos igualmente."
-              : persistenceStatus === "denied" ? "El navegador no garantizó conservar los datos. Exportá un respaldo para evitar pérdidas."
-                : "Este navegador no ofrece una solicitud de almacenamiento persistente. Exportá respaldos regularmente."}
-        </p>}
-        <p className="mt-3 rounded-lg border border-slate-600 bg-slate-800 p-3 text-sm" role="status" aria-live="polite">
-          {offlineState === "ready" ? "Archivos de la app listos para abrir sin conexión en este navegador."
-            : offlineState === "unavailable" ? "Este navegador no ofrece almacenamiento de la app para uso sin conexión."
-              : offlineState === "failed" ? "No está lista para uso sin conexión; sigue disponible online. Comprobá la conexión y probá otra vez."
-                : "Preparando archivos para uso sin conexión. Mantené esta página abierta con Internet."}
-        </p>
-        {offlineState === "failed" && <button type="button" className={`${button} mt-2`} onClick={() => setOfflineRetry((value) => value + 1)}>
-          Reintentar descarga sin conexión
-        </button>}
-        <p className="mt-2 text-sm text-slate-300">En iPhone, abrí esta página en Safari y agregala a la pantalla de inicio. El navegador integrado de WhatsApp no garantiza el uso sin conexión.</p>
-        {view && !view.isWriter && <p role="alert" className="mt-3 rounded-lg border border-amber-500 p-3 text-amber-200">
+  return <div className="min-h-[100dvh] min-w-0 bg-background text-foreground">
+    <header className="sticky top-0 z-30 flex min-h-14 items-center gap-2 border-b border-border bg-background px-3 pt-[env(safe-area-inset-top,0px)] md:fixed md:left-0 md:top-0 md:h-14 md:w-56 md:border-r md:px-4 md:pt-0 print:hidden">
+      <Trophy aria-hidden="true" className="size-5 shrink-0 text-primary" />
+      <span className="text-sm font-bold uppercase tracking-wide">TKD Fight</span>
+      <span className="ml-auto rounded-md border border-border bg-secondary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Demo local</span>
+    </header>
+
+    {view && <nav aria-label="Secciones de la mesa" className="fixed inset-x-0 bottom-0 z-30 flex min-h-14 items-stretch border-t border-border bg-background pb-[env(safe-area-inset-bottom,0px)] md:inset-x-auto md:bottom-0 md:left-0 md:top-14 md:w-56 md:flex-col md:items-stretch md:gap-0.5 md:overflow-y-auto md:border-r md:border-t-0 md:px-2 md:py-3 print:hidden">
+      {navigation.map(({ key, label, short, icon: Icon }) => <button key={key} type="button" aria-label={label}
+        aria-current={tab === key ? "page" : undefined} onClick={() => setTab(key)}
+        className={`relative flex min-h-14 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 rounded-md text-muted-foreground transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary md:min-h-11 md:flex-none md:flex-row md:justify-start md:gap-3 md:px-3 md:text-sm md:font-medium ${tab === key ? "text-primary md:bg-accent md:text-accent-foreground" : "hover:bg-secondary hover:text-foreground"}`}>
+        <Icon aria-hidden="true" className={`size-5 shrink-0 ${tab === key ? "stroke-[2.5]" : ""}`} />
+        <span className="max-w-full truncate px-0.5 text-[10px] font-medium leading-none md:text-sm md:leading-normal"><span className="md:hidden">{short}</span><span className="hidden md:inline">{label}</span></span>
+      </button>)}
+      <p className="mt-auto hidden border-t border-border px-3 pt-3 text-xs leading-relaxed text-muted-foreground md:block">Mesa individual · datos en este navegador<br />TKD Fight · Demo local</p>
+    </nav>}
+
+    <div className="min-w-0 md:pl-56 print:pl-0">
+      <main className="mx-auto max-w-7xl space-y-4 px-3 py-4 pb-[calc(5rem+env(safe-area-inset-bottom,0px))] sm:px-6 md:py-6 md:pb-6 print:px-0 print:py-0">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border pb-2 print:hidden">
+          <h1 className="sr-only text-xl font-bold md:not-sr-only">Mesa de prueba</h1>
+          <p className="min-w-0 text-xs text-muted-foreground sm:text-sm" role="status" aria-live="polite">
+            {offlineState === "ready" ? "Archivos de la app listos para abrir sin conexión en este navegador."
+              : offlineState === "unavailable" ? "Este navegador no ofrece almacenamiento de la app para uso sin conexión."
+                : offlineState === "failed" ? "No está lista para uso sin conexión; sigue disponible online. Comprobá la conexión y probá otra vez."
+                  : "Preparando archivos para uso sin conexión. Mantené esta página abierta con Internet."}
+          </p>
+          {offlineState === "failed" && <button type="button" className={button} onClick={() => setOfflineRetry((value) => value + 1)}>
+            Reintentar descarga sin conexión
+          </button>}
+        </div>
+
+        <details className="rounded-lg border border-border bg-secondary/20 text-sm print:hidden">
+          <summary className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-3 py-2 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+            <Info aria-hidden="true" className="size-4 shrink-0 text-primary" /> Demo individual · datos solo en este navegador
+          </summary>
+          <div className="space-y-3 border-t border-border px-3 py-3 text-muted-foreground">
+            <p>Tus categorías, peleas y resultados no se mezclan con los de otra persona. No uses esta demo como único respaldo de un torneo real.</p>
+            <p>En iPhone, abrí esta página en Safari y agregala a la pantalla de inicio. El navegador integrado de WhatsApp no garantiza el uso sin conexión.</p>
+            <button type="button" className={button} disabled={persistenceStatus === "requesting"}
+              onClick={() => void conserveDemo()}>Conservar demo en este navegador</button>
+            {persistenceStatus !== "idle" && <p role="status" className="text-sm">
+              {persistenceStatus === "requesting" ? "Solicitando almacenamiento persistente al navegador…"
+                : persistenceStatus === "granted" ? "El navegador aceptó conservar los datos locales. Exportá respaldos igualmente."
+                  : persistenceStatus === "denied" ? "El navegador no garantizó conservar los datos. Exportá un respaldo para evitar pérdidas."
+                    : "Este navegador no ofrece una solicitud de almacenamiento persistente. Exportá respaldos regularmente."}
+            </p>}
+          </div>
+        </details>
+
+        {view && !view.isWriter && <p role="alert" className="rounded-lg border border-amber-500 bg-amber-950/30 p-3 text-amber-200">
           Otra pestaña de este navegador opera esta demo. Esta pestaña es de solo lectura; cerrá la otra y recargá para tomar el control.
         </p>}
-        {typeof indexedDB === "undefined" && <p className="mt-3 text-amber-200" role="alert">Este navegador no admite IndexedDB; la mesa local no podrá guardar el torneo.</p>}
-      </header>
-      {error && <div role="alert" className="rounded-lg border border-red-400 bg-red-950 p-4 text-red-100">
-        <p className="font-bold">La demo no pudo completar la operación.</p><p>{error}</p>
-        <p className="mt-1 text-sm">No borraremos datos automáticamente. Si el almacenamiento está lleno, exportá un respaldo antes de continuar.</p>
-      </div>}
-      {!view ? <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5">
-        <h2 className="text-xl font-bold">{error ? "Demo local no disponible" : "Abriendo demo local…"}</h2>
-        <p className="mt-2 text-slate-300">No se consulta el servidor para cargar categorías o combates.</p>
-      </section> : <>
-        <nav aria-label="Secciones de la mesa" className="grid grid-cols-2 gap-2 rounded-2xl border border-slate-700 bg-slate-900 p-2 sm:grid-cols-5">
-          {([ ["setup", "Categorías"], ["fight", "Combate"], ["standings", "Tabla"], ["history", "Historial"], ["data", "Respaldo"] ] as const)
-            .map(([key, label]) => <button key={key} type="button" aria-current={tab === key ? "page" : undefined}
-              className={`${button} ${tab === key ? "border-cyan-300 bg-cyan-950 font-bold" : ""}`} onClick={() => setTab(key)}>{label}</button>)}
-        </nav>
-        {tab === "setup" && <DemoSetup key={view.generation} state={view.state} generation={view.generation}
-          readOnly={!view.isWriter} dispatch={dispatch} onFight={() => setTab("fight")} />}
-        {tab === "fight" && <DemoFight key={view.generation} view={view} dispatch={dispatch} />}
-        {tab === "standings" && <DemoStandings state={view.state} categoryId={view.state.selectedCategoryId} />}
-        {tab === "history" && <section className="rounded-2xl border border-slate-700 bg-slate-900 p-5">
-          <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-xl font-bold">Historial local</h2>
-            <button type="button" className={button} onClick={() => window.print()}>Imprimir</button></div>
-          {view.state.history.length ? <ol className="mt-3 space-y-2">{view.state.history.map((entry) => <li key={entry.id} className="rounded-lg border border-slate-700 p-3">
-            <p className="text-sm text-slate-300">{new Date(entry.confirmedAt).toLocaleString("es-AR")} · {view.state.categories[entry.categoryId]?.config.categoryName
-              ?? view.state.archives[entry.categoryId]?.config.categoryName ?? "Categoría archivada"}</p>
-            <p className="text-lg font-semibold"><span className="text-red-400">{entry.red.name}</span> vs <span className="text-blue-400">{entry.blue.name}</span></p>
-            <p>Ganador: {entry.winner === "draw" ? "Empate" : entry.winner === "red" ? entry.red.name : entry.blue.name} · {entry.reason}</p>
-          </li>)}</ol> : <p className="mt-3 text-slate-300">Todavía no hay resultados confirmados en este navegador.</p>}
-        </section>}
-        {tab === "data" && <DemoBackup key={view.generation} state={view.state} readOnly={!view.isWriter}
-          exportBackup={() => dataAction((instance) => instance.exportBackup())}
-          previewImport={(raw) => dataAction((instance) => instance.previewImport(raw))}
-          importBackup={(preview) => dataAction((instance) => instance.importBackup(preview, { confirmOverwrite: true }))}
-          reset={() => dataAction((instance) => instance.reset({ confirm: true }))} onError={setError} />}
-      </>}
+        {typeof indexedDB === "undefined" && <p className="rounded-lg border border-amber-500 p-3 text-amber-200" role="alert">Este navegador no admite IndexedDB; la mesa local no podrá guardar el torneo.</p>}
+        {error && <div role="alert" className="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-foreground">
+          <p className="font-bold">La demo no pudo completar la operación.</p><p>{error}</p>
+          <p className="mt-1 text-sm text-muted-foreground">No borraremos datos automáticamente. Si el almacenamiento está lleno, exportá un respaldo antes de continuar.</p>
+        </div>}
+        {!view ? <section className="rounded-xl border border-border bg-card p-5">
+          <h2 className="text-xl font-bold">{error ? "Demo local no disponible" : "Abriendo demo local…"}</h2>
+          <p className="mt-2 text-muted-foreground">No se consulta el servidor para cargar categorías o combates.</p>
+        </section> : <>
+          {tab === "setup" && <DemoSetup key={view.generation} state={view.state} generation={view.generation}
+            readOnly={!view.isWriter} dispatch={dispatch} onFight={() => setTab("fight")} />}
+          {tab === "fight" && <DemoFight key={view.generation} view={view} dispatch={dispatch} />}
+          {tab === "standings" && <DemoStandings state={view.state} categoryId={view.state.selectedCategoryId} />}
+          {tab === "history" && <section className="rounded-xl border border-border bg-card p-4 sm:p-5">
+            <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-xl font-bold">Historial local</h2>
+              <button type="button" className={button} onClick={() => window.print()}>Imprimir</button></div>
+            {view.state.history.length ? <ol className="mt-3 space-y-2">{view.state.history.map((entry) => <li key={entry.id} className="rounded-lg border border-border bg-secondary/20 p-3">
+              <p className="text-sm text-muted-foreground">{new Date(entry.confirmedAt).toLocaleString("es-AR")} · {view.state.categories[entry.categoryId]?.config.categoryName
+                ?? view.state.archives[entry.categoryId]?.config.categoryName ?? "Categoría archivada"}</p>
+              <p className="text-lg font-semibold"><span className="text-red-400">{entry.red.name}</span> vs <span className="text-blue-400">{entry.blue.name}</span></p>
+              <p>Ganador: {entry.winner === "draw" ? "Empate" : entry.winner === "red" ? entry.red.name : entry.blue.name} · {entry.reason}</p>
+            </li>)}</ol> : <p className="mt-3 text-muted-foreground">Todavía no hay resultados confirmados en este navegador.</p>}
+          </section>}
+          {tab === "data" && <DemoBackup key={view.generation} state={view.state} readOnly={!view.isWriter}
+            exportBackup={() => dataAction((instance) => instance.exportBackup())}
+            previewImport={(raw) => dataAction((instance) => instance.previewImport(raw))}
+            importBackup={(preview) => dataAction((instance) => instance.importBackup(preview, { confirmOverwrite: true }))}
+            reset={() => dataAction((instance) => instance.reset({ confirm: true }))} onError={setError} />}
+        </>}
+      </main>
     </div>
-  </main>;
+  </div>;
 }

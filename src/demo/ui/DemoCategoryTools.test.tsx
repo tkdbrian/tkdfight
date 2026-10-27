@@ -12,6 +12,9 @@ function draft() {
 it("requires the exact category name before a destructive local command", async () => {
   const dispatch = vi.fn(async () => true);
   render(<DemoCategoryTools state={draft()} categoryId="cat-1" readOnly={false} dispatch={dispatch} />);
+  const tools = screen.getByText(/Herramientas de la categoría/).closest("details");
+  expect(tools).not.toHaveAttribute("open");
+  fireEvent.click(screen.getByText(/Herramientas de la categoría/));
   fireEvent.click(screen.getByText("Reiniciar, archivar o borrar categoría"));
   fireEvent.click(screen.getByRole("button", { name: "Borrar categoría" }));
   const confirm = screen.getByRole("button", { name: "Confirmar acción" });
@@ -26,6 +29,7 @@ it("offers a locally isolated guest bout only after category start", async () =>
   state.categories["cat-1"].phase = "fighting";
   const dispatch = vi.fn(async () => true);
   render(<DemoCategoryTools state={state} categoryId="cat-1" readOnly={false} dispatch={dispatch} />);
+  fireEvent.click(screen.getByText(/Herramientas de la categoría/));
   fireEvent.click(screen.getByText("Combate invitado local"));
   fireEvent.change(screen.getByRole("textbox", { name: "Rojo" }), { target: { value: "Ana" } });
   fireEvent.change(screen.getByRole("textbox", { name: "Azul" }), { target: { value: "Beto" } });
@@ -44,6 +48,7 @@ it("offers a bracket-slot swap only before the first bout is loaded", async () =
   state = reduceDemoDeskState(state, { type: "category/start", categoryId: "cat-1" });
   const dispatch = vi.fn(async () => true);
   render(<DemoCategoryTools state={state} categoryId="cat-1" readOnly={false} dispatch={dispatch} />);
+  fireEvent.click(screen.getByText(/Herramientas de la categoría/));
   fireEvent.click(screen.getByText("Cambiar posiciones de la llave"));
   const first = screen.getByRole("combobox", { name: "Primera posición" });
   const second = screen.getByRole("combobox", { name: "Segunda posición" });
@@ -52,4 +57,17 @@ it("offers a bracket-slot swap only before the first bout is loaded", async () =
   fireEvent.change(second, { target: { value: (choices[choices.length - 1] as HTMLOptionElement).value } });
   fireEvent.click(screen.getByRole("button", { name: "Intercambiar posiciones" }));
   expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "category/swapBracketSlots", categoryId: "cat-1" }));
+});
+
+it("does not carry a pending destructive action into another category", () => {
+  let state = draft();
+  state = reduceDemoDeskState(state, { type: "category/create", categoryId: "cat-2" });
+  const dispatch = vi.fn(async () => true);
+  const { rerender } = render(<DemoCategoryTools key="cat-1" state={state} categoryId="cat-1" readOnly={false} dispatch={dispatch} />);
+  fireEvent.click(screen.getByText(/Herramientas de la categoría/));
+  fireEvent.click(screen.getByText("Reiniciar, archivar o borrar categoría"));
+  fireEvent.click(screen.getByRole("button", { name: "Borrar categoría" }));
+  expect(screen.getByRole("button", { name: "Confirmar acción" })).toBeVisible();
+  rerender(<DemoCategoryTools key="cat-2" state={state} categoryId="cat-2" readOnly={false} dispatch={dispatch} />);
+  expect(screen.queryByRole("button", { name: "Confirmar acción" })).not.toBeInTheDocument();
 });

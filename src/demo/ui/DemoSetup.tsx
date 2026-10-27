@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Check } from "lucide-react";
 import { buildCategoryName, GUP_GRADE_OPTIONS } from "@/lib/category-name";
 import { availableCategoryFormats, defaultCategoryFormat } from "@/lib/category-mode";
 import { generateDoubleBracket, generateEliminationBracket, generateGroupsTournament, getGroupDistribution } from "@/lib/bracket";
@@ -20,10 +21,11 @@ const STEP_LABEL: Record<Step, string> = {
   age: "Edad", grade: "Sistema de grado", range: "Rango de grado", gender: "Género",
   discipline: "Disciplina", weight: "Peso", format: "Formato",
 };
-const surface = "rounded-2xl border border-slate-700 bg-slate-900 p-4 sm:p-5";
-const control = "min-h-11 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-base text-slate-50 hover:border-cyan-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50";
-const selectedControl = "border-cyan-300 bg-cyan-950 font-semibold";
-const input = "min-h-11 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-base text-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300";
+const surface = "min-w-0 rounded-xl border border-border bg-card p-4 sm:p-5";
+const control = "min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base text-foreground transition-colors hover:border-primary/60 hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
+const selectedControl = "border-2 border-primary bg-primary/10 font-bold";
+const primaryControl = "min-h-11 rounded-lg border border-primary bg-primary px-4 py-2 text-base font-bold text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
+const input = "min-h-11 w-full min-w-0 rounded-lg border border-input bg-background px-3 py-2 text-base text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background";
 const weightStash = new Map<string, string>();
 
 function steps(config: TournamentConfig): Step[] {
@@ -117,7 +119,8 @@ function Choice({ label, selected, disabled, onClick }: Readonly<{
   label: string; selected: boolean; disabled?: boolean; onClick: () => void;
 }>) {
   return <button type="button" disabled={disabled} aria-pressed={selected} onClick={onClick}
-    className={`${control} ${selected ? selectedControl : ""}`}>{label}</button>;
+    className={`${control} flex min-h-14 min-w-0 items-center justify-center gap-1.5 break-words text-center text-sm leading-snug sm:text-base ${selected ? selectedControl : ""}`}>
+    {selected && <Check aria-hidden="true" className="size-4 shrink-0" />}{label}</button>;
 }
 
 const PENDING_DRAFT_PREFIX = "tkd-demo-pending-v1:";
@@ -410,8 +413,8 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
 
   if (!category || !config || !categoryId) return <section className={surface}>
     <h2 className="text-xl font-bold">Categorías</h2>
-    <p className="mt-2 text-slate-300">Creá una categoría para comenzar una prueba individual.</p>
-    <button type="button" disabled={readOnly} className={`${control} mt-4 border-cyan-400 font-bold`}
+    <p className="mt-2 text-muted-foreground">Creá una categoría para comenzar una prueba individual.</p>
+    <button type="button" disabled={readOnly} className={`${primaryControl} mt-4`}
       onClick={() => void dispatch({ type: "category/create" })}>Crear categoría</button>
   </section>;
 
@@ -481,7 +484,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
   return <div className="space-y-4">
     <section className={surface} aria-label="Categorías de la demo">
       <div className="flex flex-wrap items-end gap-3">
-        <label className="min-w-56 flex-1 text-sm font-semibold text-slate-200">Categoría actual
+        <label className="min-w-0 flex-[1_1_14rem] text-sm font-semibold text-foreground">Categoría actual
           <select className={`${input} mt-1`} value={categoryId} disabled={readOnly}
             onChange={(event) => { const nextId = event.target.value; void (async () => {
               if (!await categoryNameField.flush() || !await tableChiefField.flush()) return;
@@ -502,25 +505,26 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
 
     <section className={surface} aria-label="Editor de categoría">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <div><h2 className="text-xl font-bold">Categoría</h2><p className="text-sm text-slate-300">Las respuestas se guardan automáticamente en este navegador.</p></div>
+        <div className="min-w-0"><h2 className="break-words text-xl font-bold">{config.categoryName || "Categoría"}</h2><p className="text-sm text-muted-foreground">Las respuestas se guardan automáticamente en este navegador.</p></div>
         <button type="button" className={control} onClick={() => setEditorOpen(!editorOpen)}
           aria-expanded={editorOpen}>{editorOpen ? "Ocultar editor" : "Editar categoría"}</button>
       </div>
-      {editorOpen && <div className="mt-4 space-y-4">
-        <fieldset className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3"><legend className="sr-only">Respuestas de la categoría</legend>
+      {editorOpen && <div className="mt-4 space-y-4 rounded-xl border border-border bg-secondary/20 p-3 sm:p-4">
+        <fieldset className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3"><legend className="sr-only">Respuestas de la categoría</legend>
           {flow.filter((step) => completed.includes(step) && active !== step).map((step) =>
             <button key={step} type="button" disabled={readOnly || category.phase !== "setup"}
               onClick={() => edit(step)} aria-label={`Editar ${STEP_LABEL[step]}: ${summary(step, config)}`}
-              className={`${control} flex min-h-16 flex-col items-start text-left`}>
-              <span className="text-sm text-slate-300">{STEP_LABEL[step]} · Editar</span><span className="font-semibold">{summary(step, config)}</span>
+              className={`${control} flex min-h-16 min-w-0 flex-col items-start gap-1 bg-secondary/20 text-left`}>
+              <span className="flex w-full items-center justify-between gap-2 text-sm font-semibold">{STEP_LABEL[step]} <span aria-hidden="true" className="text-primary underline underline-offset-2">Editar</span></span>
+              <span className="break-words text-base font-medium leading-snug">{summary(step, config)}</span>
             </button>)}
         </fieldset>
-        {currentStep && category.phase === "setup" && <div className="rounded-xl border border-slate-600 bg-slate-950 p-4">
-          <h3 ref={headingRef} tabIndex={-1} className="text-lg font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">
+        {currentStep && category.phase === "setup" && <div className="min-w-0 rounded-xl border border-border bg-background p-3 sm:p-4">
+          <h3 ref={headingRef} tabIndex={-1} className="text-base font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             Paso {flow.indexOf(currentStep) + 1} de {flow.length}: {currentStep === "range" && config.gradeSystem === "DAN" ? "Grado Dan" : STEP_LABEL[currentStep]}
           </h3>
-          <p className="mt-1 text-sm text-slate-300">Elegí una opción para avanzar; podés volver y cambiarla.</p>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <p className="mt-1 text-sm text-muted-foreground">Elegí una opción para avanzar; podés volver y cambiarla.</p>
+          <div className="mt-3 grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
             {currentStep === "age" && <>
               {AGE_DIVISIONS.map((age) => <Choice key={age.id} disabled={readOnly}
                 label={`${age.label} (${age.from}${age.to === undefined ? "+" : `-${age.to}`})`}
@@ -529,12 +533,12 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
                   categoryAgeOpenEnded: age.to === undefined,
                 })} />)}
               <button type="button" className={control} disabled={readOnly} onClick={() => setAgeCustom(!ageCustom)}>Edad personalizada</button>
-              {ageCustom && <div className="flex w-full flex-wrap items-end gap-2">
-                <label className="flex-1 text-sm">Desde<input type="number" min="1" className={`${input} mt-1`} value={ageFrom}
+              {ageCustom && <div className="col-span-full grid min-w-0 grid-cols-2 items-end gap-2">
+                <label className="min-w-0 text-sm">Desde<input type="number" min="1" className={`${input} mt-1`} value={ageFrom}
                   onChange={(event) => setAgeFrom(event.target.value)} /></label>
-                <label className="flex-1 text-sm">Hasta<input type="number" min="1" className={`${input} mt-1`} value={ageTo}
+                <label className="min-w-0 text-sm">Hasta<input type="number" min="1" className={`${input} mt-1`} value={ageTo}
                   onChange={(event) => setAgeTo(event.target.value)} /></label>
-                <button type="button" className={control} disabled={readOnly} onClick={() => {
+                <button type="button" className={`${control} col-span-full sm:col-span-1`} disabled={readOnly} onClick={() => {
                   const from = Number(ageFrom); const to = Number(ageTo);
                   if (!/^\d+$/.test(ageFrom) || !/^\d+$/.test(ageTo) || from < 1 || from > to) {
                     setFieldError("Ingresá dos edades válidas; la inicial no puede superar la final."); return;
@@ -560,12 +564,12 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
               {GUP_GRADE_OPTIONS.map((value) => <Choice key={value} disabled={readOnly} label={value}
                 selected={config.gupBand === value} onClick={() => void choose("range", { gupBand: value })} />)}
             </>}
-            {currentStep === "range" && config.gradeSystem === "DAN" && <div className="flex w-full flex-wrap items-end gap-2">
-              <label className="flex-1 text-sm">Dan desde<input type="number" min="1" className={`${input} mt-1`}
+            {currentStep === "range" && config.gradeSystem === "DAN" && <div className="col-span-full grid min-w-0 grid-cols-2 items-end gap-2">
+              <label className="min-w-0 text-sm">Dan desde<input type="number" min="1" className={`${input} mt-1`}
                 value={danFrom} onChange={(event) => setDanFrom(event.target.value)} /></label>
-              <label className="flex-1 text-sm">Dan hasta<input type="number" min="1" className={`${input} mt-1`}
+              <label className="min-w-0 text-sm">Dan hasta<input type="number" min="1" className={`${input} mt-1`}
                 value={danTo} onChange={(event) => setDanTo(event.target.value)} /></label>
-              <button type="button" className={control} disabled={readOnly} onClick={() => {
+              <button type="button" className={`${control} col-span-full sm:col-span-1`} disabled={readOnly} onClick={() => {
                 const error = validateDanRange(danFrom, danTo);
                 if (error) { setFieldError(error); return; }
                 void choose("range", { danFrom: Number(danFrom), danTo: Number(danTo) });
@@ -603,10 +607,10 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
           </div>
           {fieldError && <p role="alert" className="mt-2 text-amber-200">{fieldError}</p>}
         </div>}
-        {!currentStep && <div className="grid gap-4 lg:grid-cols-2">
-          <div className="space-y-3 rounded-xl border border-slate-700 p-4">
+        {!currentStep && <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+          <div className="min-w-0 space-y-3 rounded-xl border border-border bg-background p-4">
             <h3 className="font-bold">Combate y tiempos</h3>
-            <p className="text-slate-200">{ruleSet.judgesCount} jueces · {ruleSet.rounds.count} round(s) × {ruleSet.rounds.duration_seconds} s · Desempate {config.tiebreakerSeconds ?? 30} s · Perfil: {config.profileId === "yusan-2026" && config.profileApplied ? "Yusan 2026" : "Personalizado"}</p>
+            <p className="text-sm leading-relaxed text-foreground">{ruleSet.judgesCount} jueces · {ruleSet.rounds.count} round(s) × {ruleSet.rounds.duration_seconds} s · Desempate {config.tiebreakerSeconds ?? 30} s · Perfil: {config.profileId === "yusan-2026" && config.profileApplied ? "Yusan 2026" : "Personalizado"}</p>
             {config.mode === "round-robin" && (getGroupDistribution(category.competitors.length)?.length ?? 0) > 1 && <fieldset className="space-y-2">
               <legend className="font-semibold">Orden de combates</legend>
               <div className="flex flex-wrap gap-2">
@@ -648,7 +652,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
               </div>
             </details>
           </div>
-          <details className="rounded-xl border border-slate-700 p-4"><summary className="min-h-11 cursor-pointer font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">Mesa (opcional)</summary>
+          <details className="min-w-0 rounded-xl border border-border bg-background p-4"><summary className="min-h-11 cursor-pointer font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Mesa (opcional)</summary>
             <label className="mt-3 block text-sm">Jefe de mesa<input className={`${input} mt-1`} disabled={readOnly || category.phase !== "setup"}
               value={tableChiefField.value} onChange={(event) => tableChiefField.change(event.target.value)}
               onBlur={tableChiefField.blur} /></label>
@@ -670,7 +674,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
           {!config.nameGenerated && generated && <button type="button" disabled={readOnly || category.phase !== "setup"}
             className={control} onClick={() => void patch({ categoryName: generated, nameGenerated: true })}>
               Actualizar nombre con los datos seleccionados</button>}
-          <div><button type="button" className={`${control} border-cyan-400 bg-cyan-950 font-bold`}
+          <div><button type="button" className={primaryControl}
             onClick={() => void (async () => {
               if (!await categoryNameField.flush() || !await tableChiefField.flush()) return;
               setEditorOpen(false); nameRef.current?.focus(); nameRef.current?.scrollIntoView?.({ block: "nearest" });
@@ -680,11 +684,11 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
       </div>}
     </section>
 
-    <DemoCategoryTools state={state} categoryId={categoryId} readOnly={readOnly} dispatch={dispatch} />
+    <DemoCategoryTools key={categoryId} state={state} categoryId={categoryId} readOnly={readOnly} dispatch={dispatch} />
 
     <div className="grid gap-4 xl:grid-cols-2">
       <section className={surface} aria-label="Competidores">
-        <h2 className="text-xl font-bold">Competidores <span className="text-cyan-300">{category.competitors.length}</span></h2>
+        <h2 className="text-xl font-bold">Competidores <span className="rounded-full bg-secondary px-2 py-0.5 text-base text-foreground">{category.competitors.length}</span></h2>
         {category.phase === "setup" && <>
           <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,11rem)_auto]">
             <input ref={nameRef} className={input} aria-label="Nombre del competidor" placeholder="Nombre del competidor"
@@ -693,28 +697,28 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
             <input className={input} aria-label="Club opcional" placeholder="Club (opcional)" disabled={readOnly}
               value={team} onChange={(event) => setTeam(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter") void saveCompetitor(); }} />
-            <button type="button" disabled={readOnly || !name.trim()} className={`${control} font-bold`}
+            <button type="button" disabled={readOnly || !name.trim()} className={primaryControl}
               onClick={() => void saveCompetitor()}>{editId ? "Guardar" : "Agregar"}</button>
           </div>
           {editId && <button type="button" className={`${control} mt-2`} onClick={() => { setEditId(null); setName(""); setTeam(""); }}>Cancelar edición</button>}
           <label className="mt-3 block text-sm font-semibold">Importar Excel o TXT de categorías; también admite lista simple (nombre y club)
-            <input type="file" accept=".xlsx,.xls,.csv,.txt" disabled={readOnly || importBusy} className={`${input} mt-1 file:mr-2 file:rounded file:border-0 file:bg-slate-700 file:p-1 file:text-slate-50`}
+            <input type="file" accept=".xlsx,.xls,.csv,.txt" disabled={readOnly || importBusy} className={`${input} mt-1 file:mr-2 file:rounded file:border-0 file:bg-secondary file:p-1 file:text-foreground`}
               onChange={(event) => { const file = event.target.files?.[0]; if (file) void importSpreadsheet(file); event.target.value = ""; }} />
           </label>
           {importError && <p role="alert" className="mt-2 text-amber-200">{importError}</p>}
-          {importCategories.length > 0 && <div className="mt-3 rounded-lg border border-cyan-600 p-3">
+          {importCategories.length > 0 && <div className="mt-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
             <h3 className="font-semibold">Categorías encontradas: {importCategories.length}</h3>
-            <p className="text-sm text-slate-300">Cada opción crea un borrador nuevo, sin modificar la categoría actual ni iniciar peleas.</p>
+            <p className="text-sm text-muted-foreground">Cada opción crea un borrador nuevo, sin modificar la categoría actual ni iniciar peleas.</p>
             <ul className="mt-2 space-y-2">{importCategories.map((entry) => <li key={`${entry.name}-${entry.matchType}-${entry.competitors.join("|")}`}
-              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-700 p-2">
+              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background p-2">
               <span className="min-w-0 break-words">{entry.name} · {entry.matchType === "tul" ? "Tul" : "Lucha"} · {entry.competitors.length} competidores</span>
               <button type="button" disabled={readOnly || importBusy} className={control}
                 onClick={() => void importCategory(entry)}>Crear borrador</button></li>)}</ul>
             <button type="button" className={`${control} mt-2`} onClick={() => setImportCategories([])}>Cancelar importación</button>
           </div>}
-          {importPreview && <div className="mt-3 rounded-lg border border-cyan-600 p-3">
+          {importPreview && <div className="mt-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
             <p className="font-semibold">Vista previa: {importPreview.length} competidores</p>
-            <p className="text-sm text-slate-300">{importPreview.slice(0, 5).map((person) => person.name).join(", ")}{importPreview.length > 5 ? "…" : ""}</p>
+            <p className="break-words text-sm text-muted-foreground">{importPreview.slice(0, 5).map((person) => person.name).join(", ")}{importPreview.length > 5 ? "…" : ""}</p>
             <div className="mt-2 flex gap-2"><button type="button" disabled={readOnly || importBusy} className={control} onClick={async () => {
               setImportBusy(true);
               try {
@@ -728,38 +732,38 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
         </>}
         {fieldError && !currentStep && <p role="alert" className="mt-2 text-amber-200">{fieldError}</p>}
         <ol className="mt-3 max-h-[30rem] space-y-2 overflow-y-auto">
-          {category.competitors.map((person: CompetitorEntry, index) => <li key={person.id} className="flex min-h-14 items-center gap-2 rounded-lg border border-slate-700 p-2">
-            <span className="w-8 shrink-0 text-center text-slate-400">{index + 1}</span>
-            <span className="min-w-0 flex-1 break-words text-lg font-semibold">{person.name}{person.team && <small className="block text-sm font-normal text-slate-300">{person.team}</small>}</span>
-            {category.phase === "setup" && <><button type="button" disabled={readOnly} className={control}
+          {category.competitors.map((person: CompetitorEntry, index) => <li key={person.id} className="grid min-h-14 min-w-0 grid-cols-[2rem_minmax(0,1fr)] items-center gap-2 rounded-lg border border-border bg-secondary/20 p-2 sm:flex">
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-bold text-muted-foreground">{index + 1}</span>
+            <span className="min-w-0 flex-1 break-words text-lg font-semibold leading-snug">{person.name}{person.team && <small className="block text-sm font-normal text-muted-foreground">{person.team}</small>}</span>
+            {category.phase === "setup" && <div className="col-span-2 flex justify-end gap-2 sm:ml-auto"><button type="button" disabled={readOnly} className={control}
               aria-label={`Editar a ${person.name}`} onClick={() => { setEditId(person.id); setName(person.name); setTeam(person.team ?? ""); nameRef.current?.focus(); }}>Editar</button>
               <button type="button" disabled={readOnly} className={control} aria-label={`Eliminar a ${person.name}`}
-                onClick={() => void dispatch({ type: "category/removeCompetitor", categoryId, competitorId: person.id })}>Quitar</button></>}
+                onClick={() => void dispatch({ type: "category/removeCompetitor", categoryId, competitorId: person.id })}>Quitar</button></div>}
           </li>)}
         </ol>
-        {category.competitors.length === 0 && <p className="mt-3 text-slate-300">Ingresá el primer competidor para ver la llave.</p>}
+        {category.competitors.length === 0 && <p className="mt-3 text-muted-foreground">Ingresá el primer competidor para ver la llave.</p>}
         {category.phase === "setup" && <div className="mt-4">
           <button type="button" disabled={readOnly || !categoryNameField.value.trim() || preview.length === 0}
-            className={`${control} border-cyan-400 bg-cyan-800 font-bold`} onClick={() => void start()}>Iniciar categoría</button>
+            className={primaryControl} onClick={() => void start()}>Iniciar categoría</button>
           {!categoryNameField.value.trim() && <p className="mt-2 text-sm text-amber-200">Poné un nombre a la categoría antes de iniciarla.</p>}
           {config.mode === "round-robin" && category.competitors.length > 0 && !getGroupDistribution(category.competitors.length) &&
             <p className="mt-2 text-sm text-amber-200">Round Robin admite de 3 a 12 competidores.</p>}
         </div>}
-        {category.phase !== "setup" && <button type="button" className={`${control} mt-4 border-cyan-400`} onClick={onFight}>Ir al combate</button>}
+        {category.phase !== "setup" && <button type="button" className={`${primaryControl} mt-4`} onClick={onFight}>Ir al combate</button>}
       </section>
       <section className={surface} aria-label="Vista previa de la llave">
         <h2 className="text-xl font-bold">{category.phase === "setup" ? "Llave (vista previa)" : "Llave guardada"} · {preview.length} combates</h2>
         <ol className="mt-3 max-h-[35rem] space-y-2 overflow-y-auto">
-          {preview.map((fight, index) => <li key={fight.id} className="flex min-h-14 items-center gap-2 rounded-lg border border-slate-700 p-3 text-base sm:text-lg">
-            <span className="w-7 shrink-0 text-sm text-slate-400">{index + 1}.</span>
+          {preview.map((fight, index) => <li key={fight.id} className="flex min-h-16 min-w-0 items-center gap-2 rounded-lg border border-border bg-secondary/20 px-2 py-3 text-lg leading-snug sm:px-3">
+            <span className="w-6 shrink-0 text-center text-sm text-muted-foreground">{index + 1}.</span>
             <span className="min-w-0 flex-1 break-words text-right font-bold text-red-400">{fight.red}</span>
-            <span className="shrink-0 text-sm text-slate-400">vs</span>
+            <span className="shrink-0 text-sm text-muted-foreground">vs</span>
             <span className="min-w-0 flex-1 break-words font-bold text-blue-400">{fight.blue}</span>
-            {fight.group && <span className="hidden shrink-0 text-xs text-slate-400 sm:block">{fight.group}</span>}
+            {fight.group && <span className="hidden shrink-0 text-xs text-muted-foreground sm:block">{fight.group}</span>}
             {fight.completed && <span className="sr-only">Completado</span>}
           </li>)}
         </ol>
-        {preview.length === 0 && <p className="mt-3 text-slate-300">La vista previa aparece al agregar suficientes competidores.</p>}
+        {preview.length === 0 && <p className="mt-3 text-muted-foreground">La vista previa aparece al agregar suficientes competidores.</p>}
       </section>
     </div>
   </div>;
@@ -825,6 +829,6 @@ function TimingFields({ config, journalIdentity, disabled, patch }: Readonly<{
       label: value === 90 ? "1:30" : `${value / 60} min`, value,
     })), config.finalSeconds ?? rules.rounds.duration_seconds,
     (finalSeconds) => ({ finalSeconds, profileApplied: false }))}
-    <p className="text-sm text-slate-300">Si persiste el empate tras un desempate cronometrado, sigue Punto de Oro sin reloj.</p>
+    <p className="text-sm text-muted-foreground">Si persiste el empate tras un desempate cronometrado, sigue Punto de Oro sin reloj.</p>
   </div>;
 }

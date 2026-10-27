@@ -1,8 +1,8 @@
 import { useState } from "react";
 import type { DemoDeskCommand, DemoDeskState } from "../runtime/types";
 
-const control = "min-h-11 rounded-lg border border-slate-600 bg-slate-800 px-3 py-2 text-base text-slate-50 hover:border-cyan-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50";
-const input = "min-h-11 w-full rounded-lg border border-slate-600 bg-slate-950 px-3 py-2 text-base text-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300";
+const control = "min-h-11 rounded-lg border border-border bg-background px-3 py-2 text-base text-foreground transition-colors hover:border-primary/60 hover:bg-secondary/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
+const input = "min-h-11 w-full min-w-0 rounded-lg border border-input bg-background px-3 py-2 text-base text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
 type ManagementAction = "archive" | "delete-and-restart" | "delete";
 
 export function DemoCategoryTools({ state, categoryId, readOnly, dispatch }: Readonly<{
@@ -43,12 +43,12 @@ export function DemoCategoryTools({ state, categoryId, readOnly, dispatch }: Rea
     } finally { setWorking(false); }
   }
 
-  return <section className="rounded-2xl border border-slate-700 bg-slate-900 p-4 sm:p-5" aria-label="Herramientas de categoría">
-    <h2 className="text-lg font-bold">Herramientas de la categoría</h2>
+  return <details className="rounded-xl border border-border bg-card p-4 sm:p-5" aria-label="Herramientas de categoría">
+    <summary className="min-h-11 cursor-pointer text-lg font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Herramientas de la categoría <span className="text-sm font-normal text-muted-foreground">(opcional)</span></summary>
     <div className="mt-3 grid gap-3 lg:grid-cols-2">
-      {canSwap && <details className="rounded-xl border border-slate-700 p-3">
-        <summary className="min-h-11 cursor-pointer py-2 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">Cambiar posiciones de la llave</summary>
-        <p className="mt-2 text-sm text-slate-300">Solo antes de cargar o terminar la primera pelea. Puede cambiar los IDs de combates aún no usados.</p>
+      {canSwap && <details className="rounded-xl border border-border bg-background p-3">
+        <summary className="min-h-11 cursor-pointer py-2 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Cambiar posiciones de la llave</summary>
+        <p className="mt-2 text-sm text-muted-foreground">Solo antes de cargar o terminar la primera pelea. Puede cambiar los IDs de combates aún no usados.</p>
         <div className="mt-2 grid gap-2 sm:grid-cols-2">
           <label className="text-sm">Primera posición<select className={`${input} mt-1`} value={firstSlot} disabled={locked}
             onChange={(event) => setFirstSlot(event.target.value)}><option value="">Seleccionar</option>
@@ -64,9 +64,9 @@ export function DemoCategoryTools({ state, categoryId, readOnly, dispatch }: Rea
             void dispatch({ type: "category/swapBracketSlots", categoryId, aMatchId, aSlot, bMatchId, bSlot });
           }}>Intercambiar posiciones</button>
       </details>}
-      {category.phase === "fighting" && <details className="rounded-xl border border-slate-700 p-3">
-        <summary className="min-h-11 cursor-pointer py-2 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">Combate invitado local</summary>
-        <p className="mt-2 text-sm text-slate-300">Exhibición fuera de la clasificación. No conecta con Mesa Central ni con otro tatami.</p>
+      {category.phase === "fighting" && <details className="rounded-xl border border-border bg-background p-3">
+        <summary className="min-h-11 cursor-pointer py-2 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Combate invitado local</summary>
+        <p className="mt-2 text-sm text-muted-foreground">Exhibición fuera de la clasificación. No conecta con Mesa Central ni con otro tatami.</p>
         <div className="mt-2 grid gap-2 sm:grid-cols-2">
           <label className="text-sm">Rojo<input className={`${input} mt-1`} disabled={locked} value={guestRed} onChange={(event) => setGuestRed(event.target.value)} /></label>
           <label className="text-sm">Azul<input className={`${input} mt-1`} disabled={locked} value={guestBlue} onChange={(event) => setGuestBlue(event.target.value)} /></label>
@@ -83,9 +83,9 @@ export function DemoCategoryTools({ state, categoryId, readOnly, dispatch }: Rea
           }}>Agregar exhibición</button>
       </details>}
     </div>
-    <details className="mt-3 rounded-xl border border-red-900 p-3">
-      <summary className="min-h-11 cursor-pointer py-2 font-semibold text-red-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300">Reiniciar, archivar o borrar categoría</summary>
-      <p className="mt-2 text-sm text-slate-300">Estas acciones son solo de esta demo. Exportá un respaldo antes de borrar resultados.</p>
+    <details className="mt-3 rounded-xl border border-red-900/70 bg-background p-3">
+      <summary className="min-h-11 cursor-pointer py-2 font-semibold text-red-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Reiniciar, archivar o borrar categoría</summary>
+      <p className="mt-2 text-sm text-muted-foreground">Estas acciones son solo de esta demo. Exportá un respaldo antes de borrar resultados.</p>
       <div className="mt-2 flex flex-wrap gap-2">
         <button type="button" disabled={locked} className={control} onClick={() => { setAction("archive"); setConfirmation(""); }}>Archivar y crear otra ejecución</button>
         <button type="button" disabled={locked} className={control} onClick={() => { setAction("delete-and-restart"); setConfirmation(""); }}>Reiniciar sin conservar resultados</button>
@@ -103,7 +103,7 @@ export function DemoCategoryTools({ state, categoryId, readOnly, dispatch }: Rea
           className={`${control} border-red-500`} onClick={() => void manage()}>Confirmar acción</button>
           <button type="button" className={control} onClick={() => { setAction(null); setConfirmation(""); }}>Cancelar</button></div>
       </div>}
-      {Object.keys(state.archives).length > 0 && <p className="mt-2 text-sm text-slate-300">Ejecuciones archivadas en este navegador: {Object.keys(state.archives).length}. Incluidas en el respaldo JSON.</p>}
+      {Object.keys(state.archives).length > 0 && <p className="mt-2 text-sm text-muted-foreground">Ejecuciones archivadas en este navegador: {Object.keys(state.archives).length}. Incluidas en el respaldo JSON.</p>}
     </details>
-  </section>;
+  </details>;
 }

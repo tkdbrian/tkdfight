@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState } from "react";
 import { expect, it, vi } from "vitest";
 import { DemoShell } from "./DemoShell";
@@ -115,8 +115,30 @@ it("requests browser persistence only after an explicit click and reports the re
   mocks.persist.mockClear();
   render(<DemoShell />);
   expect(mocks.persist).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText(/Demo individual · datos solo en este navegador/));
   fireEvent.click(screen.getByRole("button", { name: "Conservar demo en este navegador" }));
   await waitFor(() => expect(mocks.persist).toHaveBeenCalledTimes(1));
   expect(await screen.findByText(/El navegador aceptó conservar los datos locales/)).toBeVisible();
   expect(screen.getByText(/Exportá respaldos igualmente/)).toBeVisible();
+});
+
+it("keeps the original-style local navigation accessible without remote destinations", async () => {
+  mocks.setCurrent(mocks.first);
+  render(<DemoShell />);
+  const nav = await screen.findByRole("navigation", { name: "Secciones de la mesa" });
+  expect(nav).toHaveClass("fixed");
+  expect(nav).toHaveClass("pb-[env(safe-area-inset-bottom,0px)]");
+  const buttons = within(nav).getAllByRole("button");
+  expect(buttons).toHaveLength(5);
+  expect(buttons.map((item) => item.getAttribute("aria-label"))).toEqual([
+    "Categorías", "Combate", "Tabla", "Historial", "Respaldo",
+  ]);
+  const fight = within(nav).getByRole("button", { name: "Combate" });
+  fight.focus();
+  expect(document.activeElement).toBe(fight);
+  fireEvent.click(fight);
+  expect(fight).toHaveAttribute("aria-current", "page");
+  expect(within(nav).queryByRole("button", { name: /TV|Mesa Central|Jueces/i })).toBeNull();
+  const main = screen.getByRole("main");
+  expect(main).toHaveClass("pb-[calc(5rem+env(safe-area-inset-bottom,0px))]");
 });

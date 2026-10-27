@@ -13,11 +13,12 @@ export interface DemoFightProps {
   dispatch: (command: DemoDeskCommand, commandId?: string) => Promise<unknown>;
 }
 
-const buttonBase = "min-h-11 rounded-xl border px-4 py-2 text-base font-semibold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300 disabled:cursor-not-allowed disabled:opacity-50";
-const button = `${buttonBase} border-slate-500 bg-slate-800 hover:border-cyan-300`;
+const buttonBase = "min-h-11 rounded-lg border px-4 py-2 text-base font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-50";
+const button = `${buttonBase} border-border bg-secondary text-secondary-foreground hover:bg-accent`;
 const danger = `${buttonBase} border-red-700 bg-red-950 text-red-100 hover:bg-red-900`;
-const mainButton = `${buttonBase} border-cyan-300 bg-cyan-700 py-4 text-lg font-bold hover:bg-cyan-600`;
-const card = "rounded-2xl border border-slate-700 bg-slate-900 p-4 sm:p-5";
+const mainButton = `${buttonBase} border-green-600 bg-green-700 py-4 text-lg font-bold text-white hover:bg-green-600`;
+const card = "rounded-xl border border-border bg-card p-4 sm:p-5";
+const compactVoteButton = "flex min-h-11 min-w-0 flex-col items-center justify-center rounded-lg border px-0.5 py-1 text-[11px] font-semibold leading-tight focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50 sm:text-sm";
 type Side = "red" | "blue";
 type Vote = Side | "draw";
 
@@ -199,28 +200,29 @@ export function DemoFight({ view, dispatch }: Readonly<DemoFightProps>) {
       onClick={() => send({ type: "category/select", categoryId: active.categoryId }, "Volviendo al combate")}>Volver al combate cargado</button>
   </section>;
 
-  return <section className="space-y-4" aria-label="Combate de la demo">
-    <header className={card}>
-      <h2 className="text-2xl font-bold">Combate</h2>
-      <p className="mt-1 break-words text-slate-200">{category.config.categoryName || "Categoría sin nombre"} · {category.config.mode === "round-robin" ? "Round Robin" : "Eliminación"} · {tul ? "Tul" : "Lucha"}</p>
-      <p className="mt-2 text-sm text-slate-300">Mesa local: una sola persona registra los votos J1–J{category.config.judgesCount || 4}. No hay jueces conectados.</p>
+  return <section className="min-w-0 space-y-3" aria-label="Combate de la demo">
+    <header className="rounded-lg border border-border bg-card px-3 py-2 sm:px-4">
+      <h2 className="sr-only">Combate</h2>
+      <p className="break-words text-sm font-semibold leading-snug text-amber-300">{category.config.categoryName || "Categoría sin nombre"}</p>
+      <p className="text-xs text-muted-foreground">{category.config.mode === "round-robin" ? "Round Robin" : "Eliminación"} · {tul ? "Tul" : "Lucha"} · J1–J{category.config.judgesCount || 4} en esta mesa</p>
     </header>
     {actionError && <p role="alert" className="rounded-xl border border-red-500 bg-red-950 p-3 text-red-100">{actionError}</p>}
-    {pendingAction && <p role="status" className="text-sm text-cyan-200">{pendingAction}…</p>}
+    {pendingAction && <p role="status" className="text-sm text-primary">{pendingAction}…</p>}
     {category.phase !== "fighting" ? <div className={card}><p>La categoría todavía no se inició. Volvé a Categorías para iniciarla.</p></div>
       : active ? <>
         {active.categoryId !== categoryId && <p role="alert" className={`${card} border-amber-500 text-amber-200`}>Hay un combate cargado de otra categoría. Seleccionala para continuar.</p>}
-        <div className={card}>
-          <div className="flex flex-wrap items-center justify-between gap-2"><p className="font-semibold text-cyan-200" aria-live="polite">{phaseLabel(active, Boolean(tul))}</p>
-            <p className="text-sm text-slate-300">Pelea {Math.max(1, category.fights.findIndex((fight) => fight.id === active.fightId) + 1)} / {category.fights.length}</p></div>
-          <div className="mt-3 grid grid-cols-2 gap-2 sm:gap-3">
-            <div className="min-w-0 rounded-xl border border-red-700 bg-red-950/70 p-3 text-center"><p className="font-bold uppercase text-red-200">Rojo · izquierda</p><p className="mt-2 break-words text-lg font-black text-white sm:text-2xl">{active.red.name}</p><p className="mt-2 text-4xl font-black tabular-nums text-red-300">{mode === "points" ? score.red : roundWins.red}</p></div>
-            <div className="min-w-0 rounded-xl border border-blue-700 bg-blue-950/70 p-3 text-center"><p className="font-bold uppercase text-blue-200">Azul · derecha</p><p className="mt-2 break-words text-lg font-black text-white sm:text-2xl">{active.blue.name}</p><p className="mt-2 text-4xl font-black tabular-nums text-blue-300">{mode === "points" ? score.blue : roundWins.blue}</p></div>
+        <div className="-mx-3 overflow-hidden border-y border-border bg-card sm:mx-0 sm:rounded-xl sm:border" data-testid="demo-fight-station">
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-border px-3 py-2 sm:px-4"><p className="text-sm font-semibold text-primary" aria-live="polite">{phaseLabel(active, Boolean(tul))}</p>
+            <p className="text-xs text-muted-foreground">Pelea {Math.max(1, category.fights.findIndex((fight) => fight.id === active.fightId) + 1)} / {category.fights.length}</p></div>
+          <div className="grid grid-cols-2 border-b border-border">
+            <div className="flex min-w-0 flex-col items-center justify-center gap-1.5 border-r border-red-900/40 bg-red-950/50 px-2 py-3 text-center sm:min-h-52 sm:gap-3 sm:py-5"><p className="text-[11px] font-bold uppercase tracking-widest text-red-300">Rojo · izquierda</p><p className="min-h-10 w-full text-base font-black uppercase leading-tight text-red-200 [overflow-wrap:anywhere] sm:text-2xl">{active.red.name}</p><p className="max-w-full text-[clamp(3.25rem,16vw,5rem)] font-black leading-none tabular-nums text-red-400 sm:text-[clamp(4rem,8vw,8rem)]">{mode === "points" ? score.red : roundWins.red}</p></div>
+            <div className="flex min-w-0 flex-col items-center justify-center gap-1.5 bg-blue-950/50 px-2 py-3 text-center sm:min-h-52 sm:gap-3 sm:py-5"><p className="text-[11px] font-bold uppercase tracking-widest text-blue-300">Azul · derecha</p><p className="min-h-10 w-full text-base font-black uppercase leading-tight text-blue-200 [overflow-wrap:anywhere] sm:text-2xl">{active.blue.name}</p><p className="max-w-full text-[clamp(3.25rem,16vw,5rem)] font-black leading-none tabular-nums text-blue-400 sm:text-[clamp(4rem,8vw,8rem)]">{mode === "points" ? score.blue : roundWins.blue}</p></div>
           </div>
-          <p className="mt-2 text-center text-sm text-slate-300">{mode === "points" ? "Puntos acumulados provisionales; ver desglose por juez" : "Rounds ganados; votos del round abajo"}</p>
+          <div className="px-3 pb-4 pt-3 sm:px-5 sm:pb-5">
+          <p className="text-center text-xs text-muted-foreground">{mode === "points" ? "Puntos acumulados provisionales; ver desglose por juez" : "Rounds ganados; votos del round abajo"}</p>
           {!assignmentsMatch && <p role="alert" className="mt-3 rounded-lg border border-red-500 p-3 text-red-200">Las asignaciones ya no coinciden con la pelea guardada. Iniciar está bloqueado.</p>}
-          {active.state.phase !== "golden_point" && !tul && <div className="mt-4 rounded-xl border border-slate-600 bg-slate-950 p-3 text-center">
-            <p className="text-sm text-slate-300">Tiempo restante</p><p role="timer" className="text-5xl font-black tabular-nums sm:text-6xl">{formatTime(active.state.timeLeft)}</p>
+          {active.state.phase !== "golden_point" && !tul && <div className="mt-3 rounded-lg border border-border bg-background p-3 text-center">
+            <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Tiempo restante</p><p role="timer" className="text-5xl font-black tabular-nums sm:text-7xl">{formatTime(active.state.timeLeft)}</p>
             {clockFault && <p role="alert" className="mt-2 text-amber-200">El reloj no se pudo guardar. Pausá el combate y revisá el estado.</p>}
           </div>}
           {active.state.phase === "idle" && <div className="mt-4 space-y-3">
@@ -265,7 +267,7 @@ export function DemoFight({ view, dispatch }: Readonly<DemoFightProps>) {
             <p className="font-bold">Decisión de jurado pendiente</p><div className="mt-2 grid grid-cols-2 gap-2">{(["red", "blue"] as const).map((side) => <button key={side} type="button" className={button} disabled={disabled}
               onClick={() => send({ type: "fight/resolveJury", ...context, winner: side }, "Resolviendo jurado")}>Gana {voteName(side)}</button>)}</div>
           </div>}
-          {canReset && <div className="mt-5 border-t border-slate-700 pt-4">
+          {canReset && <div className="mt-5 border-t border-border pt-4">
             <p id="demo-reset-warning" className="mb-2 text-sm text-amber-200">Reiniciar borra el tiempo, puntos, sanciones, banderas y votos de este combate sin confirmar.</p>
             <button type="button" className={`${danger} w-full`} aria-describedby="demo-reset-warning" disabled={disabled}
               onClick={() => {
@@ -273,15 +275,16 @@ export function DemoFight({ view, dispatch }: Readonly<DemoFightProps>) {
                 void run({ type: "fight/reset", ...context }, "Reiniciando combate").then((ok) => { if (ok) setClockFault(false); });
               }}>Reiniciar combate</button>
           </div>}
+          </div>
         </div>
         {active.state.phase !== "idle" && active.state.phase !== "finished" && <>
           {active.state.phase === "golden_point" ? <div className={card}><h3 className="text-xl font-bold">Votos de Punto de Oro</h3>
             <p className="mt-1 text-slate-300">Intento {active.state.goldenPoint?.attempt ?? 1}. Se necesita mayoría; si empatan todos, confirmar abre otro intento.</p>
-            {judges.map((id) => <fieldset key={id} className="mt-3 rounded-lg border border-slate-700 p-2"><legend className="px-1 font-bold">Juez {id}</legend>
+            <div className="mt-3 grid grid-cols-2 gap-2">{judges.map((id) => <fieldset key={id} className="min-w-0 rounded-lg border border-border p-2"><legend className="px-1 font-bold">Juez {id}</legend>
               <div className="grid grid-cols-2 gap-2">{(["red", "blue"] as const).map((side) => <button key={side} type="button" aria-pressed={active.state.goldenPoint?.votes[id] === side}
-                className={`${button} ${side === "red" ? "border-red-600" : "border-blue-600"} ${active.state.goldenPoint?.votes[id] === side ? "ring-2 ring-white" : ""}`}
+                className={`${compactVoteButton} ${side === "red" ? "border-red-800 bg-red-950/60 text-red-200" : "border-blue-800 bg-blue-950/60 text-blue-200"} ${active.state.goldenPoint?.votes[id] === side ? "ring-2 ring-primary" : ""}`}
                 disabled={disabled || active.state.goldenPoint?.votes[id] === side} onClick={() => send({ type: "fight/goldenVote", ...context, judgeId: id,
-                  competitor: side, attempt: active.state.goldenPoint?.attempt ?? 1 }, `Guardando voto ${id}`)}>{voteName(side)}</button>)}</div></fieldset>)}
+                  competitor: side, attempt: active.state.goldenPoint?.attempt ?? 1 }, `Guardando voto ${id}`)}>{voteName(side)}</button>)}</div></fieldset>)}</div>
             <button type="button" className={`${mainButton} mt-4 w-full`} disabled={disabled || !active.state.goldenPoint || (() => { const votes = Object.values(active.state.goldenPoint.votes);
               const red = votes.filter((item) => item === "red").length; const blue = votes.filter((item) => item === "blue").length;
               return red < Math.floor(judges.length / 2) + 1 && blue < Math.floor(judges.length / 2) + 1 && votes.length < judges.length;
@@ -291,11 +294,11 @@ export function DemoFight({ view, dispatch }: Readonly<DemoFightProps>) {
               <p className="mt-1 text-slate-300">Registrá cada juez por separado. {tul ? "Tul requiere ganador rojo o azul." : "Rojo, empate o azul."}</p>
               {active.roundFlags.length > 0 && <p className="mt-2 text-sm text-slate-200">Rounds confirmados: {active.roundFlags.map((item, index) => `R${index + 1} ${item.red}–${item.blue} (${voteName(item.winner)})`).join(" · ")}</p>}
               <p className="mt-3 font-semibold" aria-live="polite">Votos actuales: {provisional.red} rojo · {provisional.draw} empate · {provisional.blue} azul</p>
-              <div className="mt-3 grid gap-3 sm:grid-cols-2">{judges.map((id) => <fieldset key={id} className="rounded-xl border border-slate-700 p-2"><legend className="px-1 font-bold">Juez {id}</legend>
-                <div className={`grid gap-2 ${tul ? "grid-cols-2" : "grid-cols-3"}`}>{(tul ? ["red", "blue"] : ["red", "draw", "blue"]).map((vote) => <button key={vote} type="button"
-                  aria-pressed={active.judgeVotes[id] === vote} className={`${button} min-w-0 px-1 text-sm ${vote === "red" ? "border-red-600" : vote === "blue" ? "border-blue-600" : ""} ${active.judgeVotes[id] === vote ? "ring-2 ring-white" : ""}`}
+              <div className="mt-3 grid grid-cols-1 gap-2 min-[360px]:grid-cols-2 sm:gap-3">{judges.map((id) => <fieldset key={id} className="min-w-0 rounded-lg border border-border bg-background/50 p-2"><legend className="px-1 text-sm font-bold">Juez {id}</legend>
+                <div className={`grid gap-1 ${tul ? "grid-cols-2" : "grid-cols-3"}`}>{(tul ? ["red", "blue"] : ["red", "draw", "blue"]).map((vote) => <button key={vote} type="button"
+                  aria-label={voteName(vote as Vote)} aria-pressed={active.judgeVotes[id] === vote} className={`${compactVoteButton} ${vote === "red" ? "border-red-900/70 bg-red-950/60 text-red-200" : vote === "blue" ? "border-blue-900/70 bg-blue-950/60 text-blue-200" : "border-border bg-secondary/70 text-foreground"} ${active.judgeVotes[id] === vote ? "ring-2 ring-primary" : ""}`}
                   disabled={disabled || active.judgeVotes[id] === vote || (!tul && !["round", "rest"].includes(active.state.phase))}
-                  onClick={() => send({ type: "fight/vote", ...context, judgeId: id, vote: vote as Vote }, `Guardando voto ${id}`)}>{voteName(vote as Vote)}</button>)}</div>
+                  onClick={() => send({ type: "fight/vote", ...context, judgeId: id, vote: vote as Vote }, `Guardando voto ${id}`)}><span aria-hidden="true" className="block text-base leading-none">{vote === "red" ? "🔴" : vote === "blue" ? "🔵" : "⚖"}</span>{voteName(vote as Vote)}</button>)}</div>
               </fieldset>)}</div>
               {tul && <button type="button" className={`${mainButton} mt-4 w-full`} disabled={disabled || !allVoted || provisional.winner === "draw"}
                 onClick={() => sendActive("fight/tulFinish", "Cerrando votación de Tul")}>Cerrar votación de Tul</button>}
@@ -309,7 +312,7 @@ export function DemoFight({ view, dispatch }: Readonly<DemoFightProps>) {
             </div> : <div className={card}><h3 className="text-xl font-bold">Puntos por juez</h3>
               <p className="mt-1 text-slate-300">Elegí juez, competidor y técnica. Las sanciones de árbitro se registran aparte.</p>
               <fieldset className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4"><legend className="mb-2 font-semibold">Juez que puntúa</legend>{judges.map((id) => <button key={id} type="button" aria-pressed={judge === id}
-                className={`${button} ${judge === id ? "border-cyan-300 bg-cyan-950" : ""}`} onClick={() => setJudge(id)}>{id}</button>)}</fieldset>
+                className={`${button} ${judge === id ? "border-primary bg-accent ring-2 ring-primary" : ""}`} onClick={() => setJudge(id)}>{id}</button>)}</fieldset>
               <div className="mt-3 grid grid-cols-2 gap-2">{(["red", "blue"] as const).map((side) => <div key={side} className={`min-w-0 rounded-xl border p-2 ${side === "red" ? "border-red-700" : "border-blue-700"}`}>
                 <h4 className="break-words font-bold">{side === "red" ? active.red.name : active.blue.name} · {voteName(side)}</h4>
                 <p className="text-sm">Juez {judge}: {totals[judge]?.[side] ?? 0} puntos</p>
@@ -343,11 +346,11 @@ export function DemoFight({ view, dispatch }: Readonly<DemoFightProps>) {
             </details>}
           </>}
         </>}
-      </> : <div className={card}>
+      </> : <div className={`${card} min-w-0`}>
         <h3 className="text-xl font-bold">Próxima pelea</h3>
         {selectedPending ? <>
           <p className="mt-2 text-sm text-slate-300">Pelea {category.fights.findIndex((fight) => fight.id === selectedPending.id) + 1} / {category.fights.length}{selectedPending.groupId ? ` · Grupo ${selectedPending.groupId}` : ""}</p>
-          <div className="mt-2 grid grid-cols-2 gap-2 text-center"><p className="min-w-0 break-words rounded-lg border border-red-700 bg-red-950 p-3 text-lg font-bold">Rojo · {selectedPending.red.name}</p><p className="min-w-0 break-words rounded-lg border border-blue-700 bg-blue-950 p-3 text-lg font-bold">Azul · {selectedPending.blue.name}</p></div>
+          <div className="mt-3 grid grid-cols-2 overflow-hidden rounded-lg border border-border text-center"><p className="min-w-0 border-r border-red-900/40 bg-red-950/50 p-3 text-base font-black uppercase leading-tight text-red-200 [overflow-wrap:anywhere] sm:text-xl">Rojo · {selectedPending.red.name}</p><p className="min-w-0 bg-blue-950/50 p-3 text-base font-black uppercase leading-tight text-blue-200 [overflow-wrap:anywhere] sm:text-xl">Azul · {selectedPending.blue.name}</p></div>
           {advisory.kind === "suggest" && restOverride !== advisoryKey && <div className="mt-3 rounded-lg border border-amber-500 bg-amber-950/50 p-3" role="status"><p>Esta pelea repite un competidor de la última pelea confirmada. Hay otra habilitada que le da más descanso.</p>
             <div className="mt-2 grid gap-2 sm:grid-cols-2"><button type="button" className={mainButton} disabled={disabled} onClick={() => send({ type: "fight/select", categoryId, fightId: advisory.alternativeFightId }, "Seleccionando pelea sugerida")}>Usar sugerida: {category.fights[advisory.alternativeIndex]?.red.name} vs {category.fights[advisory.alternativeIndex]?.blue.name}</button>
               <button type="button" className={button} disabled={disabled} onClick={() => setRestOverride(advisoryKey)}>Mantener prevista</button></div></div>}
