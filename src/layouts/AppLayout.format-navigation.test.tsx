@@ -55,6 +55,35 @@ afterEach(() => {
 });
 
 describe("navegación del formato de la categoría consultada", () => {
+  it("keeps the mobile shell readable and its navigation clear of phone safe areas", () => {
+    selectCategory("round-robin");
+    act(() => useTournamentStore.setState((state) => ({
+      config: { ...state.config, categoryName: "Pesado A · Blancos y Puntas Amarillas · Femenino · 6–7 años" },
+    })));
+    mountLayout("/settings");
+
+    const mobileHeader = screen.getByRole("banner");
+    const categoryName = within(mobileHeader).getByText(/Pesado A/);
+    expect(categoryName).toHaveAttribute("title", "Pesado A · Blancos y Puntas Amarillas · Femenino · 6–7 años");
+    expect(categoryName.className).toContain("line-clamp-2");
+    expect(within(mobileHeader).getByRole("button", { name: "Cómo funciona" }).className).toContain("size-11");
+    expect(mobileHeader.parentElement?.parentElement).toHaveStyle({ height: "100dvh" });
+
+    const mobileNav = screen.getByRole("navigation", { name: "Navegación principal" });
+    expect(mobileNav.className).toContain("safe-area-inset-bottom");
+    const competitorLink = within(mobileNav).getByRole("link", { name: "Competidores" });
+    expect(competitorLink.className).toContain("min-h-14");
+  });
+
+  it("does not repeat the selected category above the combat panel on mobile", () => {
+    selectCategory("round-robin");
+    act(() => useTournamentStore.setState((state) => ({
+      config: { ...state.config, categoryName: "Pesado A · Femenino · 6–7 años" },
+    })));
+    mountLayout("/fight");
+    expect(within(screen.getByRole("banner")).queryByText(/Pesado A/)).toBeNull();
+  });
+
   it.each(["round-robin", "groups", "elimination"] as const)("adapts desktop/mobile menus to %s, not the operating category", (mode) => {
     selectCategory(mode); mountLayout("/settings");
     assertFormatLinks(mode);

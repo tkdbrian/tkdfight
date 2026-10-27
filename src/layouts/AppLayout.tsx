@@ -112,7 +112,10 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
   }, [location.pathname, navigate]);
 
   return (
-    <div className="flex h-screen bg-background text-foreground overflow-hidden">
+    <div
+      className="flex h-screen min-w-0 overflow-hidden bg-background text-foreground pt-[env(safe-area-inset-top,0px)] pl-[env(safe-area-inset-left,0px)] pr-[env(safe-area-inset-right,0px)] md:pt-0 md:pl-0 md:pr-0"
+      style={{ height: "100dvh" }}
+    >
       {/* Sidebar — visible md+ only */}
       <aside className="hidden md:flex w-56 shrink-0 border-r border-border flex-col">
         {/* Logo */}
@@ -255,29 +258,31 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
       {/* Main column */}
       <main className="flex-1 flex flex-col overflow-hidden min-w-0">
         {/* Mobile top header — hidden md+ */}
-        <header className="md:hidden h-12 shrink-0 border-b border-border flex items-center gap-2 px-4">
-          <Trophy className="size-4 text-primary" />
-          <span className="font-bold text-sm tracking-wide uppercase">TKD Fight</span>
-          {categoryName && (
-            <span className="ml-2 text-[10px] text-muted-foreground truncate max-w-30">
-              {categoryName}
-            </span>
-          )}
-          <div className="ml-auto flex items-center gap-1.5 shrink-0">
-            <button
-              type="button"
-              onClick={() => startGlobalTour(navigate, location.pathname)}
-              className="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors"
-              aria-label="Cómo funciona"
-            >
-              <HelpCircle className="size-4" />
-            </button>
-            {ringAlias && (
-              <span className="text-[10px] font-mono bg-primary/10 text-primary px-1.5 py-0.5 rounded">
-                {ringAlias}
-              </span>
-            )}
+        <header className="md:hidden shrink-0 border-b border-border px-3 py-1">
+          <div className="flex min-h-11 items-center gap-2">
+            <Trophy className="size-4 shrink-0 text-primary" />
+            <span className="font-bold text-sm tracking-wide uppercase">TKD Fight</span>
+            <div className="ml-auto flex shrink-0 items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => startGlobalTour(navigate, location.pathname)}
+                className="flex size-11 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
+                aria-label="Cómo funciona"
+              >
+                <HelpCircle className="size-4" />
+              </button>
+              {ringAlias && (
+                <span className="rounded bg-primary/10 px-1.5 py-0.5 font-mono text-[10px] text-primary">
+                  {ringAlias}
+                </span>
+              )}
+            </div>
           </div>
+          {categoryName && location.pathname !== "/fight" && (
+            <p className="line-clamp-2 min-w-0 break-words px-1 pb-1 text-xs leading-snug text-muted-foreground" title={categoryName}>
+              {categoryName}
+            </p>
+          )}
         </header>
 
         <CategoryTabs connected={connected} stateReady={stateReady} serverState={serverState} />
@@ -326,8 +331,8 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
         </div>
 
         {/* Mobile bottom navigation — hidden md+ */}
-        <nav className="md:hidden shrink-0 border-t border-border bg-background flex items-stretch h-14">
-          {visibleNavItemsFlat.map(({ to, icon: Icon, short }) => {
+        <nav aria-label="Navegación principal" className="md:hidden flex min-h-14 shrink-0 items-stretch border-t border-border bg-background pb-[env(safe-area-inset-bottom,0px)]">
+          {visibleNavItemsFlat.map(({ to, icon: Icon, short, label }) => {
             const disabled =
               (to === "/fight" || to === "/results" || to === "/bracket" || to === "/standings") &&
               phase === "setup";
@@ -338,10 +343,11 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
                 to={to}
                 end={to === "/"}
                 aria-disabled={disabled}
+                aria-label={to === "/fight" && matchType === "tul" ? "Formas" : label}
                 tabIndex={disabled ? -1 : undefined}
                 className={({ isActive }) =>
                   cn(
-                    "flex-1 flex flex-col items-center justify-center gap-0.5 text-center transition-colors relative",
+                    "relative flex min-h-14 min-w-0 flex-1 flex-col items-center justify-center gap-0.5 text-center transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary",
                     isActive
                       ? "text-primary"
                       : "text-muted-foreground",
@@ -352,7 +358,7 @@ export function AppLayout({ children }: Readonly<{ children: React.ReactNode }>)
                 {({ isActive }) => (
                   <>
                     <Icon className={cn("size-5 shrink-0", isActive && "stroke-[2.5]")} />
-                    <span className="text-[9px] leading-none font-medium truncate w-full px-0.5 text-center">
+                    <span className="w-full truncate px-0.5 text-center text-[10px] font-medium leading-none">
                       {displayShort}
                     </span>
                     {to === "/fight" && importedPending > 0 && (

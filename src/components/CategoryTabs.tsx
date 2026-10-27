@@ -209,13 +209,13 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
 
   return (
     <>
-      <section className="shrink-0 border-b border-border bg-background px-2 py-2 sm:px-4" aria-label="Categorías del torneo">
-        <div className="flex min-w-0 items-center gap-1.5">
+      <section className="min-w-0 shrink-0 border-b border-border bg-background px-2 py-2 sm:px-4" aria-label="Categorías del torneo">
+        <div className={cn("flex min-w-0 items-center gap-1.5", location.pathname === "/fight" && "flex-wrap sm:flex-nowrap")}>
           <Button
             type="button"
             size="icon"
             variant="ghost"
-            className="size-8 shrink-0"
+            className="hidden size-8 shrink-0 sm:inline-flex"
             aria-label="Desplazar categorías a la izquierda"
             onClick={() => scrollRef.current?.scrollBy({ left: -240, behavior: "smooth" })}
             disabled={visibleCategories.length < 3 || actionsDisabled}
@@ -223,7 +223,10 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
             <ChevronLeft className="size-4" />
           </Button>
 
-          <div ref={scrollRef} className="min-w-0 flex-1 overflow-x-auto [scrollbar-width:thin]">
+          <div ref={scrollRef} className={cn(
+            "min-w-0 flex-1 overflow-x-auto [scrollbar-width:thin]",
+            location.pathname === "/fight" && "w-full flex-none sm:w-auto sm:flex-1",
+          )}>
             <div role="tablist" aria-label="Categorías" className="flex w-max min-w-full items-center gap-1">
               {visibleCategories.map((entry, index) => {
                 const duplicateCount = nameCounts.get(entry.name) ?? 0;
@@ -245,14 +248,29 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
                       onClick={() => void runOperation(() => selectEntry(entry))}
                       disabled={actionsDisabled}
                       className={cn(
-                        "max-w-56 truncate border-b-2 px-3 py-2 text-left text-xs font-semibold transition-colors sm:max-w-64 sm:text-sm",
+                        "min-h-11 border-b-2 px-3 py-2 text-left text-xs font-semibold transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary sm:max-w-64 sm:text-sm",
+                        selected && location.pathname === "/fight"
+                          ? visibleCategories.length > 1
+                            ? "max-w-[calc(100vw-4.5rem)]"
+                            : "max-w-[calc(100vw-1rem)]"
+                          : "max-w-[min(60vw,14rem)]",
                         selected
                           ? "border-primary bg-primary/10 text-primary"
                           : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground",
                       )}
                     >
-                      <span className="block truncate">{label}</span>
-                      <span className="block truncate text-[10px] font-normal opacity-65">{tabSummary}</span>
+                      <span className={cn(
+                        "block",
+                        selected
+                          ? location.pathname === "/fight"
+                            ? "break-words whitespace-normal leading-snug"
+                            : "line-clamp-2 break-words leading-snug"
+                          : "truncate",
+                      )}>{label}</span>
+                      <span className={cn(
+                        "block truncate text-[10px] font-normal opacity-65",
+                        selected && location.pathname === "/fight" && "hidden sm:block",
+                      )}>{tabSummary}</span>
                     </button>
                     {visibleCategories.length > 1 && (
                       <button
@@ -261,7 +279,7 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
                         title={`Ocultar ${entry.name}`}
                         onClick={() => void runOperation(() => hideCategory(entry))}
                         disabled={actionsDisabled}
-                        className="mr-1 rounded p-1 text-muted-foreground/50 hover:bg-destructive/10 hover:text-destructive focus-visible:text-destructive"
+                        className="mr-1 flex size-11 items-center justify-center rounded text-muted-foreground/70 hover:bg-destructive/10 hover:text-destructive focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-destructive sm:size-7"
                       >
                         <X className="size-3.5" />
                       </button>
@@ -277,7 +295,10 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
             type="button"
             size="sm"
             variant="outline"
-            className="h-9 shrink-0 gap-1.5 px-2 text-xs sm:px-3 sm:text-sm"
+            className={cn(
+              "h-11 min-w-11 shrink-0 gap-1.5 px-2 text-xs sm:h-9 sm:min-w-0 sm:px-3 sm:text-sm",
+              location.pathname === "/fight" && "ml-auto sm:ml-0",
+            )}
             onClick={() => void runOperation(createCategory)}
             aria-label="Agregar categoría"
             disabled={actionsDisabled}
@@ -290,7 +311,7 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
           <details className="group relative shrink-0">
             <summary
               className={cn(
-                "flex h-9 cursor-pointer list-none items-center gap-1 rounded-md border border-border px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground",
+                "flex h-11 min-w-11 cursor-pointer list-none items-center justify-center gap-1 rounded-md border border-border px-2 text-xs text-muted-foreground hover:bg-secondary hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary sm:h-9 sm:min-w-0",
                 hiddenCategories.length === 0 && "hidden",
               )}
               aria-label="Categorías ocultas"
@@ -308,7 +329,7 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
                     type="button"
                     onClick={() => void runOperation(() => reopenCategory(entry))}
                     disabled={actionsDisabled}
-                    className="block w-full rounded px-2 py-2 text-left text-sm hover:bg-secondary"
+                    className="block min-h-11 w-full rounded px-2 py-2 text-left text-sm hover:bg-secondary"
                   >
                     <span className="block truncate">{entry.name}</span>
                     {entry.tournamentName && <span className="block truncate text-xs text-muted-foreground">{entry.tournamentName}</span>}
@@ -322,7 +343,7 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
             type="button"
             size="icon"
             variant="ghost"
-            className="size-8 shrink-0"
+            className="hidden size-8 shrink-0 sm:inline-flex"
             aria-label="Desplazar categorías a la derecha"
             onClick={() => scrollRef.current?.scrollBy({ left: 240, behavior: "smooth" })}
             disabled={visibleCategories.length < 3 || actionsDisabled}
@@ -332,21 +353,25 @@ export function CategoryTabs({ connected, stateReady, serverState }: CategoryTab
         </div>
 
         {draftEntry && (
-          <div className="mt-1 flex items-center justify-between gap-2 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-xs">
+          <div className="mt-1 flex flex-wrap items-center justify-between gap-2 rounded border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-xs">
             <span className="text-amber-700 dark:text-amber-300">
               <strong>Categoría en preparación.</strong>{" "}Agregá los competidores para continuar.
             </span>
-            <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setCancelDialogOpen(true)} disabled={actionsDisabled}>
+            <Button type="button" size="sm" variant="ghost" className="min-h-11 px-2 text-xs sm:min-h-7" onClick={() => setCancelDialogOpen(true)} disabled={actionsDisabled}>
               Cancelar creación
             </Button>
           </div>
         )}
 
         {serverLock && (
-          <div role="status" className="mt-1 flex items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
-            <span>Combate en {lockCategory?.name ?? "categoría no disponible"}</span>
+          <div role="status" className="mt-1 flex min-w-0 flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-300">
+            <span className="min-w-0 break-words leading-snug">
+              {lockCategory?.id === activeCategoryId
+                ? "Combate cargado"
+                : `Combate en ${lockCategory?.name ?? "categoría no disponible"}`}
+            </span>
             {lockCategory && activeCategoryId !== lockCategory.id && (
-              <Button type="button" size="sm" variant="outline" className="h-7 text-xs"
+              <Button type="button" size="sm" variant="outline" className="min-h-11 text-xs sm:min-h-7"
                 onClick={() => void runOperation(async () => {
                   if (!lockCategory.visible) store.reopenCategory(lockCategory.id);
                   if (await selectEntry({ ...lockCategory, visible: true })) navigate("/fight");

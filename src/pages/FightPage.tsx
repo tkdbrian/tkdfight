@@ -400,7 +400,10 @@ function confirmBtnLabel(winner: "red" | "blue" | "draw" | null): string {
 }
 
 function flagBtnClass(side: FlagSide, active: boolean): string {
-  const base = "flex-1 py-4 rounded-xl font-bold text-base transition-colors";
+  const base = cn(
+    "flex min-h-11 min-w-0 flex-1 items-center justify-center gap-1 rounded-xl px-1 py-2 text-sm font-bold leading-tight transition-colors md:py-4 md:text-base",
+    active && "ring-2 ring-inset ring-white/80",
+  );
   if (side === "red") {
     return active
       ? `${base} bg-red-600 text-white`
@@ -426,14 +429,18 @@ function FlagButton({
   side, active, disabled, onClick,
 }: Readonly<{ side: FlagSide; active: boolean; disabled: boolean; onClick: () => void }>) {
   const label = flagLabel(side);
+  const plainLabel = side === "draw" ? "Empate" : side === "red" ? "Rojo" : "Azul";
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
+      aria-pressed={active}
       className={flagBtnClass(side, active)}
     >
-      {label}
+      {active && <Check className="size-3 shrink-0 md:size-4" aria-hidden="true" />}
+      <span className="md:hidden">{plainLabel}</span>
+      <span className="hidden md:inline">{label}</span>
     </button>
   );
 }
@@ -448,14 +455,15 @@ function FlagVoteRow({
   hideDraw?: boolean;
 }>) {
   return (
-    <div className="flex flex-col gap-1 rounded-lg bg-secondary/20 px-2 py-2">
+    <fieldset className="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)] items-center gap-1 rounded-lg bg-secondary/20 px-2 py-2 md:flex md:flex-col">
+      <legend className="sr-only">Voto {judgeId}</legend>
       <span className="text-xs font-bold text-muted-foreground text-center">{judgeId}</span>
-      <div className="flex gap-1">
+      <div className={cn("grid min-w-0 gap-1 md:flex md:w-full", hideDraw ? "grid-cols-2" : "grid-cols-3")}>
         <FlagButton side="red" active={vote === "red"} disabled={disabled} onClick={() => onVote(judgeId, "red")} />
         {!hideDraw && <FlagButton side="draw" active={vote === "draw"} disabled={disabled} onClick={() => onVote(judgeId, "draw")} />}
         <FlagButton side="blue" active={vote === "blue"} disabled={disabled} onClick={() => onVote(judgeId, "blue")} />
       </div>
-    </div>
+    </fieldset>
   );
 }
 
@@ -541,7 +549,7 @@ export function JefeMesaPanel({
             <Button
               data-testid={`gp-vote-${judgeId}-red`}
               aria-pressed={goldenPoint.votes[judgeId] === "red"}
-              className="flex-1 bg-red-800 hover:bg-red-700"
+              className="min-h-11 flex-1 bg-red-800 hover:bg-red-700"
               disabled={goldenActionPending || goldenPoint.votes[judgeId] === "red" || !onGoldenVote}
               onClick={() => onGoldenVote?.(judgeId, "red", goldenPoint.attempt)}
             >
@@ -550,7 +558,7 @@ export function JefeMesaPanel({
             <Button
               data-testid={`gp-vote-${judgeId}-blue`}
               aria-pressed={goldenPoint.votes[judgeId] === "blue"}
-              className="flex-1 bg-blue-800 hover:bg-blue-700"
+              className="min-h-11 flex-1 bg-blue-800 hover:bg-blue-700"
               disabled={goldenActionPending || goldenPoint.votes[judgeId] === "blue" || !onGoldenVote}
               onClick={() => onGoldenVote?.(judgeId, "blue", goldenPoint.attempt)}
             >
@@ -572,7 +580,7 @@ export function JefeMesaPanel({
         </p>
         <Button
           data-testid="gp-confirm-outcome"
-          className="w-full bg-yellow-600 hover:bg-yellow-500 text-white"
+          className="min-h-11 w-full bg-yellow-600 hover:bg-yellow-500 text-white"
           disabled={goldenActionPending || (!winner && !isDraw) || !onConfirmGoldenOutcome}
           onClick={() => onConfirmGoldenOutcome?.(goldenPoint.attempt)}
         >
@@ -627,7 +635,7 @@ export function JefeMesaPanel({
               <button
                 type="button"
                 onClick={() => onEmit("mesa:undoRound")}
-                className="text-xs font-medium px-2 py-1 rounded border border-red-900/50 text-red-400/60 hover:bg-red-950/40 hover:text-red-300 transition-colors"
+                className="min-h-11 rounded border border-red-900/50 px-2 py-1 text-xs font-medium text-red-400/60 transition-colors hover:bg-red-950/40 hover:text-red-300 md:min-h-0"
                 title="Deshacer el último round confirmado"
               >
                 ↩ Deshacer R{roundFlags.length}
@@ -646,7 +654,7 @@ export function JefeMesaPanel({
               disabled={!canConfirm}
               onClick={() => voteSingle("red")}
               className={cn(
-                "flex-1 rounded-xl py-5 text-xl font-black uppercase tracking-wider transition-all border-2",
+                "min-h-11 min-w-0 flex-1 rounded-xl border-2 px-1 py-3 text-sm font-black uppercase tracking-wide transition-all md:py-5 md:text-xl md:tracking-wider",
                 canConfirm
                   ? "bg-red-700 hover:bg-red-600 border-red-600 text-white"
                   : "bg-red-950/20 border-red-900/30 text-red-400/40 cursor-not-allowed",
@@ -660,7 +668,7 @@ export function JefeMesaPanel({
               disabled={!canConfirm}
               onClick={() => voteSingle("draw")}
               className={cn(
-                "flex-1 rounded-xl py-5 text-xl font-black uppercase tracking-wider transition-all border-2",
+                "min-h-11 min-w-0 flex-1 rounded-xl border-2 px-1 py-3 text-sm font-black uppercase tracking-wide transition-all md:py-5 md:text-xl md:tracking-wider",
                 canConfirm
                   ? "bg-secondary hover:bg-secondary/80 border-border text-foreground"
                   : "bg-secondary/20 border-border/30 text-muted-foreground/40 cursor-not-allowed",
@@ -674,7 +682,7 @@ export function JefeMesaPanel({
               disabled={!canConfirm}
               onClick={() => voteSingle("blue")}
               className={cn(
-                "flex-1 rounded-xl py-5 text-xl font-black uppercase tracking-wider transition-all border-2",
+                "min-h-11 min-w-0 flex-1 rounded-xl border-2 px-1 py-3 text-sm font-black uppercase tracking-wide transition-all md:py-5 md:text-xl md:tracking-wider",
                 canConfirm
                   ? "bg-blue-700 hover:bg-blue-600 border-blue-600 text-white"
                   : "bg-blue-950/20 border-blue-900/30 text-blue-400/40 cursor-not-allowed",
@@ -718,7 +726,7 @@ export function JefeMesaPanel({
               </span>
             </div>
           )}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
             {ids.map((jid) => (
               <FlagVoteRow
                 key={jid}
@@ -1200,7 +1208,7 @@ export function ScoreSanctionControls({
   const testId = (kind: SanctionKind, action: "add" | "remove") =>
     `score-sanction-${side}-${kind}-${action}-${layout}`;
   const buttonClass = mobile
-    ? "min-h-11 text-[11px] font-bold py-1.5 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+    ? "min-h-11 text-xs font-bold py-1.5 rounded disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
     : "text-sm font-bold py-2 rounded-xl disabled:opacity-30 disabled:cursor-not-allowed transition-colors";
   const subject = `${fighterName} (${side === "red" ? "rojo" : "azul"})`;
   return (
@@ -1298,10 +1306,10 @@ export function PostClockSanctionReview({
                 <strong data-testid={`sanction-${side}-warning-count`}>{warnings}</strong>
               </div>
               <div className="grid grid-cols-2 gap-1">
-                <Button size="sm" variant="outline" className="h-8 px-1 text-xs"
+                <Button size="sm" variant="outline" className="min-h-11 px-1 text-xs md:min-h-0 md:h-8"
                   data-testid={`sanction-${side}-warning-add`} disabled={busy || !editable || warnings >= 99}
                   onClick={() => onAdjust(side, "warning", 1)}>+ Adv</Button>
-                <Button size="sm" variant="outline" className="h-8 px-1 text-xs"
+                <Button size="sm" variant="outline" className="min-h-11 px-1 text-xs md:min-h-0 md:h-8"
                   data-testid={`sanction-${side}-warning-remove`} disabled={busy || !editable || warnings === 0}
                   onClick={() => onAdjust(side, "warning", -1)}>− Adv</Button>
               </div>
@@ -1310,10 +1318,10 @@ export function PostClockSanctionReview({
                 <strong data-testid={`sanction-${side}-minus_point-count`}>{directPoints}</strong>
               </div>
               <div className="grid grid-cols-2 gap-1">
-                <Button size="sm" variant="outline" className="h-8 px-1 text-xs"
+                <Button size="sm" variant="outline" className="min-h-11 px-1 text-xs md:min-h-0 md:h-8"
                   data-testid={`sanction-${side}-minus_point-add`} disabled={busy || !editable || directPoints >= 99}
                   onClick={() => onAdjust(side, "minus_point", 1)}>+ Punto</Button>
-                <Button size="sm" variant="outline" className="h-8 px-1 text-xs"
+                <Button size="sm" variant="outline" className="min-h-11 px-1 text-xs md:min-h-0 md:h-8"
                   data-testid={`sanction-${side}-minus_point-remove`} disabled={busy || !editable || directPoints === 0}
                   onClick={() => onAdjust(side, "minus_point", -1)}>− Punto</Button>
               </div>
@@ -1450,17 +1458,17 @@ function FightProgressStrip({ fights, currentIndex, onSelect }: Readonly<{
 
         let btnCls: string;
         if (isCurrent) {
-          btnCls = "size-8 bg-primary text-primary-foreground ring-2 ring-primary/30";
+          btnCls = "size-11 md:size-8 bg-primary text-primary-foreground ring-2 ring-primary/30";
         } else if (isDone) {
           if (winner === "red") {
-            btnCls = "size-7 bg-red-950/60 border border-red-700/60 text-red-300 hover:bg-red-900/60";
+            btnCls = "size-11 md:size-7 bg-red-950/60 border border-red-700/60 text-red-300 hover:bg-red-900/60";
           } else if (winner === "blue") {
-            btnCls = "size-7 bg-blue-950/60 border border-blue-700/60 text-blue-300 hover:bg-blue-900/60";
+            btnCls = "size-11 md:size-7 bg-blue-950/60 border border-blue-700/60 text-blue-300 hover:bg-blue-900/60";
           } else {
-            btnCls = "size-7 bg-yellow-950/70 border border-yellow-600/60 text-yellow-300 hover:bg-yellow-900/60";
+            btnCls = "size-11 md:size-7 bg-yellow-950/70 border border-yellow-600/60 text-yellow-300 hover:bg-yellow-900/60";
           }
         } else {
-          btnCls = "size-6 border border-border/50 text-muted-foreground/60 hover:bg-secondary";
+          btnCls = "size-11 md:size-6 border border-border/50 text-muted-foreground/60 hover:bg-secondary";
         }
 
         const tooltipParts = [`${i + 1}. ${fight.red.name} vs ${fight.blue.name}`];
@@ -1928,58 +1936,58 @@ function MatchControls({
   return (
     <div className="flex flex-col items-center gap-3 w-full">
       {/* Acciones primarias */}
-      <div className="flex flex-wrap gap-2 justify-center">
+      <div className="flex w-full flex-wrap justify-center gap-2 md:w-auto">
         {canStart && (
-          <Button size="xl" className="bg-green-700 hover:bg-green-600" disabled={startBlocked} onClick={() => onEmit("match:start")}>
+          <Button size="xl" className="min-h-11 w-full bg-green-700 hover:bg-green-600 md:w-auto" disabled={startBlocked} onClick={() => onEmit("match:start")}>
             <Play />
             Iniciar combate
           </Button>
         )}
         {canPause && (
-          <Button size="xl" variant="outline" onClick={() => onEmit("match:pause")}>
+          <Button size="xl" variant="outline" className="min-h-11 min-w-0 flex-1 md:flex-none" onClick={() => onEmit("match:pause")}>
             <Pause />
             Pausar
           </Button>
         )}
         {canResume && (
-          <Button size="xl" className="bg-yellow-700 hover:bg-yellow-600" onClick={() => onEmit("match:resume")}>
+          <Button size="xl" className="min-h-11 min-w-0 flex-1 bg-yellow-700 hover:bg-yellow-600 md:flex-none" onClick={() => onEmit("match:resume")}>
             <Play />
             Reanudar
           </Button>
         )}
         {canFinish && (
-          <Button size="xl" variant="secondary" onClick={() => onEmit("match:finishRound")}>
+          <Button size="xl" variant="secondary" className="min-h-11 min-w-0 flex-1 md:flex-none" aria-label="Finalizar combate" onClick={() => onEmit("match:finishRound")}>
             <SkipForward />
-            Finalizar combate
+            <span className="md:hidden">Finalizar</span><span className="hidden md:inline">Finalizar combate</span>
           </Button>
         )}
         {phase === "penalties" && (
-          <Button size="xl" className="bg-orange-700 hover:bg-orange-600" onClick={() => onEmit("match:confirmPenalties")}>
+          <Button size="xl" className="min-h-11 w-full bg-orange-700 hover:bg-orange-600 md:w-auto" onClick={() => onEmit("match:confirmPenalties")}>
             Confirmar penalizaciones
           </Button>
         )}
       </div>
       {/* Ajuste fino de tiempo — solo cuando el combate está pausado */}
       {canResume && (
-        <div className="flex flex-col items-center gap-1.5">
+        <div className="flex w-full max-w-xs flex-col items-center gap-1.5 md:w-auto md:max-w-none">
           <span className="text-[10px] text-muted-foreground uppercase tracking-widest">Ajustar tiempo</span>
-          <div className="flex items-center gap-1">
+          <div className="grid w-full grid-cols-3 gap-1.5 md:flex md:w-auto md:items-center md:gap-1">
             {[-15, -5, -1].map((s) => (
               <Button
                 key={s}
                 size="sm" variant="outline"
-                className="text-xs h-7 px-2 border-dashed text-red-300 hover:bg-red-950/40"
+                className="min-h-11 px-2 text-xs border-dashed text-red-300 hover:bg-red-950/40 md:min-h-0 md:h-7"
                 onClick={() => onEmit("timer:addSeconds", { seconds: s })}
               >
                 {s}s
               </Button>
             ))}
-            <span className="mx-1 text-muted-foreground/50">·</span>
+            <span className="mx-1 hidden text-muted-foreground/50 md:inline">·</span>
             {[1, 5, 15].map((s) => (
               <Button
                 key={s}
                 size="sm" variant="outline"
-                className="text-xs h-7 px-2 border-dashed text-green-300 hover:bg-green-950/40"
+                className="min-h-11 px-2 text-xs border-dashed text-green-300 hover:bg-green-950/40 md:min-h-0 md:h-7"
                 onClick={() => onEmit("timer:addSeconds", { seconds: s })}
               >
                 +{s}s
@@ -1995,13 +2003,13 @@ function MatchControls({
           <div className="flex items-center gap-2 w-full">
             <Button
               size="sm" variant="ghost"
-              className="flex-1 text-red-400/50 hover:text-white hover:bg-red-700/80 text-xs h-7 px-2 border border-red-900/30 hover:border-red-600 transition-all"
+              className="min-h-11 flex-1 border border-red-900/30 px-2 text-xs text-red-400/50 transition-all hover:border-red-600 hover:bg-red-700/80 hover:text-white md:min-h-0 md:h-7"
               onClick={() => setDqConfirm("red")}>
               <UserX className="size-3 mr-1" />Descalif. Rojo
             </Button>
             <Button
               size="sm" variant="ghost"
-              className="flex-1 text-blue-400/50 hover:text-white hover:bg-blue-700/80 text-xs h-7 px-2 border border-blue-900/30 hover:border-blue-600 transition-all"
+              className="min-h-11 flex-1 border border-blue-900/30 px-2 text-xs text-blue-400/50 transition-all hover:border-blue-600 hover:bg-blue-700/80 hover:text-white md:min-h-0 md:h-7"
               onClick={() => setDqConfirm("blue")}>
               <UserX className="size-3 mr-1" />Descalif. Azul
             </Button>
@@ -2193,6 +2201,11 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   const [sanctionActionPending, setSanctionActionPending] = React.useState(false);
   const sanctionActionRef = React.useRef(false);
   const [guestDialogOpen, setGuestDialogOpen] = React.useState(false);
+  const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false);
+  const mobileActionsButtonRef = React.useRef<HTMLButtonElement>(null);
+  const desktopGuestButtonRef = React.useRef<HTMLButtonElement>(null);
+  const guestRedNameRef = React.useRef<HTMLInputElement>(null);
+  const guestOpenedFromMobileActionsRef = React.useRef(false);
   const [guestForm, setGuestForm] = React.useState({ red: "", blue: "", category: "", ring: "" });
   // Default: tiebreakerSeconds del config (configurado en Settings), luego overtime_seconds de las reglas, luego 30s
   const [tiebreakerDuration, setTiebreakerDuration] = React.useState(() => {
@@ -2509,6 +2522,23 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       onReset={() => setTimingDraft({key:draftKey,seconds:String(configuredFightRules.rounds.duration_seconds),
         rounds:allowTimingRounds ? configuredFightRules.rounds.count : null})}
       onSave={loaded ? () => { void saveTimingSettings(); } : undefined} />;
+  }
+
+  function renderMobileTimingSettings(inputId: string): React.JSX.Element {
+    const duration = /^\d+$/.test(effectiveTimingSeconds)
+      ? `${effectiveTimingSeconds} s` : "duración pendiente";
+    return (
+      <details key={`${draftKey}-${inputId}`} data-testid="mobile-timing-details"
+        className="w-full rounded-xl border border-border bg-card/40 px-3 py-2">
+        <summary className="flex min-h-11 cursor-pointer items-center rounded-md text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          Ajustes de este combate · {effectiveTimingRounds} {effectiveTimingRounds === 1 ? "round" : "rounds"} · {duration}
+          {(timingDirty || timingRecovery === draftKey) && <span className="ml-1 text-amber-300">· Revisar antes de iniciar</span>}
+        </summary>
+        <div className="flex justify-center border-t border-border/50 pt-3">
+          {renderTimingSettings(inputId)}
+        </div>
+      </details>
+    );
   }
 
   async function saveTimingSettings(): Promise<void> {
@@ -3674,7 +3704,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
   const overlayMatchState = overlayState.matchState;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div data-testid="fight-content-scroll" className="flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden overscroll-contain scroll-pt-24 pb-3 md:overflow-hidden md:pb-0">
       {tulFinishError && <p role="alert" className="px-4 py-2 text-sm text-destructive">{tulFinishError}</p>}
       {tulFinishPending && <p role="status" className="px-4 py-2 text-sm">Guardando resultado de formas...</p>}
 
@@ -3812,7 +3842,13 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       </Dialog>
 
       {/* ── GUEST FIGHT DIALOG ─────────────────────────────────── */}
-      {guestDialogOpen && (() => {
+      <Dialog open={guestDialogOpen} onOpenChange={(open) => {
+        if (!open) {
+          setGuestDialogOpen(false);
+          setGuestForm({ red: "", blue: "", category: "", ring: "" });
+        }
+      }}>
+      {(() => {
         // Categorías huésped ya existentes, deduplicadas por groupId
         const existingGuest = Array.from(
           fights
@@ -3837,12 +3873,19 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
           guestForm.category.trim() && guestForm.ring.trim();
 
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div className="bg-card border border-border rounded-2xl p-6 w-full max-w-sm space-y-4 shadow-2xl">
-              <div>
-                <p className="text-sm font-bold uppercase tracking-widest text-purple-300">🏁 Pelea huésped</p>
-                <p className="text-xs text-muted-foreground mt-1">Se agrega al final de la cola. No afecta tu clasificación.</p>
-              </div>
+          <DialogContent data-testid="guest-fight-dialog"
+            className="max-h-[85dvh] w-[calc(100vw-2rem)] max-w-sm overflow-y-auto p-5 [&>button:last-child]:flex [&>button:last-child]:size-11 [&>button:last-child]:items-center [&>button:last-child]:justify-center md:[&>button:last-child]:size-6"
+            onOpenAutoFocus={(event) => { event.preventDefault(); guestRedNameRef.current?.focus(); }}
+            onCloseAutoFocus={(event) => {
+              event.preventDefault();
+              if (guestOpenedFromMobileActionsRef.current) mobileActionsButtonRef.current?.focus();
+              else desktopGuestButtonRef.current?.focus();
+              guestOpenedFromMobileActionsRef.current = false;
+            }}>
+            <DialogHeader className="pr-10 text-left md:pr-0">
+              <DialogTitle className="text-sm font-bold uppercase tracking-widest text-purple-300">🏁 Pelea huésped</DialogTitle>
+              <DialogDescription>Se agrega al final de la cola. No afecta tu clasificación.</DialogDescription>
+            </DialogHeader>
 
               {/* Chips de categorías existentes */}
               {existingGuest.length > 0 && (
@@ -3855,7 +3898,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                         type="button"
                         onClick={() => setGuestForm((f) => ({ ...f, category: g.displayName, ring: g.ring }))}
                         className={[
-                          "rounded-full px-3 py-1 text-xs font-medium border transition-colors",
+                          "min-h-11 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
                           selectedChip?.groupId === g.groupId
                             ? "bg-purple-700 border-purple-500 text-white"
                             : "bg-purple-900/30 border-purple-700/50 text-purple-300 hover:bg-purple-800/40",
@@ -3868,7 +3911,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                       <button
                         type="button"
                         onClick={() => setGuestForm((f) => ({ ...f, category: "", ring: "" }))}
-                        className="rounded-full px-3 py-1 text-xs font-medium border border-dashed border-muted-foreground/40 text-muted-foreground hover:border-muted-foreground/70 transition-colors"
+                        className="min-h-11 rounded-full border border-dashed border-muted-foreground/40 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:border-muted-foreground/70"
                       >
                         + nueva
                       </button>
@@ -3881,19 +3924,21 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                 {/* Rojo / Azul — siempre visibles */}
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="text-xs text-muted-foreground">Rojo</label>
+                    <label htmlFor="guest-red-name" className="text-xs text-muted-foreground">Rojo</label>
                     <input
-                      autoFocus
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm mt-1"
+                      ref={guestRedNameRef}
+                      id="guest-red-name"
+                      className="mt-1 min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                       placeholder="Nombre rojo"
                       value={guestForm.red}
                       onChange={(e) => setGuestForm((f) => ({ ...f, red: e.target.value }))}
                     />
                   </div>
                   <div>
-                    <label className="text-xs text-muted-foreground">Azul</label>
+                    <label htmlFor="guest-blue-name" className="text-xs text-muted-foreground">Azul</label>
                     <input
-                      className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm mt-1"
+                      id="guest-blue-name"
+                      className="mt-1 min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                       placeholder="Nombre azul"
                       value={guestForm.blue}
                       onChange={(e) => setGuestForm((f) => ({ ...f, blue: e.target.value }))}
@@ -3905,18 +3950,20 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                 {!selectedChip && (
                   <>
                     <div>
-                      <label className="text-xs text-muted-foreground">Categoría (de ese cuadrilátero)</label>
+                      <label htmlFor="guest-category" className="text-xs text-muted-foreground">Categoría (de ese cuadrilátero)</label>
                       <input
-                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm mt-1"
+                        id="guest-category"
+                        className="mt-1 min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                         placeholder="ej: Infantil B Varones"
                         value={guestForm.category}
                         onChange={(e) => setGuestForm((f) => ({ ...f, category: e.target.value }))}
                       />
                     </div>
                     <div>
-                      <label className="text-xs text-muted-foreground">Cuadrilátero de origen</label>
+                      <label htmlFor="guest-ring" className="text-xs text-muted-foreground">Cuadrilátero de origen</label>
                       <input
-                        className="w-full rounded-lg border border-border bg-background px-3 py-2 text-sm mt-1"
+                        id="guest-ring"
+                        className="mt-1 min-h-11 w-full rounded-lg border border-border bg-background px-3 py-2 text-sm"
                         placeholder="ej: Cuadrilátero 2"
                         value={guestForm.ring}
                         onChange={(e) => setGuestForm((f) => ({ ...f, ring: e.target.value }))}
@@ -3937,13 +3984,13 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
               <div className="flex gap-2 pt-1">
                 <Button
                   variant="outline"
-                  className="flex-1"
+                  className="min-h-11 flex-1"
                   onClick={() => { setGuestDialogOpen(false); setGuestForm({ red: "", blue: "", category: "", ring: "" }); }}
                 >
                   Cancelar
                 </Button>
                 <Button
-                  className="flex-1 bg-purple-700 hover:bg-purple-600"
+                  className="min-h-11 flex-1 bg-purple-700 hover:bg-purple-600"
                   disabled={!canSubmit}
                   onClick={() => {
                     const latest = useTournamentStore.getState();
@@ -3958,10 +4005,10 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                   Agregar pelea
                 </Button>
               </div>
-            </div>
-          </div>
+          </DialogContent>
         );
       })()}
+      </Dialog>
 
       {/* ── FIGHT LIST DIALOG ──────────────────────────────────── */}
       <Dialog open={!!restPrompt && restPrompt.categoryId === config.id &&
@@ -4095,8 +4142,41 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
       {/* ── TOP BAR ─────────────────────────────────────────────── */}
       <div id="tour-fight-header" className="shrink-0 border-b border-border">
 
+        {/* En móvil la navegación y las acciones secundarias no compiten con los nombres del marcador. */}
+        <div data-testid="mobile-fight-toolbar" className="flex min-w-0 flex-wrap items-center justify-between gap-1 px-2 py-1.5 md:hidden">
+          <div className="flex min-w-40 flex-1 items-center justify-center gap-0.5">
+            <Button size="icon" variant="ghost" className="size-11 shrink-0" aria-label="Combate anterior"
+              disabled={currentFightIndex === 0} onClick={() => selectFight(currentFightIndex - 1)}>
+              <ChevronLeft className="size-5" />
+            </Button>
+            <span className="min-w-0 text-center text-xs font-bold leading-tight tabular-nums">
+              Combate {currentFightIndex + 1} de {fights.length}
+            </span>
+            <Button size="icon" variant="ghost" className="size-11 shrink-0" aria-label="Combate siguiente"
+              disabled={currentFightIndex === fights.length - 1} onClick={() => selectFight(currentFightIndex + 1)}>
+              <ChevronRight className="size-5" />
+            </Button>
+          </div>
+          <div className="ml-auto flex shrink-0 items-center gap-0.5">
+            <Button size="icon" variant="ghost" className="size-11" aria-label="Ver lista de combates"
+              onClick={() => setShowFightList(true)}>
+              <List className="size-5" />
+            </Button>
+            <Button ref={mobileActionsButtonRef} size="sm" variant="outline" className="min-h-11 px-2.5" aria-haspopup="dialog"
+              aria-expanded={mobileActionsOpen} onClick={() => setMobileActionsOpen(true)}>
+              Más
+            </Button>
+          </div>
+        </div>
+        {(currentFight?.completed || !connected) && (
+          <div className="flex flex-wrap items-center gap-2 px-3 pb-1.5 md:hidden">
+            {currentFight?.completed && <Badge variant="secondary" className="text-xs">Completado</Badge>}
+            {!connected && <Badge variant="outline" className="text-xs text-red-400 border-red-800"><WifiOff className="size-3 mr-1" />Sin servidor</Badge>}
+          </div>
+        )}
+
         {/* Fila 1: navegación + nombres + acciones */}
-        <div className="px-3 py-2 flex items-center gap-2">
+        <div className="hidden items-center gap-2 px-3 py-2 md:flex">
 
           {/* Izquierda: flechas + contador */}
           <div className="flex items-center gap-1 shrink-0">
@@ -4144,12 +4224,13 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
 
             {/* Pelea huésped */}
             <Button
+              ref={desktopGuestButtonRef}
               size="sm"
               variant="outline"
               disabled={entryInvalid}
               className="shrink-0 text-purple-300 border-purple-700/60 hover:bg-purple-900/20"
               title="Agregar pelea de otro cuadrilátero"
-              onClick={() => setGuestDialogOpen(true)}
+              onClick={() => { guestOpenedFromMobileActionsRef.current = false; setGuestDialogOpen(true); }}
             >
               🏁 Huésped
             </Button>
@@ -4178,7 +4259,6 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                 </Button>
               );
             })()}
-            {postponeError && <p role="alert" className="text-sm text-red-400">{postponeError}</p>}
 
             {/* Reiniciar (solo cuando ya está cargado) */}
             {loaded && phase !== "golden_point" && matchState?.result?.reason !== "golden_point" && (
@@ -4206,19 +4286,67 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
         <FightProgressStrip fights={fights} currentIndex={currentFightIndex} onSelect={selectFight} />
       </div>
 
+      <Dialog open={mobileActionsOpen} onOpenChange={setMobileActionsOpen}>
+        <DialogContent data-testid="mobile-fight-actions" className="w-[calc(100vw-2rem)] max-w-sm [&>button:last-child]:flex [&>button:last-child]:size-11 [&>button:last-child]:items-center [&>button:last-child]:justify-center" onCloseAutoFocus={(event) => {
+          event.preventDefault();
+          if (!guestOpenedFromMobileActionsRef.current) mobileActionsButtonRef.current?.focus();
+        }}>
+          <DialogHeader className="pr-10">
+            <DialogTitle>Más acciones del combate</DialogTitle>
+            <DialogDescription>Acciones ocasionales. El marcador y los controles principales permanecen en la mesa.</DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-2">
+            <Button type="button" variant="outline" className="min-h-11 justify-start text-purple-300"
+              disabled={entryInvalid} onClick={() => {
+                guestOpenedFromMobileActionsRef.current = true;
+                setMobileActionsOpen(false);
+                setGuestDialogOpen(true);
+              }}>
+              🏁 Agregar pelea huésped
+            </Button>
+            {currentFight && !currentFight.completed && (() => {
+              const canPostpone = fights.some((f, i) => i > currentFightIndex && !f.completed);
+              const isActive = loaded && phase !== "idle" &&
+                (phase !== "finished" || matchState?.result?.reason === "golden_point");
+              let postponeTitle = "Postergar: llama a la siguiente pelea primero";
+              if (isActive) postponeTitle = "No se puede postergar con el combate en curso";
+              if (!canPostpone) postponeTitle = "No hay peleas pendientes a continuación";
+              return (
+                <Button type="button" variant="outline" className="min-h-11 justify-start text-yellow-400"
+                  disabled={!canPostpone || isActive || postponePending || state.matchPaused || !!state.match?.preFight?.started
+                    || (!canOperateFight && !(canLoadFight && postponeRequestRef.current?.matchId === currentFight.id))
+                    || (!state.match?.preFight?.loadId && postponeRequestRef.current?.matchId !== currentFight.id)}
+                  title={state.match?.preFight?.started || state.matchPaused ? "Solo se puede postergar un combate sin iniciar ni actividad registrada" : postponeTitle}
+                  onClick={() => { setMobileActionsOpen(false); void handlePostpone(); }}>
+                  <SkipForward className="size-4" /> Postergar pelea
+                </Button>
+              );
+            })()}
+            {loaded && phase !== "golden_point" && matchState?.result?.reason !== "golden_point" && (
+              <Button type="button" variant="outline" className="min-h-11 justify-start"
+                disabled={!canOperateFight} onClick={() => { setMobileActionsOpen(false); emit("match:reset"); setLoaded(false); }}>
+                <RotateCcw className="size-4" /> Reiniciar combate
+              </Button>
+            )}
+            <ServerStatus connected={connected} judgesCount={judges.length} />
+          </div>
+        </DialogContent>
+      </Dialog>
+      {postponeError && <p role="alert" className="px-3 py-2 text-sm text-red-400">{postponeError}</p>}
+
       {loaded && config.matchType === "sparring" && !currentFight?.isTiebreakExtra &&
         !currentFight?.isGoldenPointFight && timingKind !== "continuation" &&
         untouchedPreStart(state) && (
-          <div className="shrink-0 flex flex-wrap items-center justify-center gap-2 border-b border-border px-3 py-2">
+           <div className="shrink-0 flex flex-wrap items-center justify-center gap-2 border-b border-border px-3 py-1.5 md:py-2">
             <Button type="button" size="sm" variant="outline"
-              className="min-h-10 border-cyan-700 text-cyan-200 hover:bg-cyan-950/40"
+               className="min-h-11 w-full border-cyan-700 text-cyan-200 hover:bg-cyan-950/40 sm:w-auto"
               disabled={swapPending || !canLoadFight ||
                 (swapUnresolved && swapRequestRef.current?.matchId !== currentFight?.id) ||
                 (!canOperateFight && !swapUnresolved)}
               onClick={() => { void handleSwapCompetitors(); }}>
               Intercambiar competidores
             </Button>
-            <span className="text-xs text-muted-foreground">Rojo permanece a la izquierda · Azul a la derecha</span>
+             <span className="hidden text-xs text-muted-foreground md:inline">Rojo permanece a la izquierda · Azul a la derecha</span>
           </div>
         )}
       {swapError && <p role="alert" className="shrink-0 px-3 py-2 text-center text-sm text-red-300">{swapError}</p>}
@@ -4262,8 +4390,33 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
         </div>
       )}
 
+      {/* Fase y reloj permanecen visibles mientras se recorren los votos en móvil. */}
+      <div className="sticky top-0 z-10 flex shrink-0 flex-wrap items-center justify-center gap-2 border-b border-border bg-background px-2 py-2 md:hidden">
+        <Badge className={cn(
+          "text-xs px-2 py-1",
+          phase === "round" && "bg-green-600",
+          phase === "rest" && "bg-yellow-600",
+          phase === "overtime" && "bg-orange-600",
+          phase === "golden_point" && "bg-purple-600",
+          phase === "finished" && "bg-blue-700",
+          phase === "penalties" && "bg-red-800",
+          phase === "idle" && "bg-secondary",
+        )}>
+          {phase === "rest" && isLastRound
+            ? "Votación"
+            : `${PHASE_LABELS[phase]}${roundSuffix(phase, currentRound)}`}
+        </Badge>
+        {currentFight?.isTiebreakExtra && <Badge variant="outline" className="text-xs text-orange-400 border-orange-600">⚡ Desempate</Badge>}
+        {currentFight?.isGoldenPointFight && <Badge variant="outline" className="text-xs text-yellow-300 border-yellow-500">⚡ Punto de Oro</Badge>}
+        {showPauseBadge(matchPaused, phase) && <Badge variant="outline" className="text-xs text-yellow-400 border-yellow-600">PAUSA</Badge>}
+        {!isTul && <div className={cn(
+          "font-mono text-2xl font-black leading-none tabular-nums",
+          phase === "golden_point" ? "text-lg text-yellow-300" : timeLeft <= 10 && isRunning && !matchPaused ? "text-red-400" : "",
+        )}>{phase === "golden_point" ? "SIN RELOJ" : formatTime(timeLeft)}</div>}
+      </div>
+
       {/* ── ARENA ────────────────────────────────────────────────── */}
-      <div className="flex-1 min-h-0 overflow-y-auto md:overflow-hidden">
+      <div data-testid="fight-arena" className="shrink-0 overflow-visible md:min-h-0 md:flex-1 md:overflow-hidden">
 
         {/* DESKTOP (md+): 3 columnas lado a lado */}
         <div className="hidden md:grid h-full grid-cols-[1fr_auto_1fr] relative">
@@ -4466,53 +4619,19 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
           </div>
         </div>
 
-        {/* MOBILE (<md): layout vertical — timer arriba, scores lado a lado, controles abajo */}
-        <div className="flex flex-col min-h-full md:hidden">
-
-          {/* Fase + Cronómetro */}
-          <div className="shrink-0 flex items-center justify-center gap-3 px-4 py-2 border-b border-border">
-            <Badge className={cn(
-              "text-xs px-3 py-1",
-              phase === "round" && "bg-green-600",
-              phase === "rest" && "bg-yellow-600",
-              phase === "overtime" && "bg-orange-600",
-              phase === "golden_point" && "bg-purple-600",
-              phase === "finished" && "bg-blue-700",
-              phase === "penalties" && "bg-red-800",
-              phase === "idle" && "bg-secondary"
-            )}>
-              {phase === "rest" && isLastRound
-                ? "Votación"
-                : `${PHASE_LABELS[phase]}${roundSuffix(phase, currentRound)}`}
-            </Badge>
-            {currentFight?.isTiebreakExtra && (
-              <Badge variant="outline" className="text-orange-400 border-orange-600 text-xs">⚡ Desempate</Badge>
-            )}
-            {currentFight?.isGoldenPointFight && (
-              <Badge variant="outline" className="text-yellow-300 border-yellow-500 text-xs">⚡ Punto de Oro</Badge>
-            )}
-            {showPauseBadge(matchPaused, phase) && (
-              <Badge variant="outline" className="text-yellow-400 border-yellow-600 text-xs">PAUSA</Badge>
-            )}
-            <div className={cn(
-              "font-mono font-black leading-none text-4xl tabular-nums",
-              phase === "golden_point" ? "text-yellow-300 text-2xl" : timeLeft <= 10 && isRunning && !matchPaused ? "text-red-400" : "",
-              isTul && "hidden",
-            )}>
-              {phase === "golden_point" ? "SIN RELOJ" : formatTime(timeLeft)}
-            </div>
-          </div>
+        {/* MOBILE (<md): marcador y controles en el único scroll principal. */}
+        <div className="flex flex-col md:hidden">
 
           {/* Scores 2 columnas */}
-          <div className="shrink-0 grid grid-cols-2 border-b border-border">
+          <div className="grid shrink-0 grid-cols-2 border-b border-border">
             {/* ROJO */}
-            <div data-testid="red-station-mobile" className={cn("flex flex-col items-center justify-center px-3 bg-red-950/50 border-r border-red-900/40",
-              canReviewSanctions ? "gap-1 py-2" : "gap-2 py-5")}>
-              <p className="text-sm font-black text-red-400 uppercase tracking-wide text-center leading-tight w-full truncate">
+            <div data-testid="red-station-mobile" className={cn("flex min-w-0 flex-col items-center justify-center border-r border-red-900/40 bg-red-950/50 px-2",
+              canReviewSanctions ? "gap-1 py-2" : "gap-1.5 py-3")}>
+              <span className="text-[11px] font-bold uppercase tracking-widest text-red-300">Rojo</span>
+              <p className="line-clamp-2 min-h-10 w-full text-center text-base font-black uppercase leading-tight text-red-200 [overflow-wrap:anywhere]">
                 {redName}
               </p>
-              <div className={cn("font-black leading-none text-red-400 tabular-nums",
-                canReviewSanctions ? "text-6xl" : "text-7xl")}>
+              <div className="max-w-full text-[clamp(3.25rem,16vw,5rem)] font-black leading-none text-red-400 tabular-nums">
                 {displayScore.red}
               </div>
               {(penaltyCounts.warnings.red > 0 || penaltyCounts.fouls.red > 0) && (
@@ -4530,20 +4649,20 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                   <span className="text-orange-400">−{totalPenaltyPoints(penaltyCounts.warnings.red, penaltyCounts.fouls.red)}pts</span>
                 </div>
               )}
-              {loaded && !isTul && phase !== "golden_point" && (
+              {loaded && !isTul && phase !== "golden_point" && (phase !== "idle" || !!state.match?.preFight?.started) && (
                 <ScoreSanctionControls side="red" fighterName={redName} layout="mobile" counts={penaltyCounts}
                   enabled={canEditLiveSanctions || canReviewSanctions} busy={sanctionActionPending}
                   onAdjust={handleScoreSanction} />
               )}
             </div>
             {/* AZUL */}
-            <div data-testid="blue-station-mobile" className={cn("flex flex-col items-center justify-center px-3 bg-blue-950/50",
-              canReviewSanctions ? "gap-1 py-2" : "gap-2 py-5")}>
-              <p className="text-sm font-black text-blue-400 uppercase tracking-wide text-center leading-tight w-full truncate">
+            <div data-testid="blue-station-mobile" className={cn("flex min-w-0 flex-col items-center justify-center bg-blue-950/50 px-2",
+              canReviewSanctions ? "gap-1 py-2" : "gap-1.5 py-3")}>
+              <span className="text-[11px] font-bold uppercase tracking-widest text-blue-300">Azul</span>
+              <p className="line-clamp-2 min-h-10 w-full text-center text-base font-black uppercase leading-tight text-blue-200 [overflow-wrap:anywhere]">
                 {blueName}
               </p>
-              <div className={cn("font-black leading-none text-blue-400 tabular-nums",
-                canReviewSanctions ? "text-6xl" : "text-7xl")}>
+              <div className="max-w-full text-[clamp(3.25rem,16vw,5rem)] font-black leading-none text-blue-400 tabular-nums">
                 {displayScore.blue}
               </div>
               {(penaltyCounts.warnings.blue > 0 || penaltyCounts.fouls.blue > 0) && phase !== "golden_point" && (
@@ -4561,7 +4680,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                   <span className="text-orange-400">−{totalPenaltyPoints(penaltyCounts.warnings.blue, penaltyCounts.fouls.blue)}pts</span>
                 </div>
               )}
-              {loaded && !isTul && phase !== "golden_point" && (
+              {loaded && !isTul && phase !== "golden_point" && (phase !== "idle" || !!state.match?.preFight?.started) && (
                 <ScoreSanctionControls side="blue" fighterName={blueName} layout="mobile" counts={penaltyCounts}
                   enabled={canEditLiveSanctions || canReviewSanctions} busy={sanctionActionPending}
                   onAdjust={handleScoreSanction} />
@@ -4570,10 +4689,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
           </div>
 
           {/* Controles */}
-          <div className="flex-1 flex flex-col items-center justify-center gap-3 px-4 py-4 overflow-y-auto">
+          <div data-testid="mobile-fight-controls" className="flex w-full flex-col items-center gap-3 px-3 py-3">
             {loaded ? (
               <>
-              {canEditLoadedTiming && renderTimingSettings("bout-settings-loaded-mobile")}
               <fieldset disabled={!canOperateFight || tulFinishPending} className="contents"><MatchControls
                 loaded={loaded}
                 isFinished={isFinished}
@@ -4586,7 +4704,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                 onEmit={emit}
                 startBlocked={timingStartBlocked}
                 onFinishAndNext={handleOpenResultDialog}
-              /></fieldset></>
+              /></fieldset>
+              {canEditLoadedTiming && renderMobileTimingSettings("bout-settings-loaded-mobile")}
+              </>
             ) : currentFight?.completed ? (() => {
               const isDraw = currentFight.winner === "draw";
               const isRed = currentFight.winner === "red";
@@ -4643,14 +4763,12 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
               );
             })() : (
               <div className="flex flex-col items-center gap-3">
-                {canEditPreloadDuration && (
-                  renderTimingSettings("bout-duration-mobile")
-                )}
               <Button size="xl" className="bg-green-700 hover:bg-green-600" disabled={!canLoadFight}
                 title={otherFightLocked ? fightLockNotice?.message : undefined} onClick={handleLoad}>
                 <Play />
                 {isTul ? 'Iniciar competencia' : 'Cargar combate'}
               </Button>
+              {canEditPreloadDuration && renderMobileTimingSettings("bout-duration-mobile")}
               </div>
             )}
           </div>
@@ -4660,9 +4778,9 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
 
       {/* ── PANEL INFERIOR (TABS) ─────────────────────────────────── */}
       {loaded && (
-        <fieldset disabled={!canOperateFight || tulFinishPending} id="tour-bottom-tabs" className={cn(
-          "shrink-0 border-t border-border bg-card/40 px-4 py-2 space-y-2 overflow-y-auto",
-          canReviewSanctions ? "max-h-[32vh] md:max-h-[42vh]" : "max-h-[42vh]",
+        <fieldset data-testid="fight-vote-panel" disabled={!canOperateFight || tulFinishPending} id="tour-bottom-tabs" className={cn(
+          "shrink-0 border-t border-border bg-card/40 px-3 py-2 space-y-2 md:px-4 md:overflow-y-auto",
+          canReviewSanctions ? "md:max-h-[32vh]" : "md:max-h-[42vh]",
         )}>
           {/* Tab bar */}
           <div className="flex items-center gap-1 border-b border-border/40 pb-1">
@@ -4671,7 +4789,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                 type="button"
                 onClick={() => setBottomTab("mesa")}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
+                  "-mb-0.75 flex min-h-11 items-center gap-1.5 rounded-t border-b-2 px-3 py-1.5 text-xs font-medium transition-colors md:min-h-0",
                   selectedBottomTab === "mesa"
                     ? "border-primary text-primary"
                     : "border-transparent text-muted-foreground hover:text-foreground",
@@ -4686,7 +4804,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
                 type="button"
                 onClick={() => setBottomTab("porjuez")}
                 className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
+                  "-mb-0.75 flex min-h-11 items-center gap-1.5 rounded-t border-b-2 px-3 py-1.5 text-xs font-medium transition-colors md:min-h-0",
                   selectedBottomTab === "porjuez"
                     ? "border-primary text-primary"
                     : "border-transparent text-muted-foreground hover:text-foreground",
@@ -4700,7 +4818,7 @@ export function FightPage({ navigationIntent, navigationEntryKey = "direct" }: F
               type="button"
               onClick={() => setBottomTab("remotos")}
               className={cn(
-                "flex items-center gap-1.5 px-3 py-1.5 rounded-t text-xs font-medium transition-colors border-b-2 -mb-0.75",
+                "-mb-0.75 flex min-h-11 items-center gap-1.5 rounded-t border-b-2 px-3 py-1.5 text-xs font-medium transition-colors md:min-h-0",
                 (selectedBottomTab === "remotos" || (isTul && tulPhase !== "voting"))
                   ? "border-primary text-primary"
                   : "border-transparent text-muted-foreground hover:text-foreground",

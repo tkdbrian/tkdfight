@@ -34,6 +34,50 @@ function mount(connected = true): void {
 }
 
 describe("mensaje neutral de categoría en preparación", () => {
+  it("keeps active category tabs and controls reachable at narrow mobile widths", () => {
+    makeDraft("round-robin");
+    const categoryId = useTournamentStore.getState().config.id;
+    render(<MemoryRouter><CategoryTabs connected stateReady serverState={{
+      ...serverState,
+      activeMatchLock: { fightId: "isolated-fight", categoryId, tournamentId: 1, resultStatus: null },
+    }} /></MemoryRouter>);
+
+    const selectedTab = screen.getByRole("tab", { selected: true });
+    expect(selectedTab.className).toContain("min-h-11");
+    expect(screen.getByText("Liviano B", { selector: "span" }).className).toContain("line-clamp-2");
+    expect(screen.getByRole("button", { name: "Agregar categoría" }).className).toContain("h-11");
+    expect(screen.getByRole("button", { name: "Desplazar categorías a la izquierda" }).className).toContain("hidden");
+    const combatNotice = screen.getByText("Combate cargado").closest('[role="status"]');
+    expect(combatNotice?.className).toContain("flex-wrap");
+    expect(combatNotice).not.toHaveTextContent("Liviano B");
+  });
+
+  it("still names another category when its loaded bout blocks the selected one", () => {
+    makeDraft("round-robin");
+    render(<MemoryRouter><CategoryTabs connected stateReady serverState={{
+      ...serverState,
+      activeMatchLock: { fightId: "other-fight", categoryId: "previous-test-category", tournamentId: 1, resultStatus: null },
+    }} /></MemoryRouter>);
+    expect(screen.getByText("Combate en Anterior")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Volver al combate" })).toBeInTheDocument();
+  });
+
+  it("shows the complete long category identity on combat mobile without a second heading", () => {
+    makeDraft("round-robin");
+    const longName = "Pesado A · Blancos y Puntas Amarillas · Femenino · 6–7 años";
+    act(() => useTournamentStore.getState().setConfig({ categoryName: longName }));
+    render(<MemoryRouter initialEntries={["/fight"]}>
+      <CategoryTabs connected stateReady serverState={serverState} />
+    </MemoryRouter>);
+
+    const selectedTab = screen.getByRole("tab", { selected: true });
+    const fullName = screen.getByText(longName, { selector: "span" });
+    expect(selectedTab).toContainElement(fullName);
+    expect(fullName.className.split(" ")).not.toContain("line-clamp-2");
+    expect(selectedTab.className).toContain("max-w-[calc(100vw-4.5rem)]");
+    expect(selectedTab.closest('[role="tablist"]')?.parentElement?.className).toContain("w-full");
+  });
+
   it.each([
     { mode: "round-robin", connected: true }, { mode: "elimination", connected: true },
     { mode: "round-robin", connected: false }, { mode: "elimination", connected: false },
