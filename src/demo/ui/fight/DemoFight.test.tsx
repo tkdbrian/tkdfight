@@ -105,6 +105,7 @@ describe("DemoFight browser-only desk", () => {
     expect(screen.queryByRole("button", { name: "Intercambiar competidores" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Iniciar votación de Tul" }));
     await screen.findByRole("button", { name: "Cerrar votación de Tul" });
+    expect(screen.queryByRole("button", { name: /Iniciar round/ })).toBeNull();
     for (const id of ["J1", "J2", "J3", "J4"]) {
       const group = screen.getByRole("group", { name: `Juez ${id}` });
       fireEvent.click(within(group).getByRole("button", { name: "Rojo" }));

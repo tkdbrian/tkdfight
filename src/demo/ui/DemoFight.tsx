@@ -247,7 +247,7 @@ export function DemoFight({ view, dispatch }: Readonly<DemoFightProps>) {
               <button type="button" className={button} disabled={disabled} onClick={() => send({ type: "fight/adjustTimer", ...context, seconds: 10 }, "Ajustando reloj")}>+ 10 segundos</button>
             </div>}
           </div>}
-          {active.state.phase === "rest" && active.state.currentRound < active.rules.rounds.count && <div className="mt-4 grid gap-2">
+          {!tul && active.state.phase === "rest" && active.state.currentRound < active.rules.rounds.count && <div className="mt-4 grid gap-2">
             <button type="button" className={`${mainButton} w-full`} disabled={disabled || !assignmentsMatch} onClick={() => sendActive("fight/start", "Iniciando siguiente round")}>Iniciar round {active.state.currentRound + 1}</button>
             {canSkipToFlags && <button type="button" className={`${button} w-full`} disabled={disabled} onClick={() => {
               if (window.confirm("¿Saltar el cronómetro del próximo round e ir directo a registrar banderas?"))

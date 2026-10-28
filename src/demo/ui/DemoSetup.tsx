@@ -333,6 +333,10 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
   const [name, setName] = useState("");
   const [team, setTeam] = useState("");
   const [editId, setEditId] = useState<string | null>(null);
+  const [savingCompetitor, setSavingCompetitor] = useState(false);
+  const savingCompetitorRef = useRef(false);
+  const competitorDraftRef = useRef({ categoryId, name, team, editId });
+  competitorDraftRef.current = { categoryId, name, team, editId };
   const [importPreview, setImportPreview] = useState<Array<{ name: string; team: string }> | null>(null);
   const [importCategories, setImportCategories] = useState<DemoImportedCategory[]>([]);
   const [importBusy, setImportBusy] = useState(false);
@@ -368,6 +372,10 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
     (value) => patch({ categoryName: value, nameGenerated: false }));
   const tableChiefField = useBufferedInput(`${journalIdentity}:tableChief`, config?.tableChief ?? "", editable,
     (value) => patch({ tableChief: value }));
+  // A finished/started category has no editable drafts to flush. Keep the flush gate
+  // for setup categories so navigating never drops an in-flight field save.
+  const flushBeforeNavigation = async () => !editable
+    || ((await categoryNameField.flush()) && (await tableChiefField.flush()));
 
   useEffect(() => {
     if (!category || !config || !categoryId || initializedCategory.current === categoryId) return;
@@ -448,13 +456,28 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
     if (await dispatch({ type: "category/start", categoryId })) onFight();
   };
   const saveCompetitor = async () => {
+    if (savingCompetitorRef.current) return;
     const trimmed = name.trim();
     if (!trimmed) { setFieldError("Ingresá el nombre del competidor."); return; }
-    const saved = editId ? await dispatch({ type: "category/updateCompetitor", categoryId, competitorId: editId,
-      patch: { name: trimmed, team: team.trim() } })
-      : await dispatch({ type: "category/addCompetitor", categoryId, competitor: { name: trimmed, team: team.trim() } });
-    if (!saved) return;
-    setName(""); setTeam(""); setEditId(null); setFieldError(""); nameRef.current?.focus();
+    const submitted = { categoryId, name, team, editId };
+    savingCompetitorRef.current = true;
+    setSavingCompetitor(true);
+    try {
+      const saved = editId ? await dispatch({ type: "category/updateCompetitor", categoryId, competitorId: editId,
+        patch: { name: trimmed, team: team.trim() } })
+        : await dispatch({ type: "category/addCompetitor", categoryId, competitor: { name: trimmed, team: team.trim() } });
+      if (!saved) return;
+      const current = competitorDraftRef.current;
+      if (current.categoryId === submitted.categoryId && current.name === submitted.name
+        && current.team === submitted.team && current.editId === submitted.editId) {
+        competitorDraftRef.current = { categoryId, name: "", team: "", editId: null };
+        setName(""); setTeam(""); setEditId(null); nameRef.current?.focus();
+      }
+      setFieldError("");
+    } finally {
+      savingCompetitorRef.current = false;
+      setSavingCompetitor(false);
+    }
   };
   const importSpreadsheet = async (file: File) => {
     setImportError(""); setImportCategories([]);
@@ -468,7 +491,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
     setImportBusy(true);
     const newId = crypto.randomUUID();
     try {
-      if (!await categoryNameField.flush() || !await tableChiefField.flush()) return;
+      if (!await flushBeforeNavigation()) return;
       if (!await dispatch({ type: "category/create", categoryId: newId })) return;
       if (!await dispatch({ type: "category/configure", categoryId: newId, patch: {
         categoryName: entry.name, nameGenerated: false, matchType: entry.matchType,
@@ -487,7 +510,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
         <label className="min-w-0 flex-[1_1_14rem] text-sm font-semibold text-foreground">Categoría actual
           <select className={`${input} mt-1`} value={categoryId} disabled={readOnly}
             onChange={(event) => { const nextId = event.target.value; void (async () => {
-              if (!await categoryNameField.flush() || !await tableChiefField.flush()) return;
+              if (!await flushBeforeNavigation()) return;
               await dispatch({ type: "category/select", categoryId: nextId });
             })(); }}>
             {state.categoryOrder.map((id, index) => <option key={id} value={id}>
@@ -497,7 +520,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
         </label>
         <button type="button" disabled={readOnly} className={control}
           onClick={() => void (async () => {
-            if (!await categoryNameField.flush() || !await tableChiefField.flush()) return;
+            if (!await flushBeforeNavigation()) return;
             await dispatch({ type: "category/create" });
           })()}>+ Nueva categoría</button>
       </div>
@@ -692,12 +715,16 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
         {category.phase === "setup" && <>
           <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,11rem)_auto]">
             <input ref={nameRef} className={input} aria-label="Nombre del competidor" placeholder="Nombre del competidor"
-              disabled={readOnly} value={name} onChange={(event) => setName(event.target.value)}
+              disabled={readOnly} value={name} onChange={(event) => {
+                competitorDraftRef.current.name = event.target.value; setName(event.target.value);
+              }}
               onKeyDown={(event) => { if (event.key === "Enter") void saveCompetitor(); }} />
             <input className={input} aria-label="Club opcional" placeholder="Club (opcional)" disabled={readOnly}
-              value={team} onChange={(event) => setTeam(event.target.value)}
+              value={team} onChange={(event) => {
+                competitorDraftRef.current.team = event.target.value; setTeam(event.target.value);
+              }}
               onKeyDown={(event) => { if (event.key === "Enter") void saveCompetitor(); }} />
-            <button type="button" disabled={readOnly || !name.trim()} className={primaryControl}
+            <button type="button" disabled={readOnly || savingCompetitor || !name.trim()} className={primaryControl}
               onClick={() => void saveCompetitor()}>{editId ? "Guardar" : "Agregar"}</button>
           </div>
           {editId && <button type="button" className={`${control} mt-2`} onClick={() => { setEditId(null); setName(""); setTeam(""); }}>Cancelar edición</button>}

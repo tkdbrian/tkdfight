@@ -93,6 +93,64 @@ it("preserves fixed red/blue fixture preview and adds competitors without starti
   expect(dispatchSpy).toHaveBeenCalled();
 });
 
+it.each(["started", "with a confirmed result"])(
+  "opens a fresh category from a %s category without changing its fights or history", async (phase) => {
+    let state = startState();
+    state = reduceDemoDeskState(state, { type: "category/configure", categoryId: "cat-1", patch: {
+      categoryName: "Formas de prueba", nameGenerated: false, matchType: "tul", mode: "elimination",
+    } });
+    for (const [id, name] of [["ana", "Ana"], ["beto", "Beto"]]) {
+      state = reduceDemoDeskState(state, { type: "category/addCompetitor", categoryId: "cat-1",
+        competitorId: id, competitor: { name } });
+    }
+    state = reduceDemoDeskState(state, { type: "category/start", categoryId: "cat-1" });
+    if (phase === "with a confirmed result") {
+      const fight = state.categories["cat-1"].fights[0];
+      fight.completed = true;
+      fight.winner = "red";
+      state.history.push({ id: "confirmed-1", categoryId: "cat-1", fightId: fight.id,
+        confirmedAt: "2026-10-27T12:00:00.000Z", red: fight.red, blue: fight.blue,
+        winner: "red", reason: "points", flagsRed: 2, flagsBlue: 0,
+        warningsRed: 0, warningsBlue: 0, foulsRed: 0, foulsBlue: 0 });
+    }
+    const original = structuredClone(state.categories["cat-1"]);
+    const originalHistory = structuredClone(state.history);
+    let latest = state;
+    render(<Harness initial={state} onChange={(next) => { latest = next; }} />);
+    fireEvent.click(screen.getByRole("button", { name: "+ Nueva categoría" }));
+    await waitFor(() => expect(latest.categoryOrder).toHaveLength(2));
+    expect(latest.selectedCategoryId).not.toBe("cat-1");
+    const newId = latest.selectedCategoryId ?? "";
+    expect(latest.categories[latest.selectedCategoryId ?? ""]?.phase).toBe("setup");
+    expect(await screen.findByRole("heading", { name: /Paso 1 de 6: Edad/ })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Ocultar editor" })).toHaveAttribute("aria-expanded", "true");
+    expect(latest.categories["cat-1"]).toEqual(original);
+    expect(latest.history).toEqual(originalHistory);
+    fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-1" } });
+    await waitFor(() => expect(latest.selectedCategoryId).toBe("cat-1"));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Editar categoría" })).toHaveAttribute("aria-expanded", "false"));
+    fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: newId } });
+    await waitFor(() => expect(latest.selectedCategoryId).toBe(newId));
+    expect(await screen.findByRole("heading", { name: /Paso 1 de 6: Edad/ })).toBeVisible();
+  },
+);
+
+it("keeps the next competitor typed during a slow save and prevents a duplicate submit", async () => {
+  let latest = startState();
+  render(<SlowHarness initial={latest} onChange={(next) => { latest = next; }} />);
+  const input = screen.getByRole("textbox", { name: "Nombre del competidor" });
+  fireEvent.change(input, { target: { value: "Ana" } });
+  fireEvent.click(screen.getByRole("button", { name: "Agregar" }));
+  fireEvent.click(screen.getByRole("button", { name: "Agregar" }));
+  fireEvent.change(input, { target: { value: "Beto" } });
+  await waitFor(() => expect(latest.categories["cat-1"].competitors.map((item) => item.name)).toEqual(["Ana"]));
+  expect(input).toHaveValue("Beto");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Agregar" })).toBeEnabled());
+  fireEvent.click(screen.getByRole("button", { name: "Agregar" }));
+  await waitFor(() => expect(latest.categories["cat-1"].competitors.map((item) => item.name)).toEqual(["Ana", "Beto"]));
+  await waitFor(() => expect(input).toHaveValue(""));
+});
+
 it("keeps a manual category name while Tul removes active weight and warns about the old label", async () => {
   let state = startState();
   state = reduceDemoDeskState(state, { type: "category/configure", categoryId: "cat-1", patch: {
@@ -332,6 +390,22 @@ it("flushes the old category before switching and never duplicates an unmounted 
   second.unmount(); // the already-created command may finish, but must not be sent twice
   await new Promise((resolve) => setTimeout(resolve, 400));
   expect(changed).toHaveBeenCalledTimes(1);
+});
+
+it("flushes an in-flight category name before creating another setup category", async () => {
+  let state = startState();
+  state = reduceDemoDeskState(state, { type: "category/configure", categoryId: "cat-1", patch: {
+    categoryName: "Primera original", nameGenerated: false,
+  } });
+  let latest = state;
+  render(<SlowHarness initial={state} onChange={(next) => { latest = next; }} />);
+  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.change(screen.getByRole("textbox", { name: "Nombre de la categoría" }),
+    { target: { value: "Primera guardada" } });
+  fireEvent.click(screen.getByRole("button", { name: "+ Nueva categoría" }));
+  await waitFor(() => expect(latest.categoryOrder).toHaveLength(2));
+  expect(latest.categories["cat-1"].config.categoryName).toBe("Primera guardada");
+  expect(latest.selectedCategoryId).not.toBe("cat-1");
 });
 
 it("keeps custom age and DAN number drafts local until their explicit validated apply actions", async () => {

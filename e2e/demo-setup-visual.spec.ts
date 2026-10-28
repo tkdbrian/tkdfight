@@ -30,3 +30,32 @@ for (const width of [320, 390, 1280]) {
     await context.close();
   });
 }
+
+test("starts a Tul category and opens a fresh setup without changing the first fixture", async ({ page }) => {
+  await page.goto("/demo/");
+  await page.getByRole("button", { name: "Crear categoría" }).click();
+  await page.getByRole("button", { name: "No especificar", exact: true }).click();
+  await page.getByRole("button", { name: "No especificar", exact: true }).click();
+  await page.getByRole("button", { name: "No especificar", exact: true }).click();
+  await page.getByRole("button", { name: "Tul / Formas" }).click();
+  await page.getByRole("button", { name: "Eliminación" }).click();
+  await page.getByRole("button", { name: /Continuar con competidores/ }).click();
+  await page.getByRole("button", { name: "Editar categoría" }).click();
+  await page.getByRole("textbox", { name: "Nombre de la categoría" }).fill("Formas de prueba");
+  const name = page.getByRole("textbox", { name: "Nombre del competidor" });
+  await name.fill("Ana");
+  await page.getByRole("button", { name: "Agregar", exact: true }).click();
+  await expect(name).toHaveValue("");
+  await name.fill("Beto");
+  await page.getByRole("button", { name: "Agregar", exact: true }).click();
+  await expect(page.getByRole("heading", { name: /Llave.*1 combates/ })).toBeVisible();
+  await page.getByRole("button", { name: "Iniciar categoría" }).click();
+  await page.getByRole("button", { name: "Categorías", exact: true }).click();
+  await page.getByRole("button", { name: "+ Nueva categoría" }).click();
+  await expect(page.getByRole("heading", { name: /Paso 1 de 6: Edad/ })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "Categoría actual" }).locator("option")).toHaveCount(2);
+  await page.getByRole("combobox", { name: "Categoría actual" }).selectOption({ index: 0 });
+  await expect(page.getByRole("heading", { name: /Llave.*1 combates/ })).toBeVisible();
+  await expect(page.getByText("Ana", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("Beto", { exact: true }).first()).toBeVisible();
+});
