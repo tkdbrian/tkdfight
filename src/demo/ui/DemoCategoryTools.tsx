@@ -43,8 +43,8 @@ export function DemoCategoryTools({ state, categoryId, readOnly, dispatch }: Rea
     } finally { setWorking(false); }
   }
 
-  return <details className="rounded-xl border border-border bg-card p-4 sm:p-5" aria-label="Herramientas de categoría">
-    <summary className="min-h-11 cursor-pointer text-lg font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Herramientas de la categoría <span className="text-sm font-normal text-muted-foreground">(opcional)</span></summary>
+  return <details className="rounded-xl border border-border bg-card px-4 py-2 sm:px-5" aria-label="Herramientas de categoría">
+    <summary className="min-h-11 cursor-pointer py-2 text-base font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Herramientas de la categoría <span className="ml-1 text-sm font-normal text-muted-foreground">(opcional)</span></summary>
     <div className="mt-3 grid gap-3 lg:grid-cols-2">
       {canSwap && <details className="rounded-xl border border-border bg-background p-3">
         <summary className="min-h-11 cursor-pointer py-2 font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Cambiar posiciones de la llave</summary>

@@ -12,10 +12,21 @@ function started() {
   return reduceDemoDeskState(state, { type: "category/start", categoryId: "cat-1" });
 }
 
+function startedElimination(entrants = 4) {
+  let state = reduceDemoDeskState(emptyDemoDeskState("event-elimination"), { type: "category/create", categoryId: "cat-1" });
+  state = reduceDemoDeskState(state, { type: "category/configure", categoryId: "cat-1",
+    patch: { categoryName: "Eliminación de prueba", mode: "elimination" } });
+  for (let index = 0; index < entrants; index++) {
+    state = reduceDemoDeskState(state, { type: "category/addCompetitor", categoryId: "cat-1",
+      competitorId: `c${index + 1}`, competitor: { name: `Competidor ${index + 1}` } });
+  }
+  return reduceDemoDeskState(state, { type: "category/start", categoryId: "cat-1" });
+}
+
 it("does not promote an unfinished round-robin leader to champion", () => {
   const state = started();
   render(<DemoStandings state={state} categoryId="cat-1" />);
-  expect(screen.getByText("Pendiente", { selector: "p" })).toBeVisible();
+  expect(screen.queryByText("Oro · Campeón")).not.toBeInTheDocument();
   expect(screen.getByRole("status")).toHaveTextContent("líderes parciales no son campeones");
 });
 
@@ -53,4 +64,49 @@ it("quotes local CSV cells and neutralizes spreadsheet formulas in names", () =>
   const csv = buildDemoStandingsCsv(rows);
   expect(csv).toContain("\"'=IMPORTXML(1)\"");
   expect(csv).toContain("\"A, B\"");
+});
+
+it("shows the original-style elimination rounds rather than a generic table", () => {
+  const state = startedElimination();
+  render(<DemoStandings state={state} categoryId="cat-1" />);
+  expect(screen.getByRole("heading", { name: "Bracket de Eliminación" })).toBeVisible();
+  expect(screen.getByRole("region", { name: "Llave principal" })).toBeVisible();
+  expect(screen.getByText("Semifinal")).toBeVisible();
+  expect(screen.getByText("Final")).toBeVisible();
+  expect(screen.getAllByRole("article")).toHaveLength(state.categories["cat-1"].bracketMatches.length);
+  expect(screen.getAllByText("Ganador pendiente").length).toBeGreaterThan(0);
+});
+
+it("keeps both generated grillas separate for a large elimination category", () => {
+  const state = startedElimination(17);
+  render(<DemoStandings state={state} categoryId="cat-1" />);
+  expect(screen.getByRole("region", { name: "Grilla A" })).toBeVisible();
+  expect(screen.getByRole("region", { name: "Grilla B" })).toBeVisible();
+  expect(screen.getAllByRole("article")).toHaveLength(state.categories["cat-1"].bracketMatches.length);
+});
+
+it("shows confirmed elimination champion and runner-up above the bracket", () => {
+  const state = startedElimination(2);
+  const category = state.categories["cat-1"];
+  const fight = category.fights[0];
+  const match = category.bracketMatches[0];
+  fight.completed = true;
+  fight.winner = "red";
+  match.completed = true;
+  match.winnerId = fight.red.id;
+  render(<DemoStandings state={state} categoryId="cat-1" />);
+  expect(screen.getByText("Oro · Campeón")).toBeVisible();
+  expect(screen.getByText("Plata · Subcampeón")).toBeVisible();
+  expect(screen.getByText("Oro · Campeón").parentElement).toHaveTextContent(fight.red.name);
+  expect(screen.getByText("Plata · Subcampeón").parentElement).toHaveTextContent(fight.blue.name);
+});
+
+it("keeps the round-robin table readable without a forced mobile-width scroll", () => {
+  render(<DemoStandings state={started()} categoryId="cat-1" />);
+  expect(screen.getByRole("heading", { name: "Clasificación" })).toBeVisible();
+  const table = screen.getByRole("table");
+  expect(table).toHaveClass("w-full");
+  expect(table).not.toHaveClass("min-w-[38rem]");
+  expect(screen.getByRole("columnheader", { name: "Empates" })).toHaveClass("hidden");
+  expect(screen.getByRole("columnheader", { name: "Ganados" })).not.toHaveClass("hidden");
 });

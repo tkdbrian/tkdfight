@@ -1,10 +1,10 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { useRef, useState } from "react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useCallback, useRef, useState } from "react";
 import { expect, it, vi } from "vitest";
 import { generateDoubleBracket } from "@/lib/bracket";
 import { emptyDemoDeskState, reduceDemoDeskState } from "../runtime/reducer";
 import type { DemoDeskCommand, DemoDeskState } from "../runtime/types";
-import { DemoSetup, purgeDemoPendingDrafts } from "./DemoSetup";
+import { DemoSetup, purgeDemoPendingDrafts, type DemoCategoryNavigationRequest } from "./DemoSetup";
 
 function startState(): DemoDeskState {
   return reduceDemoDeskState(emptyDemoDeskState("event-demo"), { type: "category/create", categoryId: "cat-1" });
@@ -18,7 +18,11 @@ function Harness({ initial = startState(), generation = 1, onChange }: {
     setState((previous) => { const next = reduceDemoDeskState(previous, command); onChange?.(next); return next; });
     return true;
   };
-  return <DemoSetup state={state} generation={generation} readOnly={false} dispatch={dispatch} onFight={() => {}} />;
+  const navigation = useRef<((request: DemoCategoryNavigationRequest) => Promise<boolean>) | null>(null);
+  const registerCategoryNavigation = useCallback((handler: typeof navigation.current) => { navigation.current = handler; }, []);
+  return <><TestCategoryNavigation state={state} navigate={(request) => void navigation.current?.(request)} />
+    <DemoSetup state={state} generation={generation} readOnly={false} dispatch={dispatch} onFight={() => {}}
+      registerCategoryNavigation={registerCategoryNavigation} /></>;
 }
 
 function SlowHarness({ initial, onChange }: { initial: DemoDeskState; onChange: (state: DemoDeskState) => void }) {
@@ -32,7 +36,61 @@ function SlowHarness({ initial, onChange }: { initial: DemoDeskState; onChange: 
     queue.current = next;
     return next;
   };
-  return <DemoSetup state={state} generation={1} readOnly={false} dispatch={dispatch} onFight={() => {}} />;
+  const navigation = useRef<((request: DemoCategoryNavigationRequest) => Promise<boolean>) | null>(null);
+  const registerCategoryNavigation = useCallback((handler: typeof navigation.current) => { navigation.current = handler; }, []);
+  return <><TestCategoryNavigation state={state} navigate={(request) => void navigation.current?.(request)} />
+    <DemoSetup state={state} generation={1} readOnly={false} dispatch={dispatch} onFight={() => {}}
+      registerCategoryNavigation={registerCategoryNavigation} /></>;
+}
+
+function TestCategoryNavigation({ state, navigate }: {
+  state: DemoDeskState; navigate: (request: DemoCategoryNavigationRequest) => void;
+}) {
+  return <div>
+    <select aria-label="Categoría actual" value={state.selectedCategoryId ?? ""}
+      onChange={(event) => navigate({ kind: "select", categoryId: event.target.value })}>
+      {state.categoryOrder.map((id) => <option key={id} value={id}>{id}</option>)}
+    </select>
+    <button type="button" onClick={() => navigate({ kind: "create" })}>+ Nueva categoría</button>
+  </div>;
+}
+
+function DelayedRemovalHarness({ initial, onChange, firstRemovalGate, onCommand }: {
+  initial: DemoDeskState;
+  onChange: (state: DemoDeskState) => void;
+  firstRemovalGate?: Promise<void>;
+  onCommand?: (command: DemoDeskCommand) => void;
+}) {
+  const [state, setState] = useState(initial);
+  const navigation = useRef<((request: DemoCategoryNavigationRequest) => Promise<boolean>) | null>(null);
+  const registerCategoryNavigation = useCallback((handler: typeof navigation.current) => { navigation.current = handler; }, []);
+  const firstRemoval = useRef(true);
+  const dispatch = async (command: DemoDeskCommand) => {
+    onCommand?.(command);
+    const pauseAfterThisRemoval = command.type === "category/removeCompetitor" && firstRemoval.current;
+    if (pauseAfterThisRemoval) firstRemoval.current = false;
+    setState((previous) => {
+      const next = reduceDemoDeskState(previous, command);
+      onChange(next);
+      return next;
+    });
+    if (pauseAfterThisRemoval)
+      await (firstRemovalGate ?? new Promise((resolve) => setTimeout(resolve, 80)));
+    return true;
+  };
+  return <><TestCategoryNavigation state={state} navigate={(request) => void navigation.current?.(request)} />
+    <DemoSetup state={state} generation={1} readOnly={false} dispatch={dispatch} onFight={() => {}}
+      registerCategoryNavigation={registerCategoryNavigation} /></>;
+}
+
+function twoDrafts(): DemoDeskState {
+  let state = startState();
+  state = reduceDemoDeskState(state, { type: "category/addCompetitor", categoryId: "cat-1",
+    competitorId: "ana", competitor: { name: "Ana" } });
+  state = reduceDemoDeskState(state, { type: "category/addCompetitor", categoryId: "cat-1",
+    competitorId: "beto", competitor: { name: "Beto" } });
+  state = reduceDemoDeskState(state, { type: "category/create", categoryId: "cat-2" });
+  return reduceDemoDeskState(state, { type: "category/select", categoryId: "cat-1" });
 }
 
 it("guides a new category one decision at a time and keeps optional answers optional", async () => {
@@ -65,14 +123,15 @@ it("uses large grouped choices and compact editable summaries like the original 
   render(<Harness initial={visualState} />);
   const age = screen.getByRole("button", { name: /KIDS/ });
   expect(age).toHaveAttribute("aria-pressed", "false");
-  expect(age).toHaveClass("min-h-14");
-  expect(age.parentElement).toHaveClass("grid-cols-2");
+  expect(age).toHaveClass("min-h-11");
+  expect(age.parentElement).toHaveClass("flex-wrap");
+  expect(screen.getByRole("group", { name: "Combate y tiempos" })).toHaveTextContent("Tiempo y perfil activos");
   age.focus();
   expect(age).toHaveFocus();
   fireEvent.click(age);
   const summary = await screen.findByRole("button", { name: /Editar Edad/ });
   expect(summary).toHaveClass("min-h-16");
-  expect(summary.parentElement).toHaveClass("sm:grid-cols-2");
+  expect(summary.parentElement).toHaveClass("grid");
   expect(screen.getByRole("heading", { name: /Sistema de grado/ })).toBeVisible();
 });
 
@@ -87,7 +146,7 @@ it("preserves fixed red/blue fixture preview and adds competitors without starti
     fireEvent.click(screen.getByRole("button", { name: "Agregar" }));
     await waitFor(() => expect(name).toHaveValue(""));
   }
-  await waitFor(() => expect(screen.getByRole("heading", { name: /Llave.*3 combates/ })).toBeVisible());
+  await waitFor(() => expect(screen.getByRole("heading", { name: /Fixture.*3 combates/ })).toBeVisible());
   expect(screen.getAllByText("vs")).toHaveLength(3);
   expect(screen.getByRole("button", { name: "Iniciar categoría" })).toBeEnabled();
   expect(dispatchSpy).toHaveBeenCalled();
@@ -123,12 +182,12 @@ it.each(["started", "with a confirmed result"])(
     const newId = latest.selectedCategoryId ?? "";
     expect(latest.categories[latest.selectedCategoryId ?? ""]?.phase).toBe("setup");
     expect(await screen.findByRole("heading", { name: /Paso 1 de 6: Edad/ })).toBeVisible();
-    expect(screen.getByRole("button", { name: "Ocultar editor" })).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: "Cerrar configuración" })).toHaveAttribute("aria-expanded", "true");
     expect(latest.categories["cat-1"]).toEqual(original);
     expect(latest.history).toEqual(originalHistory);
     fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-1" } });
     await waitFor(() => expect(latest.selectedCategoryId).toBe("cat-1"));
-    await waitFor(() => expect(screen.getByRole("button", { name: "Editar categoría" })).toHaveAttribute("aria-expanded", "false"));
+    await waitFor(() => expect(screen.getByRole("button", { name: /Configurar categoría/ })).toHaveAttribute("aria-expanded", "false"));
     fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: newId } });
     await waitFor(() => expect(latest.selectedCategoryId).toBe(newId));
     expect(await screen.findByRole("heading", { name: /Paso 1 de 6: Edad/ })).toBeVisible();
@@ -151,6 +210,115 @@ it("keeps the next competitor typed during a slow save and prevents a duplicate 
   await waitFor(() => expect(input).toHaveValue(""));
 });
 
+it("scopes edit and add drafts to their category when selecting another tab", async () => {
+  let latest = twoDrafts();
+  render(<Harness initial={latest} onChange={(next) => { latest = next; }} />);
+  fireEvent.click(screen.getByRole("button", { name: "Editar a Ana" }));
+  expect(screen.getByRole("textbox", { name: "Nombre del competidor" })).toHaveValue("Ana");
+  fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-2" } });
+  await waitFor(() => expect(latest.selectedCategoryId).toBe("cat-2"));
+  const input = screen.getByRole("textbox", { name: "Nombre del competidor" });
+  expect(input).toHaveValue("");
+  expect(screen.getByRole("button", { name: "Agregar" })).toBeDisabled();
+  expect(screen.queryByRole("button", { name: "Cancelar edición" })).not.toBeInTheDocument();
+  fireEvent.change(input, { target: { value: "Nueva de B" } });
+  fireEvent.click(screen.getByRole("button", { name: "Agregar" }));
+  await waitFor(() => expect(latest.categories["cat-2"].competitors.map((person) => person.name)).toEqual(["Nueva de B"]));
+  expect(latest.categories["cat-1"].competitors.map((person) => person.name)).toEqual(["Ana", "Beto"]);
+  fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-1" } });
+  await waitFor(() => expect(latest.selectedCategoryId).toBe("cat-1"));
+  expect(screen.getByRole("textbox", { name: "Nombre del competidor" })).toHaveValue("");
+  expect(screen.getByRole("button", { name: "Agregar" })).toBeDisabled();
+});
+
+it("does not carry a plain add draft into a newly created category", async () => {
+  let latest = startState();
+  render(<Harness initial={latest} onChange={(next) => { latest = next; }} />);
+  fireEvent.change(screen.getByRole("textbox", { name: "Nombre del competidor" }),
+    { target: { value: "Sólo para A" } });
+  fireEvent.click(screen.getByRole("button", { name: "+ Nueva categoría" }));
+  await waitFor(() => expect(latest.categoryOrder).toHaveLength(2));
+  expect(screen.getByRole("textbox", { name: "Nombre del competidor" })).toHaveValue("");
+  expect(screen.getByRole("button", { name: "Agregar" })).toBeDisabled();
+  fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-1" } });
+  await waitFor(() => expect(latest.selectedCategoryId).toBe("cat-1"));
+  expect(screen.getByRole("textbox", { name: "Nombre del competidor" })).toHaveValue("");
+  expect(latest.categories["cat-1"].competitors).toHaveLength(0);
+});
+
+it("keeps list clearing in its original category and resumes tab navigation afterward", async () => {
+  let latest = twoDrafts();
+  render(<DelayedRemovalHarness initial={latest} onChange={(next) => { latest = next; }} />);
+  fireEvent.click(screen.getByRole("button", { name: "Vaciar lista" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirmar vaciado" }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-2" } });
+  expect(latest.selectedCategoryId).toBe("cat-1");
+  await waitFor(() => expect(latest.categories["cat-1"].competitors).toHaveLength(0));
+  fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-2" } });
+  await waitFor(() => expect(latest.selectedCategoryId).toBe("cat-2"));
+  const input = screen.getByRole("textbox", { name: "Nombre del competidor" });
+  fireEvent.change(input, { target: { value: "B después del vaciado de A" } });
+  expect(input).toHaveValue("B después del vaciado de A");
+  expect(latest.categories["cat-2"].competitors).toHaveLength(0);
+});
+
+it("blocks starting and category navigation until a six-person list is fully cleared", async () => {
+  let state = reduceDemoDeskState(startState(), { type: "category/configure", categoryId: "cat-1",
+    patch: { categoryName: "Round Robin", nameGenerated: false, mode: "round-robin" } });
+  for (let index = 1; index <= 6; index++) {
+    state = reduceDemoDeskState(state, { type: "category/addCompetitor", categoryId: "cat-1",
+      competitorId: `person-${index}`, competitor: { name: `Competidor ${index}` } });
+  }
+  state = reduceDemoDeskState(state, { type: "category/create", categoryId: "cat-2" });
+  state = reduceDemoDeskState(state, { type: "category/select", categoryId: "cat-1" });
+  let latest = state;
+  let releaseFirstRemoval: () => void = () => {};
+  const firstRemovalGate = new Promise<void>((resolve) => { releaseFirstRemoval = resolve; });
+  const commands: DemoDeskCommand[] = [];
+  render(<DelayedRemovalHarness initial={state} firstRemovalGate={firstRemovalGate}
+    onChange={(next) => { latest = next; }} onCommand={(command) => commands.push(command)} />);
+  expect(screen.getByRole("button", { name: "Iniciar categoría" })).toBeEnabled();
+  fireEvent.click(screen.getByRole("button", { name: "Vaciar lista" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirmar vaciado" }));
+  await waitFor(() => expect(latest.categories["cat-1"].competitors).toHaveLength(5));
+  expect(screen.getByRole("button", { name: "Iniciar categoría" })).toBeDisabled();
+  expect(screen.getByText(/Vaciando lista/)).toBeVisible();
+  fireEvent.click(screen.getByRole("button", { name: "Iniciar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: "+ Nueva categoría" }));
+  fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-2" } });
+  expect(commands.filter((command) => command.type === "category/start"
+    || command.type === "category/create" || command.type === "category/select")).toHaveLength(0);
+  expect(latest.selectedCategoryId).toBe("cat-1");
+  await act(async () => { releaseFirstRemoval(); });
+  await waitFor(() => expect(latest.categories["cat-1"].competitors).toHaveLength(0));
+  expect(latest.categories["cat-1"].phase).toBe("setup");
+  expect(commands.some((command) => command.type === "category/start")).toBe(false);
+  expect(screen.getByRole("button", { name: "Iniciar categoría" })).toBeDisabled();
+  fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-2" } });
+  await waitFor(() => expect(latest.selectedCategoryId).toBe("cat-2"));
+});
+
+it("puts import and a confirmed list-clear action in the Lista header", async () => {
+  let state = startState();
+  for (const [id, name] of [["ana", "Ana"], ["beto", "Beto"]]) {
+    state = reduceDemoDeskState(state, { type: "category/addCompetitor", categoryId: "cat-1",
+      competitorId: id, competitor: { name } });
+  }
+  let latest = state;
+  render(<Harness initial={state} onChange={(next) => { latest = next; }} />);
+  const list = screen.getByRole("region", { name: "Competidores" });
+  expect(within(list).getByRole("heading", { name: /Lista/ })).toBeVisible();
+  expect(within(list).getByRole("button", { name: "Importar Excel" })).toBeVisible();
+  fireEvent.click(within(list).getByRole("button", { name: "Vaciar lista" }));
+  const dialog = screen.getByRole("dialog", { name: "Vaciar lista de competidores" });
+  expect(latest.categories["cat-1"].competitors).toHaveLength(2);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancelar" }));
+  expect(latest.categories["cat-1"].competitors).toHaveLength(2);
+  fireEvent.click(within(list).getByRole("button", { name: "Vaciar lista" }));
+  fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Confirmar vaciado" }));
+  await waitFor(() => expect(latest.categories["cat-1"].competitors).toHaveLength(0));
+});
+
 it("keeps a manual category name while Tul removes active weight and warns about the old label", async () => {
   let state = startState();
   state = reduceDemoDeskState(state, { type: "category/configure", categoryId: "cat-1", patch: {
@@ -158,7 +326,7 @@ it("keeps a manual category name while Tul removes active weight and warns about
   } });
   let latest = state;
   render(<Harness initial={state} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   fireEvent.click(screen.getByRole("button", { name: /Editar Disciplina/ }));
   fireEvent.click(screen.getByRole("button", { name: "Tul / Formas" }));
   await waitFor(() => expect(latest.categories["cat-1"].config.weightLabel).toBeUndefined());
@@ -177,7 +345,7 @@ it.each([
   } });
   let latest = state;
   render(<Harness initial={state} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   expect(screen.getByRole("status")).toHaveTextContent("Tul no utiliza peso");
   fireEvent.click(screen.getByRole("button", { name: "Quitar peso del nombre" }));
   await waitFor(() => expect(latest.categories["cat-1"].config.categoryName).toBe(expected));
@@ -216,7 +384,7 @@ it("applies a local time preset's age while retaining round-robin final timing",
   } });
   let latest = state;
   render(<Harness initial={state} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   fireEvent.click(screen.getByText("Ajustes avanzados: tiempos y perfil"));
   fireEvent.click(screen.getByRole("button", { name: "Kids (4-5)" }));
   await waitFor(() => expect(latest.categories["cat-1"].config.categoryAgeFrom).toBe("4"));
@@ -233,7 +401,7 @@ it("configures judges and final timing without exposing inactive legacy tiebreak
   } });
   let latest = state;
   render(<Harness initial={state} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   fireEvent.click(screen.getByText("Ajustes avanzados: tiempos y perfil"));
   const chooseAdvanced = (group: string, option: string) =>
     fireEvent.click(within(screen.getByRole("group", { name: group })).getByRole("button", { name: option }));
@@ -271,7 +439,7 @@ it("applies a time preset without resetting selected judges", async () => {
   } });
   let latest = state;
   render(<Harness initial={state} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   fireEvent.click(screen.getByText("Ajustes avanzados: tiempos y perfil"));
   fireEvent.click(within(screen.getByRole("group", { name: "Jueces" })).getByRole("button", { name: "5" }));
   await waitFor(() => expect(latest.categories["cat-1"].config.judgesCount).toBe(5));
@@ -291,7 +459,7 @@ it("labels Yusan as active only after the profile is applied", async () => {
     categoryName: "Prueba", nameGenerated: false, profileId: "yusan-2026", profileApplied: false,
   } });
   const first = render(<Harness initial={inactive} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   expect(screen.getByText(/Perfil: Personalizado/)).toBeVisible();
   first.unmount();
 
@@ -299,7 +467,7 @@ it("labels Yusan as active only after the profile is applied", async () => {
     profileApplied: true,
   } });
   render(<Harness initial={active} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   expect(screen.getByText(/Perfil: Yusan 2026/)).toBeVisible();
 });
 
@@ -309,7 +477,7 @@ it("keeps rapid category/chief typing local until delayed autosaves settle, then
     categoryName: "Inicial", nameGenerated: false,
   } });
   const mounted = render(<SlowHarness initial={latest} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   const title = screen.getByRole("textbox", { name: "Nombre de la categoría" });
   let typed = "";
   for (const character of "Categoría extensa") {
@@ -328,7 +496,7 @@ it("keeps rapid category/chief typing local until delayed autosaves settle, then
   }), { timeout: 4000 });
   mounted.unmount();
   render(<Harness initial={latest} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   expect(screen.getByRole("textbox", { name: "Nombre de la categoría" })).toHaveValue("Categoría extensa");
   fireEvent.click(screen.getByText("Mesa (opcional)"));
   expect(screen.getByRole("textbox", { name: "Jefe de mesa" })).toHaveValue("Brian Lipnjak");
@@ -340,7 +508,7 @@ it("accepts clear-and-type 120 and merges rapid timing edits instead of persisti
     categoryName: "Inicial", nameGenerated: false,
   } });
   render(<SlowHarness initial={latest} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   fireEvent.click(screen.getByText("Ajustes avanzados: tiempos y perfil"));
   const duration = screen.getByRole("spinbutton", { name: "Segundos por round" });
   fireEvent.change(duration, { target: { value: "" } });
@@ -373,7 +541,7 @@ it("flushes the old category before switching and never duplicates an unmounted 
   state = reduceDemoDeskState(state, { type: "category/select", categoryId: "cat-1" });
   let latest = state;
   const mounted = render(<SlowHarness initial={state} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   const title = screen.getByRole("textbox", { name: "Nombre de la categoría" });
   fireEvent.change(title, { target: { value: "Primera nueva" } });
   fireEvent.change(screen.getByRole("combobox", { name: "Categoría actual" }), { target: { value: "cat-2" } });
@@ -384,7 +552,7 @@ it("flushes the old category before switching and never duplicates an unmounted 
 
   const changed = vi.fn();
   const second = render(<SlowHarness initial={latest} onChange={changed} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   fireEvent.change(screen.getByRole("textbox", { name: "Nombre de la categoría" }),
     { target: { value: "Borrador no confirmado" } });
   second.unmount(); // the already-created command may finish, but must not be sent twice
@@ -399,7 +567,7 @@ it("flushes an in-flight category name before creating another setup category", 
   } });
   let latest = state;
   render(<SlowHarness initial={state} onChange={(next) => { latest = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   fireEvent.change(screen.getByRole("textbox", { name: "Nombre de la categoría" }),
     { target: { value: "Primera guardada" } });
   fireEvent.click(screen.getByRole("button", { name: "+ Nueva categoría" }));
@@ -440,7 +608,7 @@ it("recovers only a matching-generation pending draft and rejects another writer
   const key = "tkd-demo-pending-v1:7:event-demo:cat-1:categoryName";
   const first = render(<DemoSetup state={state} generation={7} readOnly={false}
     dispatch={pendingDispatch} onFight={() => {}} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   fireEvent.change(screen.getByRole("textbox", { name: "Nombre de la categoría" }),
     { target: { value: "Borrador pendiente" } });
   expect(sessionStorage.getItem(key)).toContain("Borrador pendiente");
@@ -448,7 +616,7 @@ it("recovers only a matching-generation pending draft and rejects another writer
 
   let recovered = state;
   const second = render(<Harness initial={state} generation={7} onChange={(next) => { recovered = next; }} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   expect(screen.getByRole("textbox", { name: "Nombre de la categoría" })).toHaveValue("Borrador pendiente");
   await waitFor(() => expect(recovered.categories["cat-1"].config.categoryName).toBe("Borrador pendiente"));
   await waitFor(() => expect(sessionStorage.getItem(key)).toBeNull());
@@ -460,14 +628,14 @@ it("recovers only a matching-generation pending draft and rejects another writer
     categoryName: "Importada", nameGenerated: false,
   } });
   const third = render(<Harness initial={imported} generation={8} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   expect(screen.getByRole("textbox", { name: "Nombre de la categoría" })).toHaveValue("Importada");
   third.unmount();
 
   // Same generation but a different writer changed this exact field: drop the stale draft.
   sessionStorage.setItem(key, JSON.stringify({ value: "No aplicar", base: "Base", sent: [], token: "old" }));
   const conflict = render(<Harness initial={imported} generation={7} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   expect(screen.getByRole("textbox", { name: "Nombre de la categoría" })).toHaveValue("Importada");
   expect(screen.getByRole("alert")).toHaveTextContent("cambió en otra pestaña");
   expect(sessionStorage.getItem(key)).toBeNull();
@@ -480,7 +648,7 @@ it("recovers only a matching-generation pending draft and rejects another writer
   await waitFor(() => expect(sessionStorage.getItem(key)).toBeNull());
   takeover.rerender(<DemoSetup state={state} generation={7} readOnly={false}
     dispatch={pendingDispatch} onFight={() => {}} />);
-  fireEvent.click(screen.getByRole("button", { name: "Editar categoría" }));
+  fireEvent.click(screen.getByRole("button", { name: /Configurar categoría/ }));
   expect(screen.getByRole("textbox", { name: "Nombre de la categoría" })).toHaveValue("Base");
 });
 

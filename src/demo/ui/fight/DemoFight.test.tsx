@@ -53,13 +53,17 @@ describe("DemoFight browser-only desk", () => {
     fireEvent.click(screen.getByRole("button", { name: "Cargar pelea" }));
     await screen.findByRole("button", { name: "Intercambiar competidores" });
     const station = screen.getByTestId("demo-fight-station");
-    expect(station.className).toContain("-mx-3");
-    expect(within(station).getByText("Rojo · izquierda").parentElement?.className).toContain("bg-red-950/50");
-    expect(within(station).getByText("Azul · derecha").parentElement?.className).toContain("bg-blue-950/50");
-    expect(within(station).getAllByText("0")[0].className).toContain("text-[clamp(3.25rem,16vw,5rem)]");
+    const redStation = screen.getByTestId("demo-red-station");
+    const blueStation = screen.getByTestId("demo-blue-station");
+    expect(station.className).toContain("md:grid-cols-[minmax(0,1fr)_minmax(18rem,30%)_minmax(0,1fr)]");
+    expect(redStation.className).toContain("bg-red-950/50");
+    expect(blueStation.className).toContain("bg-blue-950/50");
+    expect(redStation.compareDocumentPosition(blueStation) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(redStation).getByText("0").className).toContain("text-[clamp(3.25rem,16vw,5rem)]");
+    expect(within(station).getByRole("timer")).toHaveTextContent("1:00");
     fireEvent.click(screen.getByRole("button", { name: "Intercambiar competidores" }));
-    await waitFor(() => expect(screen.getByText("Rojo · izquierda").parentElement?.textContent).toContain("Competidor B"));
-    expect(screen.getByText("Azul · derecha").parentElement?.textContent).toContain("Competidor A");
+    await waitFor(() => expect(redStation.textContent).toContain("Competidor B"));
+    expect(blueStation.textContent).toContain("Competidor A");
     fireEvent.click(screen.getByRole("button", { name: "Iniciar combate" }));
     await waitFor(() => expect(calls.map((item) => item.command.type)).toContain("fight/start"));
     expect(screen.getByRole("group", { name: "Juez J1" }).parentElement?.className).toContain("min-[360px]:grid-cols-2");
@@ -81,6 +85,24 @@ describe("DemoFight browser-only desk", () => {
     expect(blue.className).not.toContain("line-clamp");
     expect(red.className).toContain("[overflow-wrap:anywhere]");
     expect(blue.className).toContain("[overflow-wrap:anywhere]");
+  });
+
+  it("shows the original-style fight order and colored stations before loading", async () => {
+    const calls = mount(fixture([fight("AB", "A", "B"), fight("CD", "C", "D")]));
+    const order = screen.getByRole("navigation", { name: "Orden de peleas" });
+    expect(within(order).getAllByRole("button")).toHaveLength(2);
+    const red = screen.getByTestId("demo-red-station");
+    const blue = screen.getByTestId("demo-blue-station");
+    expect(red.compareDocumentPosition(blue) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(red).getByText("Competidor A")).toBeTruthy();
+    expect(within(blue).getByText("Competidor B")).toBeTruthy();
+    fireEvent.click(within(order).getByRole("button", { name: "Pelea 2: Competidor C vs Competidor D" }));
+    await waitFor(() => expect(within(red).getByText("Competidor C")).toBeTruthy());
+    expect(within(blue).getByText("Competidor D")).toBeTruthy();
+    expect(calls[0].command).toMatchObject({ type: "fight/select", fightId: "CD" });
+    fireEvent.click(screen.getByRole("button", { name: "Cargar pelea" }));
+    await screen.findByRole("button", { name: "Intercambiar competidores" });
+    expect(within(screen.getByTestId("demo-red-station")).getByText("Competidor C")).toBeTruthy();
   });
 
   it("suggests the first resting bout after a confirmed AB fight instead of loading AE", async () => {
@@ -166,7 +188,7 @@ describe("DemoFight browser-only desk", () => {
     fireEvent.click(screen.getByRole("button", { name: "Intercambiar competidores" }));
     await screen.findByRole("alert");
     fireEvent.click(screen.getByRole("button", { name: "Intercambiar competidores" }));
-    await waitFor(() => expect(screen.getByText("Rojo · izquierda").parentElement?.textContent).toContain("Competidor B"));
+    await waitFor(() => expect(screen.getByTestId("demo-red-station").textContent).toContain("Competidor B"));
     expect(calls).toHaveLength(2);
     expect(calls[0]).toMatch(/^g1:/);
     expect(calls[1]).toBe(calls[0]);
@@ -192,7 +214,7 @@ describe("DemoFight browser-only desk", () => {
     expect(newId).toMatch(/^g2:/);
     await act(async () => { rejectors.get(oldId)?.(new Error("Generación anterior")); });
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Iniciar combate" }).disabled).toBe(true);
-    expect(screen.getByText("Rojo · izquierda").parentElement?.textContent).toContain("Competidor A");
+    expect(screen.getByTestId("demo-red-station").textContent).toContain("Competidor A");
     await act(async () => { rejectors.get(newId)?.(new Error("Operación cancelada")); });
   });
 

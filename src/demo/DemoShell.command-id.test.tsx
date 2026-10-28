@@ -114,6 +114,7 @@ it("requests browser persistence only after an explicit click and reports the re
   mocks.setCurrent(mocks.first);
   mocks.persist.mockClear();
   render(<DemoShell />);
+  fireEvent.click(await screen.findByRole("button", { name: "Respaldo" }));
   expect(mocks.persist).not.toHaveBeenCalled();
   fireEvent.click(screen.getByText(/Demo individual · datos solo en este navegador/));
   fireEvent.click(screen.getByRole("button", { name: "Conservar demo en este navegador" }));
@@ -131,7 +132,7 @@ it("keeps the original-style local navigation accessible without remote destinat
   const buttons = within(nav).getAllByRole("button");
   expect(buttons).toHaveLength(5);
   expect(buttons.map((item) => item.getAttribute("aria-label"))).toEqual([
-    "Categorías", "Combate", "Tabla", "Historial", "Respaldo",
+    "Competidores", "Combate", "Clasificación", "Historial", "Respaldo",
   ]);
   const fight = within(nav).getByRole("button", { name: "Combate" });
   fight.focus();

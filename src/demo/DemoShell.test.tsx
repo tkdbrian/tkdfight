@@ -16,7 +16,7 @@ afterEach(() => {
   if (originalServiceWorker) Object.defineProperty(navigator, "serviceWorker", originalServiceWorker);
   else Reflect.deleteProperty(navigator, "serviceWorker");
   vi.unstubAllGlobals();
-  document.head.querySelectorAll("[data-demo-test]").forEach((node) => node.remove());
+  document.head.querySelectorAll("[data-demo-test]").forEach((node) => { node.remove(); });
 });
 
 function stubWorker(scriptPath: string, register = vi.fn().mockResolvedValue({})) {
@@ -54,7 +54,9 @@ it("does not promise offline use when the browser lacks service workers", async 
   Reflect.deleteProperty(navigator, "serviceWorker");
   render(<DemoShell />);
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("no ofrece almacenamiento"));
-  expect(screen.getByText(/Safari/)).toHaveTextContent("WhatsApp");
+  expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("Sin uso offline; seguí online"))).toBe(true);
+  fireEvent.click(screen.getByText("Detalles"));
+  expect(screen.getAllByRole("alert").some((alert) => alert.textContent?.includes("no ofrece almacenamiento"))).toBe(true);
 });
 
 it("recognizes only a scoped demo worker with its current revisioned app assets", async () => {
@@ -100,6 +102,7 @@ it("explains denied worker registration and allows retry without disabling the o
   render(<DemoShell />);
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("No está lista para uso sin conexión; sigue disponible online"));
   expect(register).toHaveBeenCalledWith("/demo-sw.js", { scope: "/demo/" });
+  fireEvent.click(screen.getByText("Detalles"));
   fireEvent.click(screen.getByRole("button", { name: /Reintentar descarga/ }));
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("listos para abrir sin conexión"));
   expect(register).toHaveBeenCalledTimes(2);
@@ -110,6 +113,7 @@ it("reports a failed precache inspection instead of preparing forever", async ()
   vi.stubGlobal("caches", { keys: vi.fn().mockRejectedValue(new Error("CacheStorage denied")) });
   render(<DemoShell />);
   await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("No está lista para uso sin conexión; sigue disponible online"));
+  fireEvent.click(screen.getByText("Detalles"));
   expect(screen.getByRole("button", { name: /Reintentar descarga/ })).toBeVisible();
 });
 

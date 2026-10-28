@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Check } from "lucide-react";
 import { buildCategoryName, GUP_GRADE_OPTIONS } from "@/lib/category-name";
 import { availableCategoryFormats, defaultCategoryFormat } from "@/lib/category-mode";
@@ -118,8 +118,9 @@ function summary(step: Step, config: TournamentConfig): string {
 function Choice({ label, selected, disabled, onClick }: Readonly<{
   label: string; selected: boolean; disabled?: boolean; onClick: () => void;
 }>) {
+  const skip = label === "No especificar";
   return <button type="button" disabled={disabled} aria-pressed={selected} onClick={onClick}
-    className={`${control} flex min-h-14 min-w-0 items-center justify-center gap-1.5 break-words text-center text-sm leading-snug sm:text-base ${selected ? selectedControl : ""}`}>
+    className={`${skip ? "rounded-lg border border-transparent bg-transparent px-3 py-2 text-sm text-muted-foreground underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50" : control} inline-flex min-h-11 max-w-full items-center justify-start gap-1.5 break-words text-left font-medium leading-snug ${selected && !skip ? selectedControl : ""}`}>
     {selected && <Check aria-hidden="true" className="size-4 shrink-0" />}{label}</button>;
 }
 
@@ -309,15 +310,18 @@ function useBufferedInput(identity: string, externalValue: string, enabled: bool
 
 type Dispatch = (command: DemoDeskCommand) => Promise<unknown>;
 type ConfigUpdate = Partial<TournamentConfig> | ((current: TournamentConfig) => Partial<TournamentConfig>);
+export type DemoCategoryNavigationRequest = { kind: "select"; categoryId: string } | { kind: "create" };
 export interface DemoSetupProps {
   state: DemoDeskState;
   generation: number;
   readOnly: boolean;
   dispatch: Dispatch;
   onFight: () => void;
+  registerCategoryNavigation?: (handler: ((request: DemoCategoryNavigationRequest) => Promise<boolean>) | null) => void;
 }
 
-export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Readonly<DemoSetupProps>) {
+export function DemoSetup({ state, generation, readOnly, dispatch, onFight,
+  registerCategoryNavigation }: Readonly<DemoSetupProps>) {
   const categoryId = state.selectedCategoryId;
   const category = categoryId ? state.categories[categoryId] : undefined;
   const config = category?.config;
@@ -330,17 +334,46 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
   const [danFrom, setDanFrom] = useState("");
   const [danTo, setDanTo] = useState("");
   const [fieldError, setFieldError] = useState("");
-  const [name, setName] = useState("");
-  const [team, setTeam] = useState("");
-  const [editId, setEditId] = useState<string | null>(null);
+  const draftRevision = useRef(0);
+  const [competitorDraft, setCompetitorDraft] = useState({ categoryId, name: "", team: "",
+    editId: null as string | null, revision: 0 });
+  const visibleDraft = competitorDraft.categoryId === categoryId ? competitorDraft
+    : { categoryId, name: "", team: "", editId: null, revision: draftRevision.current };
+  const { name, team, editId } = visibleDraft;
   const [savingCompetitor, setSavingCompetitor] = useState(false);
   const savingCompetitorRef = useRef(false);
-  const competitorDraftRef = useRef({ categoryId, name, team, editId });
-  competitorDraftRef.current = { categoryId, name, team, editId };
+  const competitorDraftRef = useRef(visibleDraft);
+  competitorDraftRef.current = visibleDraft;
+  const selectedCategoryRef = useRef(categoryId);
+  selectedCategoryRef.current = categoryId;
+  const updateCompetitorDraft = (patch: Partial<Pick<typeof visibleDraft, "name" | "team" | "editId">>) => {
+    const base = competitorDraftRef.current.categoryId === categoryId ? competitorDraftRef.current
+      : { categoryId, name: "", team: "", editId: null, revision: draftRevision.current };
+    const next = { ...base, ...patch, categoryId, revision: ++draftRevision.current };
+    competitorDraftRef.current = next;
+    setCompetitorDraft(next);
+  };
+  // Do not render an old category's add/edit draft even for one frame after tab selection.
+  useLayoutEffect(() => {
+    if (competitorDraftRef.current.categoryId !== categoryId || competitorDraft.categoryId !== categoryId) {
+      const blank = { categoryId, name: "", team: "", editId: null, revision: ++draftRevision.current };
+      competitorDraftRef.current = blank;
+      setCompetitorDraft(blank);
+    }
+  }, [categoryId, competitorDraft.categoryId]);
   const [importPreview, setImportPreview] = useState<Array<{ name: string; team: string }> | null>(null);
   const [importCategories, setImportCategories] = useState<DemoImportedCategory[]>([]);
   const [importBusy, setImportBusy] = useState(false);
   const [importError, setImportError] = useState("");
+  const [clearListPending, setClearListPending] = useState(false);
+  const [clearListError, setClearListError] = useState("");
+  const [clearingListCategoryId, setClearingListCategoryId] = useState<string | null>(null);
+  const clearingHere = clearingListCategoryId === categoryId;
+  const clearingListRef = useRef(false);
+  const [startingCategoryId, setStartingCategoryId] = useState<string | null>(null);
+  const startingRef = useRef(false);
+  const categoryOperationPending = clearingListCategoryId !== null || startingCategoryId !== null;
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const focusHeading = useRef(false);
@@ -350,7 +383,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
     workingConfig.current = { categoryId, value: config };
 
   const patch = async (update: ConfigUpdate): Promise<boolean> => {
-    if (!config || !categoryId) return false;
+    if (!config || !categoryId || clearingListRef.current) return false;
     const base = workingConfig.current?.categoryId === categoryId ? workingConfig.current.value : config;
     const changes = typeof update === "function" ? update(base) : update;
     const next = { ...base, ...changes };
@@ -376,6 +409,19 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
   // for setup categories so navigating never drops an in-flight field save.
   const flushBeforeNavigation = async () => !editable
     || ((await categoryNameField.flush()) && (await tableChiefField.flush()));
+  const navigationHandler = useRef<(request: DemoCategoryNavigationRequest) => Promise<boolean>>(async () => false);
+  navigationHandler.current = async (request) => {
+    if (readOnly || clearingListRef.current || startingRef.current || !await flushBeforeNavigation()) return false;
+    if (clearingListRef.current || startingRef.current) return false;
+    return Boolean(await dispatch(request.kind === "create" ? { type: "category/create" }
+      : { type: "category/select", categoryId: request.categoryId }));
+  };
+  useEffect(() => {
+    if (!registerCategoryNavigation) return;
+    const handler = (request: DemoCategoryNavigationRequest) => navigationHandler.current(request);
+    registerCategoryNavigation(handler);
+    return () => registerCategoryNavigation(null);
+  }, [registerCategoryNavigation]);
 
   useEffect(() => {
     if (!category || !config || !categoryId || initializedCategory.current === categoryId) return;
@@ -387,6 +433,8 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
     setFieldError("");
     setImportPreview(null);
     setImportCategories([]);
+    setClearListPending(false);
+    setClearListError("");
   }, [categoryId, category, config]); // Autosaves do not restart a guided editor.
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: focus is intentionally scheduled when the active answer changes.
@@ -429,6 +477,9 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
   const flow = steps(config);
   const currentStep = active;
   const generated = categoryName(config);
+  const displayCategoryName = config.categoryName || `Categoría ${state.categoryOrder.indexOf(categoryId) + 1}`;
+  const canStart = !readOnly && !categoryOperationPending && !importBusy && !savingCompetitor
+    && Boolean(categoryNameField.value.trim()) && preview.length > 0;
   const staleWeight = config.matchType === "tul" && !config.nameGenerated && hasWeightMention(categoryNameField.value);
   const nameWithoutWeight = staleWeight ? withoutWeight(categoryNameField.value) : "";
   const ruleSet = selectedRules(config);
@@ -452,14 +503,21 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
     setFieldError(""); focusHeading.current = true;
   };
   const start = async () => {
-    if (!await categoryNameField.flush() || !await tableChiefField.flush()) return;
-    if (await dispatch({ type: "category/start", categoryId })) onFight();
+    if (readOnly || category.phase !== "setup" || !preview.length || importBusy || savingCompetitorRef.current
+      || clearingListRef.current || startingRef.current) return;
+    startingRef.current = true;
+    setStartingCategoryId(categoryId);
+    try {
+      if (!await categoryNameField.flush() || !await tableChiefField.flush()) return;
+      if (clearingListRef.current || selectedCategoryRef.current !== categoryId) return;
+      if (await dispatch({ type: "category/start", categoryId })) onFight();
+    } finally { startingRef.current = false; setStartingCategoryId(null); }
   };
   const saveCompetitor = async () => {
-    if (savingCompetitorRef.current) return;
+    if (savingCompetitorRef.current || clearingListRef.current || startingRef.current || readOnly || category.phase !== "setup") return;
     const trimmed = name.trim();
     if (!trimmed) { setFieldError("Ingresá el nombre del competidor."); return; }
-    const submitted = { categoryId, name, team, editId };
+    const submitted = competitorDraftRef.current;
     savingCompetitorRef.current = true;
     setSavingCompetitor(true);
     try {
@@ -468,10 +526,8 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
         : await dispatch({ type: "category/addCompetitor", categoryId, competitor: { name: trimmed, team: team.trim() } });
       if (!saved) return;
       const current = competitorDraftRef.current;
-      if (current.categoryId === submitted.categoryId && current.name === submitted.name
-        && current.team === submitted.team && current.editId === submitted.editId) {
-        competitorDraftRef.current = { categoryId, name: "", team: "", editId: null };
-        setName(""); setTeam(""); setEditId(null); nameRef.current?.focus();
+      if (current.categoryId === submitted.categoryId && current.revision === submitted.revision) {
+        updateCompetitorDraft({ name: "", team: "", editId: null }); nameRef.current?.focus();
       }
       setFieldError("");
     } finally {
@@ -480,18 +536,51 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
     }
   };
   const importSpreadsheet = async (file: File) => {
+    if (clearingListRef.current || startingRef.current) return;
     setImportError(""); setImportCategories([]);
+    const sourceCategoryId = categoryId;
     try {
       const parsed = await parseDemoSpreadsheet(file);
+      if (selectedCategoryRef.current !== sourceCategoryId) return;
       setImportPreview(parsed.simpleCompetitors.length ? parsed.simpleCompetitors : null);
       setImportCategories(parsed.categories);
-    } catch (error) { setImportError(error instanceof Error ? error.message : "No se pudo leer la planilla."); }
+    } catch (error) {
+      if (selectedCategoryRef.current === sourceCategoryId)
+        setImportError(error instanceof Error ? error.message : "No se pudo leer la planilla.");
+    }
+  };
+  const clearCompetitors = async () => {
+    if (clearingListRef.current || startingRef.current || savingCompetitorRef.current || importBusy
+      || readOnly || category.phase !== "setup") return;
+    const clearingCategoryId = categoryId;
+    const clearingDraftRevision = competitorDraftRef.current.revision;
+    clearingListRef.current = true;
+    setClearingListCategoryId(categoryId);
+    try {
+      for (const person of category.competitors) {
+        if (!await dispatch({ type: "category/removeCompetitor", categoryId, competitorId: person.id })) {
+          if (selectedCategoryRef.current === clearingCategoryId)
+            setClearListError("No se pudo vaciar toda la lista. Revisá los competidores restantes antes de intentar otra vez.");
+          return;
+        }
+      }
+      if (selectedCategoryRef.current === clearingCategoryId) {
+        setClearListPending(false); setClearListError("");
+        if (competitorDraftRef.current.categoryId === clearingCategoryId
+          && competitorDraftRef.current.revision === clearingDraftRevision)
+          updateCompetitorDraft({ name: "", team: "", editId: null });
+      }
+    } catch {
+      if (selectedCategoryRef.current === clearingCategoryId)
+        setClearListError("No se pudo vaciar toda la lista. Revisá los competidores restantes antes de intentar otra vez.");
+    } finally { clearingListRef.current = false; setClearingListCategoryId(null); }
   };
   const importCategory = async (entry: DemoImportedCategory) => {
+    if (clearingListRef.current || startingRef.current || importBusy) return;
     setImportBusy(true);
     const newId = crypto.randomUUID();
     try {
-      if (!await flushBeforeNavigation()) return;
+      if (!await flushBeforeNavigation() || clearingListRef.current || startingRef.current) return;
       if (!await dispatch({ type: "category/create", categoryId: newId })) return;
       if (!await dispatch({ type: "category/configure", categoryId: newId, patch: {
         categoryName: entry.name, nameGenerated: false, matchType: entry.matchType,
@@ -505,35 +594,26 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
   };
 
   return <div className="space-y-4">
-    <section className={surface} aria-label="Categorías de la demo">
-      <div className="flex flex-wrap items-end gap-3">
-        <label className="min-w-0 flex-[1_1_14rem] text-sm font-semibold text-foreground">Categoría actual
-          <select className={`${input} mt-1`} value={categoryId} disabled={readOnly}
-            onChange={(event) => { const nextId = event.target.value; void (async () => {
-              if (!await flushBeforeNavigation()) return;
-              await dispatch({ type: "category/select", categoryId: nextId });
-            })(); }}>
-            {state.categoryOrder.map((id, index) => <option key={id} value={id}>
-              {state.categories[id]?.config.categoryName || `Categoría ${index + 1}`}
-            </option>)}
-          </select>
-        </label>
-        <button type="button" disabled={readOnly} className={control}
-          onClick={() => void (async () => {
-            if (!await flushBeforeNavigation()) return;
-            await dispatch({ type: "category/create" });
-          })()}>+ Nueva categoría</button>
+    <section className="min-w-0 space-y-3" aria-label="Editor de categoría">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h1 className="break-words text-2xl font-black tracking-tight">{displayCategoryName}</h1>
+          <button type="button" className={`${control} mt-2 font-semibold`} onClick={() => setEditorOpen(!editorOpen)}
+            aria-expanded={editorOpen} aria-controls="demo-category-editor">{editorOpen ? "Cerrar configuración" : "⚙ Configurar categoría"}</button>
+          <p className="mt-1 text-xs text-muted-foreground">{category.competitors.length === 0 ? "Sin competidores" : `${category.competitors.length} competidores`}</p>
+        </div>
+        <div className="flex flex-col items-end gap-1">
+          {category.phase === "setup" && canStart && <button type="button" className={primaryControl}
+            onClick={() => void start()}>Iniciar categoría</button>}
+          {category.phase !== "setup" && <button type="button" className={primaryControl} onClick={onFight}>Ir al combate</button>}
+        </div>
       </div>
-    </section>
-
-    <section className={surface} aria-label="Editor de categoría">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="min-w-0"><h2 className="break-words text-xl font-bold">{config.categoryName || "Categoría"}</h2><p className="text-sm text-muted-foreground">Las respuestas se guardan automáticamente en este navegador.</p></div>
-        <button type="button" className={control} onClick={() => setEditorOpen(!editorOpen)}
-          aria-expanded={editorOpen}>{editorOpen ? "Ocultar editor" : "Editar categoría"}</button>
-      </div>
-      {editorOpen && <div className="mt-4 space-y-4 rounded-xl border border-border bg-secondary/20 p-3 sm:p-4">
-        <fieldset className="grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-3"><legend className="sr-only">Respuestas de la categoría</legend>
+      {editorOpen && <div id="demo-category-editor" className="rounded-xl border border-border bg-secondary/20 p-3 sm:p-4">
+        <div className={`grid min-w-0 items-start gap-4 ${currentStep ? "lg:grid-cols-[minmax(0,1fr)_minmax(18rem,24rem)]" : "lg:grid-cols-2"}`}>
+        <fieldset disabled={categoryOperationPending} className="min-w-0 space-y-4 rounded-xl border border-border bg-background p-3 sm:p-4">
+          <legend className="px-1 text-base font-bold text-foreground">Categoría</legend>
+          <p className="text-sm text-muted-foreground">Elegí una opción. Podés volver a cambiar cualquier respuesta.</p>
+          <div className={`grid min-w-0 gap-2 ${currentStep ? "xl:grid-cols-2" : "sm:grid-cols-2 xl:grid-cols-3"}`}>
           {flow.filter((step) => completed.includes(step) && active !== step).map((step) =>
             <button key={step} type="button" disabled={readOnly || category.phase !== "setup"}
               onClick={() => edit(step)} aria-label={`Editar ${STEP_LABEL[step]}: ${summary(step, config)}`}
@@ -541,13 +621,14 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
               <span className="flex w-full items-center justify-between gap-2 text-sm font-semibold">{STEP_LABEL[step]} <span aria-hidden="true" className="text-primary underline underline-offset-2">Editar</span></span>
               <span className="break-words text-base font-medium leading-snug">{summary(step, config)}</span>
             </button>)}
-        </fieldset>
-        {currentStep && category.phase === "setup" && <div className="min-w-0 rounded-xl border border-border bg-background p-3 sm:p-4">
+          </div>
+        {currentStep && category.phase === "setup" && <div className="min-w-0 space-y-2">
           <h3 ref={headingRef} tabIndex={-1} className="text-base font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             Paso {flow.indexOf(currentStep) + 1} de {flow.length}: {currentStep === "range" && config.gradeSystem === "DAN" ? "Grado Dan" : STEP_LABEL[currentStep]}
           </h3>
           <p className="mt-1 text-sm text-muted-foreground">Elegí una opción para avanzar; podés volver y cambiarla.</p>
-          <div className="mt-3 grid min-w-0 grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+          <fieldset className="mt-3 flex min-w-0 flex-wrap gap-1.5">
+            <legend className="sr-only">{STEP_LABEL[currentStep]}</legend>
             {currentStep === "age" && <>
               {AGE_DIVISIONS.map((age) => <Choice key={age.id} disabled={readOnly}
                 label={`${age.label} (${age.from}${age.to === undefined ? "+" : `-${age.to}`})`}
@@ -555,8 +636,8 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
                   ageDivision: age.id, categoryAgeFrom: String(age.from), categoryAgeTo: age.to?.toString(),
                   categoryAgeOpenEnded: age.to === undefined,
                 })} />)}
-              <button type="button" className={control} disabled={readOnly} onClick={() => setAgeCustom(!ageCustom)}>Edad personalizada</button>
-              {ageCustom && <div className="col-span-full grid min-w-0 grid-cols-2 items-end gap-2">
+              <button type="button" className="min-h-11 rounded-lg px-3 text-sm font-semibold text-primary underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" disabled={readOnly} onClick={() => setAgeCustom(!ageCustom)}>Edad personalizada</button>
+              {ageCustom && <div className="grid min-w-0 basis-full grid-cols-2 items-end gap-2">
                 <label className="min-w-0 text-sm">Desde<input type="number" min="1" className={`${input} mt-1`} value={ageFrom}
                   onChange={(event) => setAgeFrom(event.target.value)} /></label>
                 <label className="min-w-0 text-sm">Hasta<input type="number" min="1" className={`${input} mt-1`} value={ageTo}
@@ -570,7 +651,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
                     categoryAgeFrom: ageFrom, categoryAgeTo: ageTo, categoryAgeOpenEnded: false });
                 }}>Aplicar edad</button>
               </div>}
-              <Choice disabled={readOnly} label="No especificar" selected={!config.categoryAgeFrom}
+              <Choice disabled={readOnly} label="No especificar" selected={completed.includes("age") && !config.categoryAgeFrom}
                 onClick={() => void choose("age", { ageDivision: undefined, categoryAgeFrom: undefined,
                   categoryAgeTo: undefined, categoryAgeOpenEnded: false })} />
             </>}
@@ -579,7 +660,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
                 onClick={() => void choose("grade", { gradeSystem: "GUPS", gupBand: undefined, danFrom: undefined, danTo: undefined }, "GUPS")} />
               <Choice disabled={readOnly} label="DANES" selected={config.gradeSystem === "DAN"}
                 onClick={() => void choose("grade", { gradeSystem: "DAN", gupBand: undefined, danFrom: undefined, danTo: undefined }, "DAN")} />
-              <Choice disabled={readOnly} label="No especificar" selected={!config.gradeSystem}
+              <Choice disabled={readOnly} label="No especificar" selected={completed.includes("grade") && !config.gradeSystem}
                 onClick={() => void choose("grade", { gradeSystem: undefined, gupBand: undefined,
                   danFrom: undefined, danTo: undefined, requiresGradeSelection: false }, undefined)} />
             </>}
@@ -587,7 +668,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
               {GUP_GRADE_OPTIONS.map((value) => <Choice key={value} disabled={readOnly} label={value}
                 selected={config.gupBand === value} onClick={() => void choose("range", { gupBand: value })} />)}
             </>}
-            {currentStep === "range" && config.gradeSystem === "DAN" && <div className="col-span-full grid min-w-0 grid-cols-2 items-end gap-2">
+            {currentStep === "range" && config.gradeSystem === "DAN" && <div className="grid min-w-0 basis-full grid-cols-2 items-end gap-2">
               <label className="min-w-0 text-sm">Dan desde<input type="number" min="1" className={`${input} mt-1`}
                 value={danFrom} onChange={(event) => setDanFrom(event.target.value)} /></label>
               <label className="min-w-0 text-sm">Dan hasta<input type="number" min="1" className={`${input} mt-1`}
@@ -601,7 +682,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
             {currentStep === "gender" && <>
               {SEXES.map((value) => <Choice key={value} disabled={readOnly} label={value}
                 selected={config.sexDivision === value} onClick={() => void choose("gender", { sexDivision: value })} />)}
-              <Choice disabled={readOnly} label="No especificar" selected={!config.sexDivision}
+              <Choice disabled={readOnly} label="No especificar" selected={completed.includes("gender") && !config.sexDivision}
                 onClick={() => void choose("gender", { sexDivision: undefined })} />
             </>}
             {currentStep === "discipline" && <>
@@ -617,7 +698,7 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
             {currentStep === "weight" && <>
               {WEIGHTS.map((value) => <Choice key={value} disabled={readOnly} label={value}
                 selected={config.weightLabel === value} onClick={() => void choose("weight", { weightLabel: value })} />)}
-              <Choice disabled={readOnly} label="No especificar" selected={!config.weightLabel}
+              <Choice disabled={readOnly} label="No especificar" selected={completed.includes("weight") && !config.weightLabel}
                 onClick={() => void choose("weight", { weightLabel: undefined })} />
             </>}
             {currentStep === "format" && availableCategoryFormats(config.matchType).map((value) =>
@@ -627,13 +708,17 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
                   const adjusted = value === "round-robin" ? { ...rules, rounds: { ...rules.rounds, count: 1, duration_seconds: 60 } } : rules;
                   void choose("format", { mode: value, ruleSet: adjusted });
                 }} />)}
-          </div>
+          </fieldset>
           {fieldError && <p role="alert" className="mt-2 text-amber-200">{fieldError}</p>}
         </div>}
-        {!currentStep && <div className="grid min-w-0 gap-4 lg:grid-cols-2">
-          <div className="min-w-0 space-y-3 rounded-xl border border-border bg-background p-4">
-            <h3 className="font-bold">Combate y tiempos</h3>
-            <p className="text-sm leading-relaxed text-foreground">{ruleSet.judgesCount} jueces · {ruleSet.rounds.count} round(s) × {ruleSet.rounds.duration_seconds} s · Desempate {config.tiebreakerSeconds ?? 30} s · Perfil: {config.profileId === "yusan-2026" && config.profileApplied ? "Yusan 2026" : "Personalizado"}</p>
+        </fieldset>
+        <fieldset disabled={categoryOperationPending} className="min-w-0 space-y-3 rounded-xl border border-border bg-background p-3 sm:p-4">
+          <legend className="px-1 text-base font-bold text-foreground">Combate y tiempos</legend>
+          <div className="rounded-lg border border-border bg-secondary/20 p-3 text-sm leading-relaxed text-foreground">
+            <p className="font-semibold">Tiempo y perfil activos</p>
+            <p className="mt-1">{ruleSet.rounds.count} {ruleSet.rounds.count === 1 ? "round" : "rounds"} × {Math.floor(ruleSet.rounds.duration_seconds / 60)}:{String(ruleSet.rounds.duration_seconds % 60).padStart(2, "0")} · {ruleSet.rounds.rest_seconds ? `Descanso ${ruleSet.rounds.rest_seconds} s` : "Sin descanso"} · Desempate {config.tiebreakerSeconds ?? 30} s · Perfil: {config.profileId === "yusan-2026" && config.profileApplied ? "Yusan 2026" : "Personalizado"}</p>
+          </div>
+          {!currentStep && <>
             {config.mode === "round-robin" && (getGroupDistribution(category.competitors.length)?.length ?? 0) > 1 && <fieldset className="space-y-2">
               <legend className="font-semibold">Orden de combates</legend>
               <div className="flex flex-wrap gap-2">
@@ -674,30 +759,31 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
                   disabled={readOnly || category.phase !== "setup"} patch={patch} />
               </div>
             </details>
-          </div>
-          <details className="min-w-0 rounded-xl border border-border bg-background p-4"><summary className="min-h-11 cursor-pointer font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Mesa (opcional)</summary>
-            <label className="mt-3 block text-sm">Jefe de mesa<input className={`${input} mt-1`} disabled={readOnly || category.phase !== "setup"}
+          </>}
+        </fieldset>
+        </div>
+        {!currentStep && <details className="mt-4 min-w-0 rounded-xl border border-border bg-background p-4"><summary className="min-h-11 cursor-pointer font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">Mesa (opcional)</summary>
+            <label className="mt-3 block text-sm">Jefe de mesa<input className={`${input} mt-1`} disabled={readOnly || category.phase !== "setup" || categoryOperationPending}
               value={tableChiefField.value} onChange={(event) => tableChiefField.change(event.target.value)}
               onBlur={tableChiefField.blur} /></label>
             {tableChiefField.error && <p role="alert" className="mt-2 text-amber-200">{tableChiefField.error}</p>}
-          </details>
-        </div>}
-        {!currentStep && <div className="space-y-2">
-          <label className="block text-sm font-semibold">Nombre de la categoría<input className={`${input} mt-1`} disabled={readOnly || category.phase !== "setup"}
+          </details>}
+        {!currentStep && <div className="mt-4 space-y-2">
+          <label className="block text-sm font-semibold">Nombre de la categoría<input className={`${input} mt-1`} disabled={readOnly || category.phase !== "setup" || categoryOperationPending}
             value={categoryNameField.value} onChange={(event) => categoryNameField.change(event.target.value)}
             onBlur={categoryNameField.blur} /></label>
           {categoryNameField.error && <p role="alert" className="text-amber-200">{categoryNameField.error}</p>}
           {staleWeight && <div role="status" className="text-amber-200">
             <p>El nombre manual menciona un peso, pero Tul no utiliza peso.</p>
-            {nameWithoutWeight ? <button type="button" disabled={readOnly || category.phase !== "setup"}
+            {nameWithoutWeight ? <button type="button" disabled={readOnly || category.phase !== "setup" || categoryOperationPending}
               className={`${control} mt-2`} onClick={() => void patch({ categoryName: nameWithoutWeight, nameGenerated: false })}>
               Quitar peso del nombre</button>
               : <p>Editá el nombre manualmente para no dejarlo vacío.</p>}
           </div>}
-          {!config.nameGenerated && generated && <button type="button" disabled={readOnly || category.phase !== "setup"}
+          {!config.nameGenerated && generated && <button type="button" disabled={readOnly || category.phase !== "setup" || categoryOperationPending}
             className={control} onClick={() => void patch({ categoryName: generated, nameGenerated: true })}>
               Actualizar nombre con los datos seleccionados</button>}
-          <div><button type="button" className={primaryControl}
+          <div><button type="button" disabled={categoryOperationPending} className={primaryControl}
             onClick={() => void (async () => {
               if (!await categoryNameField.flush() || !await tableChiefField.flush()) return;
               setEditorOpen(false); nameRef.current?.focus(); nameRef.current?.scrollIntoView?.({ block: "nearest" });
@@ -707,31 +793,46 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
       </div>}
     </section>
 
-    <DemoCategoryTools key={categoryId} state={state} categoryId={categoryId} readOnly={readOnly} dispatch={dispatch} />
-
-    <div className="grid gap-4 xl:grid-cols-2">
+    <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
       <section className={surface} aria-label="Competidores">
-        <h2 className="text-xl font-bold">Competidores <span className="rounded-full bg-secondary px-2 py-0.5 text-base text-foreground">{category.competitors.length}</span></h2>
+        <div className="flex flex-wrap items-center gap-2">
+          <h2 className="text-base font-bold">Lista <span className="rounded-full bg-secondary px-2 py-0.5 text-sm text-foreground">{category.competitors.length}</span></h2>
+          {category.phase === "setup" && <div className="ml-auto flex flex-wrap gap-2">
+            <button type="button" disabled={readOnly || importBusy || categoryOperationPending} className={control}
+              onClick={() => fileInputRef.current?.click()}>Importar Excel</button>
+            {category.competitors.length > 0 && <button type="button" disabled={readOnly || importBusy || savingCompetitor || categoryOperationPending}
+              className={`${control} border-destructive/40 text-destructive`} onClick={() => {
+                setClearListError(""); setClearListPending(true);
+              }}>Vaciar lista</button>}
+          </div>}
+        </div>
         {category.phase === "setup" && <>
           <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_minmax(0,11rem)_auto]">
             <input ref={nameRef} className={input} aria-label="Nombre del competidor" placeholder="Nombre del competidor"
-              disabled={readOnly} value={name} onChange={(event) => {
-                competitorDraftRef.current.name = event.target.value; setName(event.target.value);
-              }}
+              disabled={readOnly || categoryOperationPending} value={name}
+              onChange={(event) => updateCompetitorDraft({ name: event.target.value })}
               onKeyDown={(event) => { if (event.key === "Enter") void saveCompetitor(); }} />
-            <input className={input} aria-label="Club opcional" placeholder="Club (opcional)" disabled={readOnly}
-              value={team} onChange={(event) => {
-                competitorDraftRef.current.team = event.target.value; setTeam(event.target.value);
-              }}
+            <input className={input} aria-label="Club opcional" placeholder="Club (opcional)" disabled={readOnly || categoryOperationPending}
+              value={team} onChange={(event) => updateCompetitorDraft({ team: event.target.value })}
               onKeyDown={(event) => { if (event.key === "Enter") void saveCompetitor(); }} />
-            <button type="button" disabled={readOnly || savingCompetitor || !name.trim()} className={primaryControl}
+            <button type="button" disabled={readOnly || savingCompetitor || categoryOperationPending || !name.trim()} className={primaryControl}
               onClick={() => void saveCompetitor()}>{editId ? "Guardar" : "Agregar"}</button>
           </div>
-          {editId && <button type="button" className={`${control} mt-2`} onClick={() => { setEditId(null); setName(""); setTeam(""); }}>Cancelar edición</button>}
-          <label className="mt-3 block text-sm font-semibold">Importar Excel o TXT de categorías; también admite lista simple (nombre y club)
-            <input type="file" accept=".xlsx,.xls,.csv,.txt" disabled={readOnly || importBusy} className={`${input} mt-1 file:mr-2 file:rounded file:border-0 file:bg-secondary file:p-1 file:text-foreground`}
-              onChange={(event) => { const file = event.target.files?.[0]; if (file) void importSpreadsheet(file); event.target.value = ""; }} />
-          </label>
+          {editId && <button type="button" disabled={categoryOperationPending} className={`${control} mt-2`} onClick={() =>
+            updateCompetitorDraft({ editId: null, name: "", team: "" })}>Cancelar edición</button>}
+          <input ref={fileInputRef} type="file" accept=".xlsx,.xls,.csv,.txt" disabled={readOnly || importBusy || categoryOperationPending}
+            className="hidden" aria-label="Archivo Excel o TXT de categorías y competidores"
+            onChange={(event) => { const file = event.target.files?.[0]; if (file) void importSpreadsheet(file); event.target.value = ""; }} />
+          {clearListPending && <div role="dialog" aria-label="Vaciar lista de competidores" className="mt-3 rounded-lg border border-destructive/50 bg-background p-3">
+            <p className="text-sm">¿Vaciar los {category.competitors.length} competidores de esta categoría? Esta acción no se puede deshacer.</p>
+            {clearingHere && <p role="status" className="mt-2 text-sm text-muted-foreground">Vaciando lista… Esperá a que termine antes de iniciar o cambiar de categoría.</p>}
+            {clearListError && <p role="alert" className="mt-2 text-sm text-destructive">{clearListError}</p>}
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button type="button" disabled={readOnly || importBusy || savingCompetitor || categoryOperationPending} className={`${control} border-destructive text-destructive`}
+                onClick={() => void clearCompetitors()}>Confirmar vaciado</button>
+              <button type="button" disabled={categoryOperationPending} className={control} onClick={() => setClearListPending(false)}>Cancelar</button>
+            </div>
+          </div>}
           {importError && <p role="alert" className="mt-2 text-amber-200">{importError}</p>}
           {importCategories.length > 0 && <div className="mt-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
             <h3 className="font-semibold">Categorías encontradas: {importCategories.length}</h3>
@@ -739,14 +840,15 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
             <ul className="mt-2 space-y-2">{importCategories.map((entry) => <li key={`${entry.name}-${entry.matchType}-${entry.competitors.join("|")}`}
               className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-background p-2">
               <span className="min-w-0 break-words">{entry.name} · {entry.matchType === "tul" ? "Tul" : "Lucha"} · {entry.competitors.length} competidores</span>
-              <button type="button" disabled={readOnly || importBusy} className={control}
+              <button type="button" disabled={readOnly || importBusy || categoryOperationPending} className={control}
                 onClick={() => void importCategory(entry)}>Crear borrador</button></li>)}</ul>
             <button type="button" className={`${control} mt-2`} onClick={() => setImportCategories([])}>Cancelar importación</button>
           </div>}
           {importPreview && <div className="mt-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
             <p className="font-semibold">Vista previa: {importPreview.length} competidores</p>
             <p className="break-words text-sm text-muted-foreground">{importPreview.slice(0, 5).map((person) => person.name).join(", ")}{importPreview.length > 5 ? "…" : ""}</p>
-            <div className="mt-2 flex gap-2"><button type="button" disabled={readOnly || importBusy} className={control} onClick={async () => {
+            <div className="mt-2 flex gap-2"><button type="button" disabled={readOnly || importBusy || categoryOperationPending} className={control} onClick={async () => {
+              if (clearingListRef.current || startingRef.current) return;
               setImportBusy(true);
               try {
                 for (const person of importPreview) {
@@ -762,24 +864,26 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
           {category.competitors.map((person: CompetitorEntry, index) => <li key={person.id} className="grid min-h-14 min-w-0 grid-cols-[2rem_minmax(0,1fr)] items-center gap-2 rounded-lg border border-border bg-secondary/20 p-2 sm:flex">
             <span className="flex size-8 shrink-0 items-center justify-center rounded-full bg-secondary text-sm font-bold text-muted-foreground">{index + 1}</span>
             <span className="min-w-0 flex-1 break-words text-lg font-semibold leading-snug">{person.name}{person.team && <small className="block text-sm font-normal text-muted-foreground">{person.team}</small>}</span>
-            {category.phase === "setup" && <div className="col-span-2 flex justify-end gap-2 sm:ml-auto"><button type="button" disabled={readOnly} className={control}
-              aria-label={`Editar a ${person.name}`} onClick={() => { setEditId(person.id); setName(person.name); setTeam(person.team ?? ""); nameRef.current?.focus(); }}>Editar</button>
-              <button type="button" disabled={readOnly} className={control} aria-label={`Eliminar a ${person.name}`}
-                onClick={() => void dispatch({ type: "category/removeCompetitor", categoryId, competitorId: person.id })}>Quitar</button></div>}
+            {category.phase === "setup" && <div className="col-span-2 flex justify-end gap-2 sm:ml-auto"><button type="button" disabled={readOnly || categoryOperationPending} className={control}
+              aria-label={`Editar a ${person.name}`} onClick={() => {
+                updateCompetitorDraft({ editId: person.id, name: person.name, team: person.team ?? "" }); nameRef.current?.focus();
+              }}>Editar</button>
+              <button type="button" disabled={readOnly || categoryOperationPending} className={control} aria-label={`Eliminar a ${person.name}`}
+                onClick={() => { if (!clearingListRef.current && !startingRef.current)
+                  void dispatch({ type: "category/removeCompetitor", categoryId, competitorId: person.id }); }}>Quitar</button></div>}
           </li>)}
         </ol>
         {category.competitors.length === 0 && <p className="mt-3 text-muted-foreground">Ingresá el primer competidor para ver la llave.</p>}
         {category.phase === "setup" && <div className="mt-4">
-          <button type="button" disabled={readOnly || !categoryNameField.value.trim() || preview.length === 0}
-            className={primaryControl} onClick={() => void start()}>Iniciar categoría</button>
-          {!categoryNameField.value.trim() && <p className="mt-2 text-sm text-amber-200">Poné un nombre a la categoría antes de iniciarla.</p>}
+          {!canStart && <><button type="button" disabled className={primaryControl}>Iniciar categoría</button>
+            {clearingHere && <p role="status" className="mt-2 text-sm text-muted-foreground">Vaciando competidores… No se puede iniciar ni cambiar de categoría.</p>}
+            {!categoryNameField.value.trim() && <p className="mt-2 text-sm text-amber-200">Poné un nombre a la categoría antes de iniciarla.</p>}</>}
           {config.mode === "round-robin" && category.competitors.length > 0 && !getGroupDistribution(category.competitors.length) &&
             <p className="mt-2 text-sm text-amber-200">Round Robin admite de 3 a 12 competidores.</p>}
         </div>}
-        {category.phase !== "setup" && <button type="button" className={`${primaryControl} mt-4`} onClick={onFight}>Ir al combate</button>}
       </section>
       <section className={surface} aria-label="Vista previa de la llave">
-        <h2 className="text-xl font-bold">{category.phase === "setup" ? "Llave (vista previa)" : "Llave guardada"} · {preview.length} combates</h2>
+        <h2 className="text-base font-bold">{config.mode === "elimination" ? "Llave" : "Fixture"} {category.phase === "setup" ? "(preview)" : "guardado"} <span className="rounded-full bg-secondary px-2 py-0.5 text-sm text-foreground">{preview.length} combates</span></h2>
         <ol className="mt-3 max-h-[35rem] space-y-2 overflow-y-auto">
           {preview.map((fight, index) => <li key={fight.id} className="flex min-h-16 min-w-0 items-center gap-2 rounded-lg border border-border bg-secondary/20 px-2 py-3 text-lg leading-snug sm:px-3">
             <span className="w-6 shrink-0 text-center text-sm text-muted-foreground">{index + 1}.</span>
@@ -793,6 +897,8 @@ export function DemoSetup({ state, generation, readOnly, dispatch, onFight }: Re
         {preview.length === 0 && <p className="mt-3 text-muted-foreground">La vista previa aparece al agregar suficientes competidores.</p>}
       </section>
     </div>
+    <DemoCategoryTools key={categoryId} state={state} categoryId={categoryId}
+      readOnly={readOnly || categoryOperationPending} dispatch={dispatch} />
   </div>;
 }
 
